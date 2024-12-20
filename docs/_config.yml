@@ -21,8 +21,8 @@
 title: MMMData Manual
 email: bhutch@uoregon.edu
 description: >- # this means to ignore newlines until "baseurl:"
-	This webpage is under construction and will
-    describe the Multi-Modal Memory dataset.
+   This webpage is under construction and will
+   describe the Multi-Modal Memory dataset.
 baseurl: "" # the subpath of your site, e.g. /blog
 url: "" # the base hostname & protocol for your site, e.g. http://example.com
 # twitter_username: jekyllrb
