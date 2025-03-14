@@ -1,8 +1,7 @@
-title: Just the Docs Template
-description: A starter template for a Jeykll site using the Just the Docs theme!
+title: MMMData Documentation
+description: A documentation webpage for the MMMData project.
 theme: just-the-docs
 
-url: https://just-the-docs.github.io
+url: https://hulacon.github.io/mmmdata/
 
-aux_links:
-  Template Repository: https://github.com/just-the-docs/just-the-docs-template
+
