@@ -1,12 +1,24 @@
 title: MMMData Documentation
-description: A documentation webpage for the MMMData project.
+description: Documentation for the Multi-Modal Memory Dataset (MMMData) project.
 theme: just-the-docs
 
+# Site URL (used for SEO and canonical links). The GitHub Pages action passes baseurl at build time.
 url: https://hulacon.github.io/mmmdata/
 
+# Global defaults for pages inside the docs content folder
 defaults:
   - scope:
-      path: "doc" # an empty string here means all files in the project
+      path: "doc" # content lives under docs/doc
       type: "pages"
     values:
       layout: "default"
+
+# Add a link in the header to the GitHub repository
+aux_links:
+  View on GitHub: https://github.com/hulacon/mmmdata
+
+# Exclude non-site helper folders from builds
+exclude:
+  - github/
+  - Gemfile.lock
+  - README.md

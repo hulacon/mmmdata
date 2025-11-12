@@ -5,3 +5,12 @@ gem "jekyll", "~> 4.3.4" # installed by `gem jekyll`
 
 gem "just-the-docs", "0.10.1" # pinned to the current release
 # gem "just-the-docs"        # always download the latest release
+
+# Ruby 3.4 removes some stdlib gems from default; Jekyll requires csv
+gem "csv"
+
+# Ruby 3.4 also unbundles base64; safe_yaml indirectly requires it
+gem "base64"
+
+# Future-proof: logger will be removed from default in Ruby 3.5
+gem "logger"

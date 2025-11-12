@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# Ruby / Bundler
+.bundle/
+vendor/
+
+# Jekyll (root-level, in case of accidental builds)
+_site/
+.sass-cache/
+.jekyll-cache/
+.jekyll-metadata
+
+# Archives
+*.zip
