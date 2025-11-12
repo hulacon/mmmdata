@@ -1,0 +1,36 @@
+// University of Oregon color scheme - Green and White
+// Official UO Green: #007030 (darker), #18453B (forest green)
+// Using white backgrounds with green accents
+
+$color-scheme: custom;
+
+// Base colors
+$uo-green: #007030;           // Official UO Green
+$uo-green-dark: #00522a;      // Darker shade for contrast
+$uo-green-light: #e8f5e9;     // Very light green for subtle backgrounds
+
+// Main page colors - remove !default to force override
+$body-background-color: #ffffff;           // White background
+$body-heading-color: #1a1a1a;              // Near-black for headings
+$body-text-color: #333333;                 // Dark gray for body text
+$link-color: $uo-green;                    // UO Green for links
+$nav-child-link-color: #555555;            // Medium gray for nav links
+
+// Sidebar
+$sidebar-color: #f8f9fa;                   // Very light gray (almost white)
+$feedback-color: #e9ecef;                  // Light gray for hover states
+
+// Buttons
+$base-button-color: #f8f9fa;               // Light gray
+$btn-primary-color: $uo-green;             // UO Green for primary buttons
+
+// Code blocks
+$code-background-color: #f5f5f5;           // Light gray
+
+// Tables and search
+$table-background-color: #ffffff;          // White
+$search-background-color: #ffffff;         // White
+$search-result-preview-color: #666666;     // Medium gray
+
+// Import syntax highlighting (light theme)
+@import "./vendor/OneLightJekyll/syntax";
