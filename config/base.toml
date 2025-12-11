@@ -1,0 +1,2 @@
+# this file contains base configuration settings (edit local.toml to override)
+bids_project_dir = "/projects/hulacon/shared/mmmdata/derivatives/fmriprep"
