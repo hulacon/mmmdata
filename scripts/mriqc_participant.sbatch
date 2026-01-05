@@ -1,0 +1,87 @@
+#!/bin/bash
+#SBATCH --job-name=mriqc_participant
+#SBATCH --partition=compute
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/mriqc_participant_%j.out
+#SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/mriqc_participant_%j.err
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=your-email@uoregon.edu
+
+#==============================================================================
+# MRIQC Participant-Level Analysis (All Subjects)
+#==============================================================================
+# This script runs MRIQC quality control on all subjects and sessions
+# in the MMMData BIDS dataset.
+#
+# Usage:
+#   sbatch mriqc_participant.sbatch
+#
+# Output:
+#   - Logs: /gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/
+#   - Results: /projects/hulacon/shared/mmmdata/derivatives/mriqc/
+#==============================================================================
+
+# Print job information
+echo "=========================================="
+echo "SLURM Job Information"
+echo "=========================================="
+echo "Job ID: ${SLURM_JOB_ID}"
+echo "Job Name: ${SLURM_JOB_NAME}"
+echo "Partition: ${SLURM_JOB_PARTITION}"
+echo "Node: ${SLURMD_NODENAME}"
+echo "CPUs: ${SLURM_CPUS_PER_TASK}"
+echo "Memory: ${SLURM_MEM_PER_NODE}M"
+echo "Start Time: $(date)"
+echo "=========================================="
+echo ""
+
+# Load required modules (if any)
+# module load singularity  # Uncomment if singularity is a module
+
+# Set up environment
+export SINGULARITYENV_TEMPLATEFLOW_HOME=/projects/hulacon/shared/mmmdata/.cache/templateflow
+export SINGULARITY_TMPDIR=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/tmp
+mkdir -p ${SINGULARITY_TMPDIR}
+
+# Project directories
+SCRIPT_DIR="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/scripts"
+VENV_DIR="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/.venv"
+
+# Activate Python virtual environment
+source ${VENV_DIR}/bin/activate
+
+# Change to script directory
+cd ${SCRIPT_DIR}
+
+# Run MRIQC on all subjects
+echo "Running MRIQC participant-level analysis..."
+echo ""
+
+python run_mriqc.py \
+    --analysis-level participant \
+    --nprocs ${SLURM_CPUS_PER_TASK} \
+    --mem-gb $((${SLURM_MEM_PER_NODE} / 1024))
+
+# Capture exit status
+EXIT_STATUS=$?
+
+# Print completion information
+echo ""
+echo "=========================================="
+echo "Job Completion Information"
+echo "=========================================="
+echo "End Time: $(date)"
+echo "Exit Status: ${EXIT_STATUS}"
+echo "=========================================="
+
+# Clean up temporary files
+if [ -d "${SINGULARITY_TMPDIR}" ]; then
+    echo "Cleaning up temporary files..."
+    rm -rf ${SINGULARITY_TMPDIR}/*
+fi
+
+exit ${EXIT_STATUS}
