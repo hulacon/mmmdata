@@ -37,4 +37,4 @@ pd.DataFrame
 
 ## Source
 
-Defined in `bids_utils.py` at line 139
+Defined in `bids_utils.py` at line 148

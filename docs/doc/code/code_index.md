@@ -15,3 +15,7 @@ API documentation for Python utility functions in the MMMData project.
 - [`summarize_bids_dataset`](bids_utils_summarize_bids_dataset)
 - [`get_subject_summary`](bids_utils_get_subject_summary)
 
+### [Config](config_index)
+
+- [`load_config`](config_load_config)
+

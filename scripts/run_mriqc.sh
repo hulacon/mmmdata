@@ -92,16 +92,22 @@ fi
 if [ "${ANALYSIS_LEVEL}" == "participant" ]; then
     echo "Processing all participants and sessions..."
     echo ""
+    echo "Running command:"
+    echo "${CMD}"
+    echo ""
 
-    # Run MRIQC
-    eval ${CMD}
+    # Run MRIQC (direct execution without eval for security)
+    ${CMD}
 
 elif [ "${ANALYSIS_LEVEL}" == "group" ]; then
     echo "Generating group-level reports..."
     echo ""
+    echo "Running command:"
+    echo "${CMD}"
+    echo ""
 
-    # Run group-level analysis
-    eval ${CMD}
+    # Run group-level analysis (direct execution without eval for security)
+    ${CMD}
 
 else
     echo "ERROR: Invalid analysis level '${ANALYSIS_LEVEL}'"

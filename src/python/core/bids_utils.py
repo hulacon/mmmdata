@@ -63,21 +63,30 @@ def summarize_bids_dataset(
     if bids_dir is None:
         if config is None:
             config = load_config()
-        bids_dir = config.get('bids_project_dir')
+        # Support both old flat config and new nested config structure
+        if 'paths' in config:
+            bids_dir = config['paths'].get('bids_project_dir')
+        else:
+            bids_dir = config.get('bids_project_dir')
+
         if bids_dir is None:
             raise ValueError(
                 "bids_project_dir not found in configuration and no bids_dir provided"
             )
-    
+
     bids_dir = Path(bids_dir)
-    
+
     if not bids_dir.exists():
         raise FileNotFoundError(f"BIDS directory not found: {bids_dir}")
-    
+
     # Initialize BIDSLayout
     if verbose:
         print(f"Indexing BIDS dataset: {bids_dir}")
-    
+
+    # Note: validate=False is used for performance reasons and to handle
+    # datasets that may not be 100% BIDS-compliant but are still usable.
+    # For strict BIDS validation, use the BIDS validator tool separately.
+    # See: https://bids-standard.github.io/bids-validator/
     layout = BIDSLayout(bids_dir, validate=False)
     
     # Gather summary information

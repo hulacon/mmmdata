@@ -47,15 +47,14 @@ echo ""
 # Load required modules (if any)
 # module load singularity  # Uncomment if singularity is a module
 
-# Set up environment
-export SINGULARITYENV_TEMPLATEFLOW_HOME=/projects/hulacon/shared/mmmdata/.cache/templateflow
-export SINGULARITY_TMPDIR=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/tmp/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}
-mkdir -p ${SINGULARITY_TMPDIR}
+# Load configuration from config files
+SCRIPT_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR_HERE}/load_config.sh"
 
-# Project directories
-BIDS_DIR="/projects/hulacon/shared/mmmdata"
-SCRIPT_DIR="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/scripts"
-VENV_DIR="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/.venv"
+# Set up environment using config values
+export SINGULARITYENV_TEMPLATEFLOW_HOME=${BIDS_DIR}/.cache/templateflow
+export SINGULARITY_TMPDIR=${CODE_ROOT}/tmp/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}
+mkdir -p ${SINGULARITY_TMPDIR}
 
 # Define subject list
 # Automatically populate from BIDS directory

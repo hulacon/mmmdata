@@ -1,2 +1,11 @@
-# this file can be used to override default configuration settings
-# bids_project_dir = "/path/to/mmmdata"
+# This file can be used to override default configuration settings from base.toml
+#
+# Example: Override paths for your local environment
+# [paths]
+# bids_project_dir = "/path/to/your/bids/dataset"
+# singularity_dir = "/path/to/your/singularity/images"
+# venv_dir = "/path/to/your/venv"
+#
+# Example: Set your email for SLURM notifications
+# [slurm]
+# email = "your.email@domain.com"

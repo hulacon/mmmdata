@@ -6,7 +6,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Find all Python utility modules
 UTILS_DIR="$PROJECT_ROOT/src/python/core"
-OUTPUT_DIR="$PROJECT_ROOT/docs/doc"
+OUTPUT_DIR="$PROJECT_ROOT/docs/doc/code"
 
 echo "Generating documentation for Python utility modules..."
 echo "Source directory: $UTILS_DIR"

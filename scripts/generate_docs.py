@@ -347,8 +347,8 @@ def main():
     parser.add_argument(
         '--output-dir',
         type=Path,
-        default=Path('docs/doc'),
-        help='Output directory for generated markdown files (default: docs/doc)'
+        default=Path('docs/doc/code'),
+        help='Output directory for generated markdown files (default: docs/doc/code)'
     )
     parser.add_argument(
         '--nav-order',

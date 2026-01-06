@@ -1,2 +1,29 @@
-# this file contains base configuration settings (edit local.toml to override)
+# This file contains base configuration settings (edit local.toml to override)
+
+[paths]
+# Main BIDS dataset directory
 bids_project_dir = "/projects/hulacon/shared/mmmdata"
+
+# Code repository root (where this config file is located)
+code_root = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
+
+# Singularity/Apptainer images directory
+singularity_dir = "/projects/hulacon/shared/mmmdata/singularity_images"
+
+# Python virtual environment directory
+venv_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/.venv"
+
+# Output directories
+output_dir = "/projects/hulacon/shared/mmmdata/derivatives"
+inventory_dir = "/projects/hulacon/shared/mmmdata/inventory"
+
+[slurm]
+# Default SLURM configuration
+partition = "medium"
+time = "12:00:00"
+memory = "16G"
+cpus = "4"
+
+# Email notifications (override in local.toml with your email)
+email = "your.email@example.com"
+mail_type = "END,FAIL"
