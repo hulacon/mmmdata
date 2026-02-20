@@ -1,7 +1,7 @@
 ---
 title: MRI Sequence Information
 parent: Dataset Description
-nav_order: 3
+nav_order: 10
 ---
 
 # MRI Data

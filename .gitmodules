@@ -1,0 +1,3 @@
+[submodule "docs/doc/shared"]
+	path = docs/doc/shared
+	url = git@github.com:hulacon/mmmdata-docs.git
