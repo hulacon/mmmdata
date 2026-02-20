@@ -1,0 +1,31 @@
+name: Update shared docs submodule
+
+on:
+  repository_dispatch:
+    types: [shared-docs-updated]
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          token: ${{ secrets.DOCS_SYNC_TOKEN }}
+
+      - name: Update submodule to latest
+        run: |
+          git submodule update --remote docs/doc/shared
+          if git diff --quiet; then
+            echo "Submodule already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/doc/shared
+          git commit -m "Update shared docs submodule"
+          git push
