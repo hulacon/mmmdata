@@ -101,17 +101,21 @@ def apply_overrides(
 
     # --- Task list override ---
     if "tasks" in ovr:
-        tasks = tuple(
-            TaskDef(
-                task_label=t["task_label"],
-                protocol_base=t["protocol_base"],
-                fmap_group=t.get("fmap_group", "encoding"),
-                runs=t.get("runs", 1),
-                has_sbref=t.get("has_sbref", False),
+        tasks = []
+        for t in ovr["tasks"]:
+            runs_val = t.get("runs", 1)
+            if isinstance(runs_val, list):
+                runs_val = tuple(runs_val)
+            tasks.append(
+                TaskDef(
+                    task_label=t["task_label"],
+                    protocol_base=t["protocol_base"],
+                    fmap_group=t.get("fmap_group", "encoding"),
+                    runs=runs_val,
+                    has_sbref=t.get("has_sbref", False),
+                )
             )
-            for t in ovr["tasks"]
-        )
-        session_def = replace(session_def, tasks=tasks)
+        session_def = replace(session_def, tasks=tuple(tasks))
 
     # --- Fieldmap group override ---
     if "fmap_groups" in ovr:

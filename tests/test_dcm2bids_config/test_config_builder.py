@@ -181,6 +181,140 @@ class TestFieldmapDescriptions:
             build_config("sub-03", "ses-06", SESSION_TYPES["tb_middle"])
 
 
+class TestExplicitRunLists:
+    """Verify config generation with explicit run number tuples."""
+
+    def test_explicit_runs_produce_correct_bold_ids(self):
+        sd = SessionDef(
+            session_type="test",
+            tasks=(
+                TaskDef("floc", "localizer_floc_run{n}", "first",
+                        runs=(4, 5, 6), has_sbref=True),
+            ),
+            fmap_strategy="series_number",
+            fmap_groups=("first",),
+        )
+        fmap = {"first": {"ap": 10, "pa": 11}}
+        config = build_config("sub-04", "ses-04", sd, fmap)
+        bolds = [d for d in config["descriptions"] if d["suffix"] == "bold"]
+        assert len(bolds) == 3
+        assert bolds[0]["id"] == "task_floc_run-4"
+        assert bolds[1]["id"] == "task_floc_run-5"
+        assert bolds[2]["id"] == "task_floc_run-6"
+
+    def test_explicit_runs_protocol_names(self):
+        sd = SessionDef(
+            session_type="test",
+            tasks=(
+                TaskDef("floc", "localizer_floc_run{n}", "first",
+                        runs=(4, 5, 6), has_sbref=False),
+            ),
+            fmap_strategy="none",
+        )
+        config = build_config("sub-04", "ses-04", sd)
+        bolds = [d for d in config["descriptions"] if d["suffix"] == "bold"]
+        assert bolds[0]["criteria"]["ProtocolName"] == "localizer_floc_run4"
+        assert bolds[2]["criteria"]["ProtocolName"] == "localizer_floc_run6"
+
+    def test_explicit_runs_sbref_ids(self):
+        sd = SessionDef(
+            session_type="test",
+            tasks=(
+                TaskDef("floc", "localizer_floc_run{n}", "first",
+                        runs=(4, 5, 6), has_sbref=True),
+            ),
+            fmap_strategy="none",
+        )
+        config = build_config("sub-04", "ses-04", sd)
+        sbrefs = [d for d in config["descriptions"] if d["suffix"] == "sbref"]
+        assert len(sbrefs) == 3
+        assert sbrefs[0]["id"] == "task_floc_run-4"
+
+    def test_single_explicit_run_still_gets_run_entity(self):
+        """A single-element tuple still gets run-XX in the id."""
+        sd = SessionDef(
+            session_type="test",
+            tasks=(
+                TaskDef("floc", "localizer_floc_run{n}", "first",
+                        runs=(3,), has_sbref=False),
+            ),
+            fmap_strategy="none",
+        )
+        config = build_config("sub-04", "ses-04", sd)
+        bolds = [d for d in config["descriptions"] if d["suffix"] == "bold"]
+        assert bolds[0]["id"] == "task_floc_run-3"
+
+
+class TestHybridFmapMatching:
+    """Verify SeriesDescription + SeriesNumber hybrid matching."""
+
+    def test_series_description_with_series_number(self):
+        """When fmap_info provided with series_description strategy, both criteria present."""
+        sd = SessionDef(
+            session_type="test",
+            tasks=(
+                TaskDef("FINretrieval", "final_cued_recall_run{n}", "first",
+                        runs=(1, 2), has_sbref=True),
+            ),
+            fmap_strategy="series_description",
+            fmap_groups=("first",),
+        )
+        fmap = {"first": {"ap": 20, "pa": 22}}
+        config = build_config("sub-05", "ses-30", sd, fmap)
+        fmaps = [d for d in config["descriptions"] if d["datatype"] == "fmap"]
+        assert len(fmaps) == 2
+        ap = next(d for d in fmaps if "AP" in d["custom_entities"])
+        pa = next(d for d in fmaps if "PA" in d["custom_entities"])
+        # Both have SeriesDescription AND SeriesNumber
+        assert ap["criteria"]["SeriesDescription"] == "se_epi_ap_first"
+        assert ap["criteria"]["SeriesNumber"] == "20"
+        assert pa["criteria"]["SeriesDescription"] == "se_epi_pa_first"
+        assert pa["criteria"]["SeriesNumber"] == "22"
+
+    def test_series_description_without_fmap_info(self):
+        """Without fmap_info, only SeriesDescription in criteria (no SeriesNumber)."""
+        config = build_config(
+            "sub-03", "ses-20", SESSION_TYPES["naturalistic"]
+        )
+        fmaps = [d for d in config["descriptions"] if d["datatype"] == "fmap"]
+        for f in fmaps:
+            assert "SeriesNumber" not in f["criteria"]
+            assert "SeriesDescription" in f["criteria"]
+
+    def test_hybrid_two_groups(self):
+        """Two fmap groups, each with explicit series numbers + series_description."""
+        sd = SessionDef(
+            session_type="test",
+            tasks=(
+                TaskDef("FINretrieval", "final_cued_recall_run{n}", "first",
+                        runs=(1, 2), has_sbref=False),
+                TaskDef("FINretrieval", "final_cued_recall_run{n}", "second",
+                        runs=(3, 4), has_sbref=False),
+            ),
+            fmap_strategy="series_description",
+            fmap_groups=("first", "second"),
+        )
+        fmap = {
+            "first": {"ap": 5, "pa": 7},
+            "second": {"ap": 30, "pa": 32},
+        }
+        config = build_config("sub-05", "ses-30", sd, fmap)
+        fmaps = [d for d in config["descriptions"] if d["datatype"] == "fmap"]
+        assert len(fmaps) == 4
+        # First group
+        first_ap = next(
+            d for d in fmaps
+            if d["criteria"].get("SeriesDescription") == "se_epi_ap_first"
+        )
+        assert first_ap["criteria"]["SeriesNumber"] == "5"
+        # Second group
+        second_pa = next(
+            d for d in fmaps
+            if d["criteria"].get("SeriesDescription") == "se_epi_pa_second"
+        )
+        assert second_pa["criteria"]["SeriesNumber"] == "32"
+
+
 class TestAnatomySession:
     def test_anatomy_has_anat_descriptions(self):
         config = build_config("sub-03", "ses-01", SESSION_TYPES["anatomy"])

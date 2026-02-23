@@ -30,7 +30,7 @@ def _build_bold_description(
     """Build a single BOLD description entry."""
     desc: dict = {
         "id": f"task_{task.task_label}"
-        + (f"_run-{run}" if task.runs > 1 else ""),
+        + (f"_run-{run}" if task.is_multi_run else ""),
         "datatype": "func",
         "suffix": "bold",
         "custom_entities": f"task-{task.task_label}",
@@ -58,7 +58,7 @@ def _build_sbref_description(
     """Build a single SBRef description entry."""
     desc: dict = {
         "id": f"task_{task.task_label}"
-        + (f"_run-{run}" if task.runs > 1 else ""),
+        + (f"_run-{run}" if task.is_multi_run else ""),
         "datatype": "func",
         "suffix": "sbref",
         "custom_entities": f"task-{task.task_label}",
@@ -119,16 +119,25 @@ def _build_fmap_description_seriesdesc(
     intended_for: list[str],
     subject: str,
     session: str,
+    series_number: int | None = None,
 ) -> dict:
-    """Build a fieldmap description matched by SeriesDescription suffix."""
+    """Build a fieldmap description matched by SeriesDescription suffix.
+
+    When *series_number* is provided, it is added to ``criteria`` alongside
+    ``SeriesDescription`` for hybrid matching (needed when two fmap pairs
+    share the same SeriesDescription suffix).
+    """
     series_desc = f"se_epi_{direction.lower()}_{group}"
+    criteria: dict = {
+        "SeriesDescription": series_desc,
+    }
+    if series_number is not None:
+        criteria["SeriesNumber"] = str(series_number)
     return {
         "datatype": "fmap",
         "suffix": "epi",
         "custom_entities": f"dir-{direction}",
-        "criteria": {
-            "SeriesDescription": series_desc,
-        },
+        "criteria": criteria,
         "sidecar_changes": {
             "B0FieldIdentifier": _b0_id(group, subject, session),
         },
@@ -183,7 +192,7 @@ def build_config(
 
     # --- Functional tasks ---
     for task in session_def.tasks:
-        for run in range(1, task.runs + 1):
+        for run in task.run_numbers():
             descriptions.append(
                 _build_bold_description(task, run, subject, session)
             )
@@ -211,11 +220,15 @@ def build_config(
                     )
                 )
         elif session_def.fmap_strategy == "series_description":
-            for direction in ("AP", "PA"):
+            for direction, key in [("AP", "ap"), ("PA", "pa")]:
+                sn = None
+                if fmap_info and group in fmap_info:
+                    sn = fmap_info[group].get(key)
                 descriptions.append(
                     _build_fmap_description_seriesdesc(
                         direction, group,
                         intended_for, subject, session,
+                        series_number=sn,
                     )
                 )
 

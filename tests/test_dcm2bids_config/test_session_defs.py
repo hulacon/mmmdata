@@ -30,6 +30,38 @@ class TestTaskDef:
         t = TaskDef("NATmath", "free_recall_math", "encoding", has_sbref=True)
         assert t.sbref_description(1) == "free_recall_math_SBRef"
 
+    # -- run_numbers / is_multi_run --
+
+    def test_run_numbers_from_int(self):
+        t = TaskDef("TBencoding", "cued_recall_encoding_run{n}", "encoding", runs=3)
+        assert t.run_numbers() == (1, 2, 3)
+
+    def test_run_numbers_single_int(self):
+        t = TaskDef("TBmath", "cued_recall_math", "encoding", runs=1)
+        assert t.run_numbers() == (1,)
+
+    def test_run_numbers_from_tuple(self):
+        t = TaskDef("floc", "localizer_floc_run{n}", "first", runs=(4, 5, 6))
+        assert t.run_numbers() == (4, 5, 6)
+
+    def test_is_multi_run_single_int(self):
+        t = TaskDef("TBmath", "cued_recall_math", "encoding", runs=1)
+        assert not t.is_multi_run
+
+    def test_is_multi_run_int_gt_1(self):
+        t = TaskDef("TBencoding", "cued_recall_encoding_run{n}", "encoding", runs=3)
+        assert t.is_multi_run
+
+    def test_is_multi_run_explicit_tuple(self):
+        """Explicit run list always counts as multi-run (even if length 1)."""
+        t = TaskDef("floc", "localizer_floc_run{n}", "first", runs=(4,))
+        assert t.is_multi_run
+
+    def test_protocol_name_with_explicit_runs(self):
+        t = TaskDef("floc", "localizer_floc_run{n}", "first", runs=(4, 5, 6))
+        assert t.protocol_name(4) == "localizer_floc_run4"
+        assert t.protocol_name(6) == "localizer_floc_run6"
+
 
 class TestAnatDef:
     def test_anat_custom_entities(self):
@@ -69,6 +101,23 @@ class TestSessionDef:
             "task_TBencoding_run-2",
             "task_TBencoding_run-3",
             "task_TBmath",
+        ]
+
+    def test_task_ids_for_fmap_group_explicit_runs(self):
+        """Split task across fmap groups: floc runs 1-3 in 'first', 4-6 in 'encoding'."""
+        sd = SessionDef(
+            session_type="test",
+            tasks=(
+                TaskDef("floc", "localizer_floc_run{n}", "first", runs=(1, 2, 3)),
+                TaskDef("floc", "localizer_floc_run{n}", "encoding", runs=(4, 5, 6)),
+            ),
+            fmap_groups=("first", "encoding"),
+        )
+        assert sd.task_ids_for_fmap_group("first") == [
+            "task_floc_run-1", "task_floc_run-2", "task_floc_run-3",
+        ]
+        assert sd.task_ids_for_fmap_group("encoding") == [
+            "task_floc_run-4", "task_floc_run-5", "task_floc_run-6",
         ]
 
 

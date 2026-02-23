@@ -22,7 +22,7 @@ from .session_defs import SESSION_SCHEDULE, get_session_def
 
 def _resolve_dicom_dir(bids_root: Path, subject: str, session: str) -> Path:
     """Resolve the DICOM directory for a subject/session."""
-    return bids_root / "sourcedata" / "dicoms" / subject / session
+    return bids_root / "sourcedata" / subject / session / "dicom"
 
 
 def _resolve_overrides_path(config_dir: Path, subject: str) -> Path:

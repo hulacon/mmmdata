@@ -27,8 +27,11 @@ class TaskDef:
     fmap_group : str
         Which fieldmap group this task belongs to (e.g. ``"encoding"``,
         ``"retrieval"``). Used for B0FieldSource/B0FieldIdentifier.
-    runs : int
-        Number of runs. 1 means no ``run-`` entity in BIDS filename.
+    runs : int | tuple[int, ...]
+        Number of runs (int) or explicit run numbers (tuple).  ``1`` means
+        no ``run-`` entity in BIDS filename.  A tuple like ``(4, 5, 6)``
+        produces those specific run numbers (used when a task is split
+        across multiple fieldmap groups).
     has_sbref : bool
         Whether each run has an accompanying SBRef series.
     """
@@ -36,8 +39,21 @@ class TaskDef:
     task_label: str
     protocol_base: str
     fmap_group: str
-    runs: int = 1
+    runs: int | tuple[int, ...] = 1
     has_sbref: bool = False
+
+    def run_numbers(self) -> tuple[int, ...]:
+        """Return the explicit run numbers for this task."""
+        if isinstance(self.runs, (list, tuple)):
+            return tuple(self.runs)
+        return tuple(range(1, self.runs + 1))
+
+    @property
+    def is_multi_run(self) -> bool:
+        """Whether filenames should include a ``run-XX`` entity."""
+        if isinstance(self.runs, (list, tuple)):
+            return True
+        return self.runs > 1
 
     def protocol_name(self, run: int) -> str:
         """Return the DICOM ProtocolName for a specific run number."""
@@ -116,11 +132,11 @@ class SessionDef:
         for task in self.tasks:
             if task.fmap_group != group:
                 continue
-            if task.runs == 1:
-                ids.append(f"task_{task.task_label}")
-            else:
-                for r in range(1, task.runs + 1):
+            if task.is_multi_run:
+                for r in task.run_numbers():
                     ids.append(f"task_{task.task_label}_run-{r}")
+            else:
+                ids.append(f"task_{task.task_label}")
         return ids
 
 
