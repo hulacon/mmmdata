@@ -1,0 +1,92 @@
+{
+  "descriptions": [
+    {
+      "id": "T1w",
+      "datatype": "anat",
+      "suffix": "T1w",
+      "custom_entities": "acq-MPR",
+      "criteria": {
+        "SeriesDescription": "ABCD_T1w_MPR_vNav"
+      }
+    },
+    {
+      "id": "T2w",
+      "datatype": "anat",
+      "suffix": "T2w",
+      "custom_entities": "acq-SPC",
+      "criteria": {
+        "SeriesDescription": "ABCD_T2w_SPC_vNav"
+      }
+    },
+    {
+      "id": "T2w",
+      "datatype": "anat",
+      "suffix": "T2w",
+      "custom_entities": "acq-oblcor",
+      "criteria": {
+        "SeriesDescription": "T2_coronal_1.8"
+      }
+    },
+    {
+      "id": "dwi_dir-AP",
+      "datatype": "dwi",
+      "suffix": "dwi",
+      "custom_entities": "dir-AP",
+      "criteria": {
+        "SeriesDescription": "cmrr_diff_3shell_ap"
+      }
+    },
+    {
+      "id": "dwi_dir-PA",
+      "datatype": "dwi",
+      "suffix": "dwi",
+      "custom_entities": "dir-PA",
+      "criteria": {
+        "SeriesDescription": "cmrr_diff_3shell_pa"
+      }
+    },
+    {
+      "id": "dwi_dir-RL",
+      "datatype": "dwi",
+      "suffix": "dwi",
+      "custom_entities": "dir-RL",
+      "criteria": {
+        "SeriesDescription": "cmrr_diff_3shell_rl"
+      }
+    },
+    {
+      "id": "dwi_dir-LR",
+      "datatype": "dwi",
+      "suffix": "dwi",
+      "custom_entities": "dir-LR",
+      "criteria": {
+        "SeriesDescription": "cmrr_diff_3shell_lr"
+      }
+    },
+    {
+      "id": "task_INITresting",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-INITresting",
+      "criteria": {
+        "ProtocolName": "Resting_baseline",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "INITresting"
+      }
+    },
+    {
+      "id": "task_INITresting",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-INITresting",
+      "criteria": {
+        "SeriesDescription": "Resting_baseline_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "INITresting"
+      }
+    }
+  ]
+}

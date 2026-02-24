@@ -1,0 +1,295 @@
+{
+  "descriptions": [
+    {
+      "id": "task_TBencoding_run-1",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-TBencoding",
+      "criteria": {
+        "ProtocolName": "cued_recall_encoding_run1",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "TBencoding",
+        "B0FieldSource": "B0map_encoding_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBencoding_run-1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-TBencoding",
+      "criteria": {
+        "SeriesDescription": "cued_recall_encoding_run1_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "TBencoding",
+        "B0FieldSource": "B0map_encoding_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBencoding_run-2",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-TBencoding",
+      "criteria": {
+        "ProtocolName": "cued_recall_encoding_run2",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "TBencoding",
+        "B0FieldSource": "B0map_encoding_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBencoding_run-2",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-TBencoding",
+      "criteria": {
+        "SeriesDescription": "cued_recall_encoding_run2_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "TBencoding",
+        "B0FieldSource": "B0map_encoding_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBencoding_run-3",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-TBencoding",
+      "criteria": {
+        "ProtocolName": "cued_recall_encoding_run3",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "TBencoding",
+        "B0FieldSource": "B0map_encoding_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBencoding_run-3",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-TBencoding",
+      "criteria": {
+        "SeriesDescription": "cued_recall_encoding_run3_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "TBencoding",
+        "B0FieldSource": "B0map_encoding_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBmath",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-TBmath",
+      "criteria": {
+        "ProtocolName": "cued_recall_math",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "TBmath",
+        "B0FieldSource": "B0map_encoding_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBmath",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-TBmath",
+      "criteria": {
+        "SeriesDescription": "cued_recall_math_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "TBmath",
+        "B0FieldSource": "B0map_encoding_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBresting",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-TBresting",
+      "criteria": {
+        "ProtocolName": "cued_recall_resting",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "TBresting",
+        "B0FieldSource": "B0map_retrieval_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBresting",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-TBresting",
+      "criteria": {
+        "SeriesDescription": "cued_recall_resting_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "TBresting",
+        "B0FieldSource": "B0map_retrieval_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBretrieval_run-1",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-TBretrieval",
+      "criteria": {
+        "ProtocolName": "cued_recall_retrieval_run1",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "TBretrieval",
+        "B0FieldSource": "B0map_retrieval_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBretrieval_run-1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-TBretrieval",
+      "criteria": {
+        "SeriesDescription": "cued_recall_retrieval_run1_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "TBretrieval",
+        "B0FieldSource": "B0map_retrieval_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBretrieval_run-2",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-TBretrieval",
+      "criteria": {
+        "ProtocolName": "cued_recall_retrieval_run2",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "TBretrieval",
+        "B0FieldSource": "B0map_retrieval_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBretrieval_run-2",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-TBretrieval",
+      "criteria": {
+        "SeriesDescription": "cued_recall_retrieval_run2_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "TBretrieval",
+        "B0FieldSource": "B0map_retrieval_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBretrieval_run-3",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-TBretrieval",
+      "criteria": {
+        "ProtocolName": "cued_recall_retrieval_run3",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "TBretrieval",
+        "B0FieldSource": "B0map_retrieval_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBretrieval_run-3",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-TBretrieval",
+      "criteria": {
+        "SeriesDescription": "cued_recall_retrieval_run3_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "TBretrieval",
+        "B0FieldSource": "B0map_retrieval_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBretrieval_run-4",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-TBretrieval",
+      "criteria": {
+        "ProtocolName": "cued_recall_retrieval_run4",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "TBretrieval",
+        "B0FieldSource": "B0map_retrieval_sub04_ses10"
+      }
+    },
+    {
+      "id": "task_TBretrieval_run-4",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-TBretrieval",
+      "criteria": {
+        "SeriesDescription": "cued_recall_retrieval_run4_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "TBretrieval",
+        "B0FieldSource": "B0map_retrieval_sub04_ses10"
+      }
+    },
+    {
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-AP",
+      "criteria": {
+        "SeriesDescription": "se_epi_ap",
+        "SeriesNumber": "5"
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_encoding_sub04_ses10"
+      }
+    },
+    {
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-PA",
+      "criteria": {
+        "SeriesDescription": "se_epi_pa",
+        "SeriesNumber": "7"
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_encoding_sub04_ses10"
+      }
+    },
+    {
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-AP",
+      "criteria": {
+        "SeriesDescription": "se_epi_ap",
+        "SeriesNumber": "25"
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_retrieval_sub04_ses10"
+      }
+    },
+    {
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-PA",
+      "criteria": {
+        "SeriesDescription": "se_epi_pa",
+        "SeriesNumber": "27"
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_retrieval_sub04_ses10"
+      }
+    }
+  ]
+}

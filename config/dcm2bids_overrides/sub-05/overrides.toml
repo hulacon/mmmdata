@@ -1,0 +1,331 @@
+# Sub-05 session overrides
+
+# =============================================================================
+# ses-02: Localizer — PRF (3 runs) + fLOC (3 runs) + tone
+# =============================================================================
+[ses-02]
+note = "Localizer: PRF (3 runs) + fLOC (3 runs) + tone"
+
+[[ses-02.tasks]]
+task_label = "prf"
+protocol_base = "localizer_prf_run{n}"
+fmap_group = "first"
+runs = 3
+has_sbref = true
+
+[[ses-02.tasks]]
+task_label = "floc"
+protocol_base = "localizer_floc_run{n}"
+fmap_group = "second"
+runs = 3
+has_sbref = true
+
+[[ses-02.tasks]]
+task_label = "tone"
+protocol_base = "localizer_tone"
+fmap_group = "second"
+has_sbref = true
+
+[ses-02.fmap_series.first]
+ap = 5
+pa = 7
+
+[ses-02.fmap_series.second]
+ap = 21
+pa = 23
+
+
+# =============================================================================
+# ses-03: Localizer — PRF (3 runs) + fLOC (3 runs) + tone + auditory + tone_run2
+# =============================================================================
+[ses-03]
+note = "Localizer: PRF, fLOC, tone + auditory + tone run 2; 3 fmap groups"
+fmap_groups = ["first", "second", "third"]
+
+[[ses-03.tasks]]
+task_label = "prf"
+protocol_base = "localizer_prf_run{n}"
+fmap_group = "first"
+runs = 3
+has_sbref = true
+
+[[ses-03.tasks]]
+task_label = "floc"
+protocol_base = "localizer_floc_run{n}"
+fmap_group = "second"
+runs = 3
+has_sbref = true
+
+[[ses-03.tasks]]
+task_label = "tone"
+protocol_base = "localizer_tone"
+fmap_group = "third"
+has_sbref = true
+
+[[ses-03.tasks]]
+task_label = "auditory"
+protocol_base = "localizer_auditory"
+fmap_group = "third"
+has_sbref = true
+
+[[ses-03.tasks]]
+task_label = "tone"
+protocol_base = "localizer_tone_run{n}"
+fmap_group = "third"
+runs = [2]
+has_sbref = true
+
+[ses-03.fmap_series.first]
+ap = 5
+pa = 6
+
+[ses-03.fmap_series.second]
+ap = 22
+pa = 24
+
+[ses-03.fmap_series.third]
+ap = 42
+pa = 44
+
+
+# =============================================================================
+# ses-05: TB middle — 3 fmap groups (encoding, resting, retrieval)
+# resting + retrieval runs 1-2 share "resting" fmap group
+# =============================================================================
+[ses-05]
+note = "3 fmap groups: encoding (enc+math), resting (rest+ret 1-2), retrieval (ret 3-4)"
+fmap_groups = ["encoding", "resting", "retrieval"]
+
+[[ses-05.tasks]]
+task_label = "TBencoding"
+protocol_base = "cued_recall_encoding_run{n}"
+fmap_group = "encoding"
+runs = 3
+has_sbref = true
+
+[[ses-05.tasks]]
+task_label = "TBmath"
+protocol_base = "cued_recall_math"
+fmap_group = "encoding"
+has_sbref = true
+
+[[ses-05.tasks]]
+task_label = "TBresting"
+protocol_base = "cued_recall_resting"
+fmap_group = "resting"
+has_sbref = true
+
+[[ses-05.tasks]]
+task_label = "TBretrieval"
+protocol_base = "cued_recall_retrieval_run{n}"
+fmap_group = "resting"
+runs = [1, 2]
+has_sbref = true
+
+[[ses-05.tasks]]
+task_label = "TBretrieval"
+protocol_base = "cued_recall_retrieval_run{n}"
+fmap_group = "retrieval"
+runs = [3, 4]
+has_sbref = true
+
+[ses-05.fmap_series.encoding]
+ap = 5
+pa = 7
+
+[ses-05.fmap_series.resting]
+ap = 25
+pa = 27
+
+[ses-05.fmap_series.retrieval]
+ap = 49
+pa = 51
+
+
+# =============================================================================
+# ses-19: Naturalistic — 3 fmap groups with encoding/math sharing desc suffix
+# NATencoding split: run-1 → encoding, run-2 → math
+# =============================================================================
+[ses-19]
+note = "3 fmap groups; encoding and math fmaps share SeriesDescription suffix"
+fmap_strategy = "series_description"
+fmap_groups = ["encoding", "math", "retrieval"]
+
+[[ses-19.tasks]]
+task_label = "NATencoding"
+protocol_base = "free_recall_encoding_run{n}"
+fmap_group = "encoding"
+runs = [1]
+has_sbref = true
+
+[[ses-19.tasks]]
+task_label = "NATencoding"
+protocol_base = "free_recall_encoding_run{n}"
+fmap_group = "math"
+runs = [2]
+has_sbref = true
+
+[[ses-19.tasks]]
+task_label = "NATmath"
+protocol_base = "free_recall_math"
+fmap_group = "math"
+has_sbref = true
+
+[[ses-19.tasks]]
+task_label = "NATresting"
+protocol_base = "free_recall_resting"
+fmap_group = "retrieval"
+has_sbref = true
+
+[[ses-19.tasks]]
+task_label = "NATretrieval"
+protocol_base = "free_recall_retrieval_run{n}"
+fmap_group = "retrieval"
+has_sbref = true
+
+# encoding and math fmaps both use "se_epi_*_encoding" SeriesDescription
+[ses-19.fmap_desc_map]
+encoding = "encoding"
+math = "encoding"
+retrieval = "retrieval"
+
+[ses-19.fmap_series.encoding]
+ap = 21
+pa = 23
+
+[ses-19.fmap_series.math]
+ap = 33
+pa = 35
+
+[ses-19.fmap_series.retrieval]
+ap = 45
+pa = 47
+
+
+# =============================================================================
+# ses-24: Naturalistic — 3 fmap groups; encoding/retrieval share desc suffix
+# =============================================================================
+[ses-24]
+note = "3 fmap groups; encoding and retrieval fmaps share 'encoding' desc suffix"
+fmap_strategy = "series_description"
+fmap_groups = ["encoding", "resting", "retrieval"]
+
+[[ses-24.tasks]]
+task_label = "NATencoding"
+protocol_base = "free_recall_encoding_run{n}"
+fmap_group = "encoding"
+runs = 2
+has_sbref = true
+
+[[ses-24.tasks]]
+task_label = "NATmath"
+protocol_base = "free_recall_math"
+fmap_group = "encoding"
+has_sbref = true
+
+[[ses-24.tasks]]
+task_label = "NATresting"
+protocol_base = "free_recall_resting"
+fmap_group = "resting"
+has_sbref = true
+
+[[ses-24.tasks]]
+task_label = "NATretrieval"
+protocol_base = "free_recall_retrieval_run{n}"
+fmap_group = "retrieval"
+has_sbref = true
+
+# resting fmaps use "se_epi_*_retrieval", encoding/retrieval use "se_epi_*_encoding"
+[ses-24.fmap_desc_map]
+encoding = "encoding"
+resting = "retrieval"
+retrieval = "encoding"
+
+[ses-24.fmap_series.encoding]
+ap = 5
+pa = 7
+
+[ses-24.fmap_series.resting]
+ap = 21
+pa = 23
+
+[ses-24.fmap_series.retrieval]
+ap = 37
+pa = 39
+
+
+# =============================================================================
+# ses-30: Final — 2 fmap groups; both share "encoding" desc suffix
+# FINretrieval runs 1-2 → first group, runs 3-4 → second group
+# =============================================================================
+[ses-30]
+note = "Final session: 2 fmap groups, both with 'encoding' SeriesDescription"
+fmap_groups = ["first", "second"]
+
+[[ses-30.tasks]]
+task_label = "FINresting"
+protocol_base = "Resting"
+fmap_group = "first"
+has_sbref = true
+
+[[ses-30.tasks]]
+task_label = "fixation"
+protocol_base = "fixation_calibration"
+fmap_group = "first"
+has_sbref = true
+
+[[ses-30.tasks]]
+task_label = "motor"
+protocol_base = "localizer_motor_run{n}"
+fmap_group = "first"
+runs = 2
+has_sbref = true
+
+[[ses-30.tasks]]
+task_label = "auditory"
+protocol_base = "localizer_auditory_run1"
+fmap_group = "first"
+has_sbref = true
+
+[[ses-30.tasks]]
+task_label = "FINretrieval"
+protocol_base = "final_cued_recall_run{n}"
+fmap_group = "first"
+runs = [1, 2]
+has_sbref = true
+
+[[ses-30.tasks]]
+task_label = "FINretrieval"
+protocol_base = "final_cued_recall_run{n}"
+fmap_group = "second"
+runs = [3, 4]
+has_sbref = true
+
+# Both fmap groups use "se_epi_*_encoding" SeriesDescription
+[ses-30.fmap_desc_map]
+first = "encoding"
+second = "encoding"
+
+[ses-30.fmap_series.first]
+ap = 9
+pa = 11
+
+[ses-30.fmap_series.second]
+ap = 48
+pa = 50
+
+
+# =============================================================================
+# ses-26: Naturalistic — has anatomical scans (T1w + DWI AP/PA)
+# =============================================================================
+[ses-26]
+note = "Anatomical session (T1w + DWI AP/PA)"
+add_anat = ["T1w_MPR", "dwi_AP", "dwi_PA"]
+
+
+# =============================================================================
+# ses-28: Naturalistic — has anatomical scans (T1w + DWI AP/PA)
+# =============================================================================
+[ses-28]
+note = "Anatomical session (T1w + DWI AP/PA)"
+add_anat = ["T1w_MPR", "dwi_AP", "dwi_PA"]

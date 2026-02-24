@@ -39,11 +39,45 @@ from __future__ import annotations
 
 import tomllib
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from .session_defs import SessionDef, TaskDef, get_session_def
+from .session_defs import (
+    ANAT_T1W,
+    ANAT_T2W_COR,
+    ANAT_T2W_SPC,
+    DWI_AP,
+    DWI_LR,
+    DWI_PA,
+    DWI_RL,
+    AnatDef,
+    SessionDef,
+    TaskDef,
+    get_session_def,
+)
+
+# Map short names (used in overrides.toml) to predefined AnatDef constants
+ANAT_REGISTRY: dict[str, AnatDef] = {
+    "T1w_MPR": ANAT_T1W,
+    "T2w_SPC": ANAT_T2W_SPC,
+    "T2w_oblcor": ANAT_T2W_COR,
+    "dwi_AP": DWI_AP,
+    "dwi_PA": DWI_PA,
+    "dwi_RL": DWI_RL,
+    "dwi_LR": DWI_LR,
+}
+
+
+@dataclass
+class OverrideResult:
+    """Result of applying overrides to a session definition."""
+
+    session_def: SessionDef
+    fmap_info: dict[str, dict[str, int]] | None = None
+    run_protocols: dict[str, dict[int, str]] | None = None
+    run_series: dict[str, dict[int, dict[str, int]]] | None = None
+    fmap_desc_map: dict[str, str] | None = None
 
 
 def load_overrides(overrides_path: Path) -> dict[str, Any]:
@@ -70,7 +104,7 @@ def apply_overrides(
     session_id: str,
     session_def: SessionDef,
     overrides: dict[str, Any],
-) -> tuple[SessionDef, dict[str, dict[str, int]] | None]:
+) -> OverrideResult:
     """Apply overrides to a session definition.
 
     Parameters
@@ -84,13 +118,11 @@ def apply_overrides(
 
     Returns
     -------
-    tuple[SessionDef, dict | None]
-        Modified session definition and optional fmap_info override.
-        If fmap_series is specified in overrides, returns the explicit
-        series numbers; otherwise returns None (auto-detect).
+    OverrideResult
+        Modified session definition and optional override metadata.
     """
     if session_id not in overrides:
-        return session_def, None
+        return OverrideResult(session_def=session_def)
 
     ovr = overrides[session_id]
 
@@ -135,6 +167,11 @@ def apply_overrides(
             for group, spec in ovr["fmap_series"].items()
         }
 
+    # --- Add anatomical entries ---
+    if "add_anat" in ovr:
+        extra_anat = tuple(ANAT_REGISTRY[name] for name in ovr["add_anat"])
+        session_def = replace(session_def, anat=session_def.anat + extra_anat)
+
     # --- Exclude tasks ---
     if "exclude_tasks" in ovr:
         excluded = set(ovr["exclude_tasks"])
@@ -143,4 +180,29 @@ def apply_overrides(
             tasks=tuple(t for t in session_def.tasks if t.task_label not in excluded),
         )
 
-    return session_def, fmap_info
+    # --- Run protocol overrides (TOML keys are strings, convert to int) ---
+    run_protocols = None
+    if "run_protocols" in ovr:
+        run_protocols = {
+            task_label: {int(k): v for k, v in runs.items()}
+            for task_label, runs in ovr["run_protocols"].items()
+        }
+
+    # --- Run series number overrides (TOML keys are strings, convert to int) ---
+    run_series = None
+    if "run_series" in ovr:
+        run_series = {
+            task_label: {int(k): spec for k, spec in runs.items()}
+            for task_label, runs in ovr["run_series"].items()
+        }
+
+    # --- Fieldmap description suffix map ---
+    fmap_desc_map = ovr.get("fmap_desc_map")
+
+    return OverrideResult(
+        session_def=session_def,
+        fmap_info=fmap_info,
+        run_protocols=run_protocols,
+        run_series=run_series,
+        fmap_desc_map=fmap_desc_map,
+    )

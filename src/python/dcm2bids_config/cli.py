@@ -69,7 +69,9 @@ def generate_one(
     # 2. Load overrides
     overrides_path = _resolve_overrides_path(config_dir, subject)
     overrides = load_overrides(overrides_path)
-    session_def, override_fmap = apply_overrides(session, session_def, overrides)
+    ovr_result = apply_overrides(session, session_def, overrides)
+    session_def = ovr_result.session_def
+    override_fmap = ovr_result.fmap_info
 
     # 3. Check for empty task list (localizer/final without overrides)
     if not session_def.tasks and not session_def.anat:
@@ -115,7 +117,12 @@ def generate_one(
 
     # 5. Build config
     try:
-        config = build_config(subject, session, session_def, fmap_info)
+        config = build_config(
+            subject, session, session_def, fmap_info,
+            run_protocols=ovr_result.run_protocols,
+            run_series=ovr_result.run_series,
+            fmap_desc_map=ovr_result.fmap_desc_map,
+        )
     except ValueError as e:
         result["status"] = "error"
         result["warnings"].append(str(e))

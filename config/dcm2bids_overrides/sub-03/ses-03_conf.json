@@ -1,0 +1,346 @@
+{
+  "descriptions": [
+    {
+      "id": "task_floc_run-1",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-floc",
+      "criteria": {
+        "ProtocolName": "localizer_floc_run1",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "floc",
+        "B0FieldSource": "B0map_first_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_floc_run-1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-floc",
+      "criteria": {
+        "SeriesDescription": "localizer_floc_run1_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "floc",
+        "B0FieldSource": "B0map_first_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_floc_run-2",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-floc",
+      "criteria": {
+        "ProtocolName": "localizer_floc_run2",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "floc",
+        "B0FieldSource": "B0map_first_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_floc_run-2",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-floc",
+      "criteria": {
+        "SeriesDescription": "localizer_floc_run2_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "floc",
+        "B0FieldSource": "B0map_first_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_floc_run-3",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-floc",
+      "criteria": {
+        "ProtocolName": "localizer_floc_run3",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "floc",
+        "B0FieldSource": "B0map_first_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_floc_run-3",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-floc",
+      "criteria": {
+        "SeriesDescription": "localizer_floc_run3_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "floc",
+        "B0FieldSource": "B0map_first_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_prf_run-1",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-prf",
+      "criteria": {
+        "ProtocolName": "localizer_prf_run1",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "prf",
+        "B0FieldSource": "B0map_second_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_prf_run-1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-prf",
+      "criteria": {
+        "SeriesDescription": "localizer_prf_run1_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "prf",
+        "B0FieldSource": "B0map_second_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_prf_run-2",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-prf",
+      "criteria": {
+        "ProtocolName": "localizer_prf_run2",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "prf",
+        "B0FieldSource": "B0map_second_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_prf_run-2",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-prf",
+      "criteria": {
+        "SeriesDescription": "localizer_prf_run2_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "prf",
+        "B0FieldSource": "B0map_second_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_prf_run-3",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-prf",
+      "criteria": {
+        "ProtocolName": "localizer_prf_run3",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "prf",
+        "B0FieldSource": "B0map_second_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_prf_run-3",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-prf",
+      "criteria": {
+        "SeriesDescription": "localizer_prf_run3_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "prf",
+        "B0FieldSource": "B0map_second_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_floc_run-4",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-floc",
+      "criteria": {
+        "ProtocolName": "localizer_floc_run4",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "floc",
+        "B0FieldSource": "B0map_third_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_floc_run-4",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-floc",
+      "criteria": {
+        "SeriesDescription": "localizer_floc_run4_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "floc",
+        "B0FieldSource": "B0map_third_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_floc_run-5",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-floc",
+      "criteria": {
+        "ProtocolName": "localizer_floc_run5",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "floc",
+        "B0FieldSource": "B0map_third_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_floc_run-5",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-floc",
+      "criteria": {
+        "SeriesDescription": "localizer_floc_run5_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "floc",
+        "B0FieldSource": "B0map_third_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_floc_run-6",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-floc",
+      "criteria": {
+        "ProtocolName": "localizer_floc_run6",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "floc",
+        "B0FieldSource": "B0map_third_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_floc_run-6",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-floc",
+      "criteria": {
+        "SeriesDescription": "localizer_floc_run6_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "floc",
+        "B0FieldSource": "B0map_third_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_tone",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-tone",
+      "criteria": {
+        "ProtocolName": "localizer_tone",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "tone",
+        "B0FieldSource": "B0map_third_sub03_ses03"
+      }
+    },
+    {
+      "id": "task_tone",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-tone",
+      "criteria": {
+        "SeriesDescription": "localizer_tone_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "tone",
+        "B0FieldSource": "B0map_third_sub03_ses03"
+      }
+    },
+    {
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-AP",
+      "criteria": {
+        "SeriesDescription": "se_epi_ap",
+        "SeriesNumber": "5"
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_first_sub03_ses03"
+      }
+    },
+    {
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-PA",
+      "criteria": {
+        "SeriesDescription": "se_epi_pa",
+        "SeriesNumber": "6"
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_first_sub03_ses03"
+      }
+    },
+    {
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-AP",
+      "criteria": {
+        "SeriesDescription": "se_epi_ap",
+        "SeriesNumber": "23"
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_second_sub03_ses03"
+      }
+    },
+    {
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-PA",
+      "criteria": {
+        "SeriesDescription": "se_epi_pa",
+        "SeriesNumber": "25"
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_second_sub03_ses03"
+      }
+    },
+    {
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-AP",
+      "criteria": {
+        "SeriesDescription": "se_epi_ap",
+        "SeriesNumber": "39"
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_third_sub03_ses03"
+      }
+    },
+    {
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-PA",
+      "criteria": {
+        "SeriesDescription": "se_epi_pa",
+        "SeriesNumber": "41"
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_third_sub03_ses03"
+      }
+    }
+  ]
+}

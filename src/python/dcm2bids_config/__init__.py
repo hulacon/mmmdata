@@ -11,6 +11,7 @@ Legacy configs at ``dcm2bids_configfiles/`` can be used for validation::
 """
 
 from .config_builder import build_config
+from .overrides import OverrideResult
 from .session_defs import SESSION_SCHEDULE, SessionDef, TaskDef
 
-__all__ = ["build_config", "SESSION_SCHEDULE", "SessionDef", "TaskDef"]
+__all__ = ["build_config", "OverrideResult", "SESSION_SCHEDULE", "SessionDef", "TaskDef"]

@@ -172,7 +172,7 @@ NAT_RESTING = TaskDef("NATresting", "free_recall_resting", "retrieval", has_sbre
 NAT_RETRIEVAL = TaskDef("NATretrieval", "free_recall_retrieval_run{n}", "retrieval", runs=1, has_sbref=True)
 
 # Baseline resting (ses-01)
-INIT_RESTING = TaskDef("INITresting", "Resting_baseline", "none", has_sbref=False)
+INIT_RESTING = TaskDef("INITresting", "Resting_baseline", "none", has_sbref=True)
 
 
 # ---------------------------------------------------------------------------
@@ -241,10 +241,12 @@ NATURALISTIC_FM = SessionDef(
     fmap_groups=("encoding", "retrieval"),
 )
 
-# TODO: Final session (ses-30) has variable content (final memory tests +
-# makeup localizers). Needs per-subject override.  Placeholder:
+# Final session (ses-30) has variable task content per subject (final memory
+# tests + makeup localizers).  T1w is always acquired.  Tasks and fmap groups
+# are filled via per-subject overrides.
 FINAL = SessionDef(
     session_type="final",
+    anat=(ANAT_T1W,),
     tasks=(),  # filled via overrides per subject
     fmap_strategy="series_description",
     fmap_groups=("encoding",),

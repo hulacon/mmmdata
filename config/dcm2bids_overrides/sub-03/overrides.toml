@@ -1,0 +1,253 @@
+# Sub-03 session overrides
+# Each section documents and handles sessions deviating from the canonical schedule.
+
+# =============================================================================
+# ses-02: Localizer — PRF (3 runs) + auditory + tone
+# =============================================================================
+[ses-02]
+note = "Localizer: PRF (3 runs) + auditory + tone"
+
+[[ses-02.tasks]]
+task_label = "prf"
+protocol_base = "localizer_prf_run{n}"
+fmap_group = "first"
+runs = 3
+has_sbref = true
+
+[[ses-02.tasks]]
+task_label = "auditory"
+protocol_base = "localizer_auditory"
+fmap_group = "second"
+has_sbref = true
+
+[[ses-02.tasks]]
+task_label = "tone"
+protocol_base = "localizer_tone"
+fmap_group = "second"
+has_sbref = true
+
+[ses-02.fmap_series.first]
+ap = 5
+pa = 6
+
+[ses-02.fmap_series.second]
+ap = 19
+pa = 21
+
+
+# =============================================================================
+# ses-03: Localizer — fLOC (6 runs, split) + PRF (3 runs) + tone
+# =============================================================================
+[ses-03]
+note = "Localizer: fLOC runs 1-3, PRF, fLOC runs 4-6 + tone; 3 fmap groups"
+fmap_groups = ["first", "second", "third"]
+
+[[ses-03.tasks]]
+task_label = "floc"
+protocol_base = "localizer_floc_run{n}"
+fmap_group = "first"
+runs = [1, 2, 3]
+has_sbref = true
+
+[[ses-03.tasks]]
+task_label = "prf"
+protocol_base = "localizer_prf_run{n}"
+fmap_group = "second"
+runs = 3
+has_sbref = true
+
+[[ses-03.tasks]]
+task_label = "floc"
+protocol_base = "localizer_floc_run{n}"
+fmap_group = "third"
+runs = [4, 5, 6]
+has_sbref = true
+
+[[ses-03.tasks]]
+task_label = "tone"
+protocol_base = "localizer_tone"
+fmap_group = "third"
+has_sbref = true
+
+[ses-03.fmap_series.first]
+ap = 5
+pa = 6
+
+[ses-03.fmap_series.second]
+ap = 23
+pa = 25
+
+[ses-03.fmap_series.third]
+ap = 39
+pa = 41
+
+
+# =============================================================================
+# ses-05: TB middle — 3 fmap groups (encoding, math, retrieval)
+# TBmath has its own fieldmap pair separate from encoding
+# =============================================================================
+[ses-05]
+note = "3 fmap groups: encoding (TBencoding), math (TBmath), retrieval (TBresting+TBretrieval)"
+fmap_groups = ["encoding", "math", "retrieval"]
+
+[[ses-05.tasks]]
+task_label = "TBencoding"
+protocol_base = "cued_recall_encoding_run{n}"
+fmap_group = "encoding"
+runs = 3
+has_sbref = true
+
+[[ses-05.tasks]]
+task_label = "TBmath"
+protocol_base = "cued_recall_math"
+fmap_group = "math"
+has_sbref = true
+
+[[ses-05.tasks]]
+task_label = "TBresting"
+protocol_base = "cued_recall_resting"
+fmap_group = "retrieval"
+has_sbref = true
+
+[[ses-05.tasks]]
+task_label = "TBretrieval"
+protocol_base = "cued_recall_retrieval_run{n}"
+fmap_group = "retrieval"
+runs = 4
+has_sbref = true
+
+[ses-05.fmap_series.encoding]
+ap = 5
+pa = 6
+
+[ses-05.fmap_series.math]
+ap = 25
+pa = 26
+
+[ses-05.fmap_series.retrieval]
+ap = 31
+pa = 33
+
+
+# =============================================================================
+# ses-10: TB middle — re-entry after encoding run 1; 3 fmap groups
+# =============================================================================
+[ses-10]
+note = "Re-entry after encoding run 1; 3 fmap groups instead of 2"
+fmap_groups = ["encoding", "math", "retrieval"]
+
+[[ses-10.tasks]]
+task_label = "TBencoding"
+protocol_base = "cued_recall_encoding_run{n}"
+fmap_group = "encoding"
+runs = [1]
+has_sbref = true
+
+[[ses-10.tasks]]
+task_label = "TBencoding"
+protocol_base = "cued_recall_encoding_run{n}"
+fmap_group = "math"
+runs = [2, 3]
+has_sbref = true
+
+[[ses-10.tasks]]
+task_label = "TBmath"
+protocol_base = "cued_recall_math"
+fmap_group = "math"
+has_sbref = true
+
+[[ses-10.tasks]]
+task_label = "TBresting"
+protocol_base = "cued_recall_resting"
+fmap_group = "retrieval"
+has_sbref = true
+
+[[ses-10.tasks]]
+task_label = "TBretrieval"
+protocol_base = "cued_recall_retrieval_run{n}"
+fmap_group = "retrieval"
+runs = 4
+has_sbref = true
+
+[ses-10.fmap_series.encoding]
+ap = 5
+pa = 7
+
+[ses-10.fmap_series.math]
+ap = 21
+pa = 23
+
+[ses-10.fmap_series.retrieval]
+ap = 37
+pa = 39
+
+
+# =============================================================================
+# ses-30: Final — resting, fixation, motor, auditory, FINretrieval
+# FINretrieval runs 1-2 share protocol "final_cued_recall_run2" and need
+# SeriesNumber disambiguation.
+# =============================================================================
+[ses-30]
+note = "Final session: localizers + FINretrieval with duplicate protocol names"
+
+[[ses-30.tasks]]
+task_label = "FINresting"
+protocol_base = "Resting"
+fmap_group = "encoding"
+has_sbref = true
+
+[[ses-30.tasks]]
+task_label = "fixation"
+protocol_base = "fixation_calibration"
+fmap_group = "encoding"
+has_sbref = true
+
+[[ses-30.tasks]]
+task_label = "motor"
+protocol_base = "localizer_motor_run{n}"
+fmap_group = "encoding"
+runs = 2
+has_sbref = true
+
+[[ses-30.tasks]]
+task_label = "auditory"
+protocol_base = "localizer_auditory_run1"
+fmap_group = "encoding"
+has_sbref = true
+
+[[ses-30.tasks]]
+task_label = "FINretrieval"
+protocol_base = "final_cued_recall_run{n}"
+fmap_group = "encoding"
+runs = 4
+has_sbref = true
+
+# Run 1 used protocol "final_cued_recall_run2" (duplicate of run 2)
+[ses-30.run_protocols.FINretrieval]
+1 = "final_cued_recall_run2"
+
+# Runs 1-2 need SeriesNumber to disambiguate (same ProtocolName)
+[ses-30.run_series.FINretrieval.1]
+bold = 42
+sbref = 41
+
+[ses-30.run_series.FINretrieval.2]
+bold = 46
+sbref = 45
+
+
+# =============================================================================
+# ses-28: Naturalistic — has anatomical scans + series_number fmaps
+# =============================================================================
+[ses-28]
+note = "Anatomical session (T1w + DWI AP/PA); fmaps use series_number strategy"
+fmap_strategy = "series_number"
+add_anat = ["T1w_MPR", "dwi_AP", "dwi_PA"]
+
+[ses-28.fmap_series.encoding]
+ap = 5
+pa = 6
+
+[ses-28.fmap_series.retrieval]
+ap = 16
+pa = 17

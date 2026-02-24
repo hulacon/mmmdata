@@ -348,3 +348,93 @@ class TestB0Naming:
                     assert val.startswith("B0map_"), f"Bad {key}: {val}"
                     assert "sub03" in val, f"Missing subject in {key}: {val}"
                     assert "ses06" in val, f"Missing session in {key}: {val}"
+
+
+class TestRunSeriesNumber:
+    """Verify run_series adds SeriesNumber to BOLD/SBRef criteria."""
+
+    @pytest.fixture()
+    def session_def(self):
+        return SessionDef(
+            session_type="test",
+            tasks=(
+                TaskDef("FINretrieval", "final_cued_recall_run{n}", "encoding",
+                        runs=(1, 2), has_sbref=True),
+            ),
+            fmap_strategy="none",
+        )
+
+    def test_run_series_adds_series_number_to_bold(self, session_def):
+        rs = {"FINretrieval": {2: {"bold": 45, "sbref": 44}}}
+        config = build_config("sub-03", "ses-30", session_def, run_series=rs)
+        bolds = [d for d in config["descriptions"] if d["suffix"] == "bold"]
+        run2_bold = next(d for d in bolds if "run-2" in d["id"])
+        assert run2_bold["criteria"]["SeriesNumber"] == "45"
+
+    def test_run_series_adds_series_number_to_sbref(self, session_def):
+        rs = {"FINretrieval": {2: {"bold": 45, "sbref": 44}}}
+        config = build_config("sub-03", "ses-30", session_def, run_series=rs)
+        sbrefs = [d for d in config["descriptions"] if d["suffix"] == "sbref"]
+        run2_sbref = next(d for d in sbrefs if "run-2" in d["id"])
+        assert run2_sbref["criteria"]["SeriesNumber"] == "44"
+
+    def test_run_series_only_affects_specified_run(self, session_def):
+        rs = {"FINretrieval": {2: {"bold": 45, "sbref": 44}}}
+        config = build_config("sub-03", "ses-30", session_def, run_series=rs)
+        bolds = [d for d in config["descriptions"] if d["suffix"] == "bold"]
+        run1_bold = next(d for d in bolds if "run-1" in d["id"])
+        assert "SeriesNumber" not in run1_bold["criteria"]
+
+    def test_without_run_series_no_series_number(self, session_def):
+        config = build_config("sub-03", "ses-30", session_def)
+        for d in config["descriptions"]:
+            if d["suffix"] in ("bold", "sbref"):
+                assert "SeriesNumber" not in d["criteria"]
+
+
+class TestRunProtocols:
+    """Verify run_protocols overrides ProtocolName on specified runs."""
+
+    @pytest.fixture()
+    def session_def(self):
+        return SessionDef(
+            session_type="test",
+            tasks=(
+                TaskDef("FINretrieval", "free_recall_retrieval_run{n}", "encoding",
+                        runs=(1, 2), has_sbref=True),
+            ),
+            fmap_strategy="none",
+        )
+
+    def test_run_protocols_overrides_protocol_name(self, session_def):
+        rp = {"FINretrieval": {1: "free_recall_retrieval_run1_attempt2"}}
+        config = build_config("sub-04", "ses-20", session_def, run_protocols=rp)
+        bolds = [d for d in config["descriptions"] if d["suffix"] == "bold"]
+        run1_bold = next(d for d in bolds if "run-1" in d["id"])
+        assert run1_bold["criteria"]["ProtocolName"] == "free_recall_retrieval_run1_attempt2"
+
+    def test_run_protocols_does_not_affect_other_runs(self, session_def):
+        rp = {"FINretrieval": {1: "free_recall_retrieval_run1_attempt2"}}
+        config = build_config("sub-04", "ses-20", session_def, run_protocols=rp)
+        bolds = [d for d in config["descriptions"] if d["suffix"] == "bold"]
+        run2_bold = next(d for d in bolds if "run-2" in d["id"])
+        assert run2_bold["criteria"]["ProtocolName"] == "free_recall_retrieval_run2"
+
+    def test_run_protocols_overrides_sbref_description(self, session_def):
+        rp = {"FINretrieval": {1: "free_recall_retrieval_run1_attempt2"}}
+        config = build_config("sub-04", "ses-20", session_def, run_protocols=rp)
+        sbrefs = [d for d in config["descriptions"] if d["suffix"] == "sbref"]
+        run1_sbref = next(d for d in sbrefs if "run-1" in d["id"])
+        assert run1_sbref["criteria"]["SeriesDescription"] == "free_recall_retrieval_run1_attempt2_SBRef"
+
+    def test_combined_run_protocols_and_run_series(self, session_def):
+        rp = {"FINretrieval": {1: "free_recall_retrieval_run1_attempt2"}}
+        rs = {"FINretrieval": {1: {"bold": 30, "sbref": 29}}}
+        config = build_config(
+            "sub-04", "ses-20", session_def,
+            run_protocols=rp, run_series=rs,
+        )
+        bolds = [d for d in config["descriptions"] if d["suffix"] == "bold"]
+        run1_bold = next(d for d in bolds if "run-1" in d["id"])
+        assert run1_bold["criteria"]["ProtocolName"] == "free_recall_retrieval_run1_attempt2"
+        assert run1_bold["criteria"]["SeriesNumber"] == "30"

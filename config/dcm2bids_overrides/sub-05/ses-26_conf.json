@@ -1,0 +1,214 @@
+{
+  "descriptions": [
+    {
+      "id": "T1w",
+      "datatype": "anat",
+      "suffix": "T1w",
+      "custom_entities": "acq-MPR",
+      "criteria": {
+        "SeriesDescription": "ABCD_T1w_MPR_vNav"
+      }
+    },
+    {
+      "id": "dwi_dir-AP",
+      "datatype": "dwi",
+      "suffix": "dwi",
+      "custom_entities": "dir-AP",
+      "criteria": {
+        "SeriesDescription": "cmrr_diff_3shell_ap"
+      }
+    },
+    {
+      "id": "dwi_dir-PA",
+      "datatype": "dwi",
+      "suffix": "dwi",
+      "custom_entities": "dir-PA",
+      "criteria": {
+        "SeriesDescription": "cmrr_diff_3shell_pa"
+      }
+    },
+    {
+      "id": "task_NATencoding_run-1",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-NATencoding",
+      "criteria": {
+        "ProtocolName": "free_recall_encoding_run1",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "NATencoding",
+        "B0FieldSource": "B0map_encoding_sub05_ses26"
+      }
+    },
+    {
+      "id": "task_NATencoding_run-1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-NATencoding",
+      "criteria": {
+        "SeriesDescription": "free_recall_encoding_run1_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "NATencoding",
+        "B0FieldSource": "B0map_encoding_sub05_ses26"
+      }
+    },
+    {
+      "id": "task_NATencoding_run-2",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-NATencoding",
+      "criteria": {
+        "ProtocolName": "free_recall_encoding_run2",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "NATencoding",
+        "B0FieldSource": "B0map_encoding_sub05_ses26"
+      }
+    },
+    {
+      "id": "task_NATencoding_run-2",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-NATencoding",
+      "criteria": {
+        "SeriesDescription": "free_recall_encoding_run2_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "NATencoding",
+        "B0FieldSource": "B0map_encoding_sub05_ses26"
+      }
+    },
+    {
+      "id": "task_NATmath",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-NATmath",
+      "criteria": {
+        "ProtocolName": "free_recall_math",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "NATmath",
+        "B0FieldSource": "B0map_encoding_sub05_ses26"
+      }
+    },
+    {
+      "id": "task_NATmath",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-NATmath",
+      "criteria": {
+        "SeriesDescription": "free_recall_math_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "NATmath",
+        "B0FieldSource": "B0map_encoding_sub05_ses26"
+      }
+    },
+    {
+      "id": "task_NATresting",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-NATresting",
+      "criteria": {
+        "ProtocolName": "free_recall_resting",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "NATresting",
+        "B0FieldSource": "B0map_retrieval_sub05_ses26"
+      }
+    },
+    {
+      "id": "task_NATresting",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-NATresting",
+      "criteria": {
+        "SeriesDescription": "free_recall_resting_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "NATresting",
+        "B0FieldSource": "B0map_retrieval_sub05_ses26"
+      }
+    },
+    {
+      "id": "task_NATretrieval",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-NATretrieval",
+      "criteria": {
+        "ProtocolName": "free_recall_retrieval_run1",
+        "MultibandAccelerationFactor": 3
+      },
+      "sidecar_changes": {
+        "TaskName": "NATretrieval",
+        "B0FieldSource": "B0map_retrieval_sub05_ses26"
+      }
+    },
+    {
+      "id": "task_NATretrieval",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-NATretrieval",
+      "criteria": {
+        "SeriesDescription": "free_recall_retrieval_run1_SBRef"
+      },
+      "sidecar_changes": {
+        "TaskName": "NATretrieval",
+        "B0FieldSource": "B0map_retrieval_sub05_ses26"
+      }
+    },
+    {
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-AP",
+      "criteria": {
+        "SeriesDescription": "se_epi_ap_encoding",
+        "SeriesNumber": "5"
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_encoding_sub05_ses26"
+      }
+    },
+    {
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-PA",
+      "criteria": {
+        "SeriesDescription": "se_epi_pa_encoding",
+        "SeriesNumber": "6"
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_encoding_sub05_ses26"
+      }
+    },
+    {
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-AP",
+      "criteria": {
+        "SeriesDescription": "se_epi_ap_retrieval",
+        "SeriesNumber": "19"
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_retrieval_sub05_ses26"
+      }
+    },
+    {
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-PA",
+      "criteria": {
+        "SeriesDescription": "se_epi_pa_retrieval",
+        "SeriesNumber": "21"
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_retrieval_sub05_ses26"
+      }
+    }
+  ]
+}
