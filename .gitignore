@@ -29,5 +29,10 @@ venv/
 *.pt
 *.pth
 
-# SLURM logs
+# SLURM logs and output
 logs/
+*.out
+*.err
+
+# Generated reports
+validation_report.tsv
