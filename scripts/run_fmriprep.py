@@ -18,6 +18,7 @@ Arguments:
 """
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -57,6 +58,8 @@ def run_fmriprep(
     fmriprep_version=DEFAULT_FMRIPREP_VERSION,
     singularity_dir=None,
     work_dir=None,
+    anat_only=False,
+    session=None,
 ):
     """
     Run fMRIPrep using Singularity.
@@ -84,6 +87,11 @@ def run_fmriprep(
         fMRIPrep version to use.
     singularity_dir : str or Path, optional
         Directory containing Singularity images.
+    anat_only : bool
+        If True, only run anatomical preprocessing (no functional).
+    session : str, optional
+        Process only this session (e.g., 'ses-01' or '01'). Creates a
+        BIDS filter file to restrict functional processing to one session.
     """
     bids_dir = Path(bids_dir)
     output_dir = Path(output_dir)
@@ -162,6 +170,22 @@ def run_fmriprep(
             subj_id = subj.replace('sub-', '')
             cmd.extend(['--participant-label', subj_id])
 
+    # Add anat-only flag
+    if anat_only:
+        cmd.append('--anat-only')
+
+    # Add session filter via bids-filter-file
+    if session:
+        ses_id = session.replace('ses-', '')
+        filter_file = work_dir / f'bids_filter_ses-{ses_id}.json'
+        bids_filter = {
+            "bold": {"session": ses_id},
+            "sbref": {"session": ses_id},
+            "fmap": {"session": ses_id},
+        }
+        filter_file.write_text(json.dumps(bids_filter, indent=2))
+        cmd.extend(['--bids-filter-file', str(filter_file)])
+
     # Add FreeSurfer subjects dir if reusing
     if fs_subjects_dir:
         cmd.extend(['--fs-subjects-dir', str(fs_subjects_dir)])
@@ -177,6 +201,13 @@ def run_fmriprep(
     print(f"FS License:        {fs_license}")
     if fs_subjects_dir:
         print(f"FS Subjects Dir:   {fs_subjects_dir}")
+    if anat_only:
+        print(f"Mode:              anat-only")
+    elif session:
+        ses_id = session.replace('ses-', '')
+        print(f"Mode:              func (ses-{ses_id} only)")
+    else:
+        print(f"Mode:              full (anat + func)")
     if subjects:
         print(f"Subjects:          {', '.join(subjects)}")
     else:
@@ -262,6 +293,17 @@ def main():
     )
 
     parser.add_argument(
+        '--anat-only',
+        action='store_true',
+        help='Only run anatomical preprocessing (no functional)'
+    )
+
+    parser.add_argument(
+        '--session',
+        help='Process only this session (e.g., ses-01 or 01)'
+    )
+
+    parser.add_argument(
         '--bids-dir',
         help='Override BIDS directory from config'
     )
@@ -310,6 +352,8 @@ def main():
         fmriprep_version=args.fmriprep_version,
         singularity_dir=singularity_dir,
         work_dir=work_dir,
+        anat_only=args.anat_only,
+        session=args.session,
     )
 
 

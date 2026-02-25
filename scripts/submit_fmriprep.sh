@@ -40,24 +40,31 @@ Submit fMRIPrep jobs to SLURM cluster
 
 OPTIONS:
     participant     Submit preprocessing for all subjects (sequential)
-    array           Submit preprocessing for all subjects (parallel array job) [RECOMMENDED]
+    array           Submit preprocessing for all subjects (parallel array job)
     test            Submit test run for first subject only (sub-03)
+    anat            Submit anat-only preprocessing for all subjects (Stage 1)
+    func            Submit per-session functional jobs for all subjects (Stage 2)
+    split           Submit anat first, then func with dependency (RECOMMENDED)
 
     -h, --help      Show this help message
 
 EXAMPLES:
-    # Test with one subject first (recommended)
-    $0 test
+    # Recommended: split into anat + per-session func (handles large datasets)
+    $0 split
 
-    # Process all subjects in parallel
+    # Just run anat-only stage
+    $0 anat
+
+    # Submit func jobs after anat has completed
+    $0 func
+
+    # Process all subjects in parallel (all-at-once, for small datasets)
     $0 array
-
-    # Process subjects sequentially
-    $0 participant
 
 NOTES:
     - fMRIPrep is participant-level only (no group stage)
-    - Estimated runtime: 12-48 hours per subject (depends on number of sessions)
+    - For datasets with many sessions, use 'split' to avoid wall time limits
+    - The split pipeline: anat (48hr) -> func per-session (12hr each)
     - Output: /projects/hulacon/shared/mmmdata/derivatives/fmriprep/
 
 EOF
@@ -143,6 +150,96 @@ submit_test() {
     fi
 }
 
+# Function to submit anat-only job
+submit_anat() {
+    print_info "Submitting fMRIPrep anat-only for all subjects..."
+    check_email "${SCRIPT_DIR}/fmriprep_anat.sbatch"
+
+    N_SUBJECTS=$(ls -d /projects/hulacon/shared/mmmdata/sub-* 2>/dev/null | wc -l)
+    print_info "Found ${N_SUBJECTS} subjects"
+
+    JOB_ID=$(sbatch --parsable "${SCRIPT_DIR}/fmriprep_anat.sbatch")
+
+    if [ $? -eq 0 ]; then
+        print_success "Anat-only job submitted successfully!"
+        print_info "Job ID: ${JOB_ID}"
+        print_info "Array tasks: 1-${N_SUBJECTS}"
+        print_info "Monitor with: squeue -u \$USER -r"
+        print_info "View logs: tail -f ${SCRIPT_DIR}/../logs/fmriprep_anat_${JOB_ID}_*.out"
+        echo "$JOB_ID"
+        return 0
+    else
+        print_error "Job submission failed"
+        return 1
+    fi
+}
+
+# Function to submit per-session functional jobs for all subjects
+submit_func() {
+    local dependency=${1:-}
+
+    BIDS_DIR="/projects/hulacon/shared/mmmdata"
+    SUBJECTS=($(ls -d ${BIDS_DIR}/sub-* | xargs -n 1 basename | sort))
+    print_info "Found ${#SUBJECTS[@]} subjects"
+
+    for SUBJECT in "${SUBJECTS[@]}"; do
+        # Count sessions for this subject
+        N_SESSIONS=$(ls -d ${BIDS_DIR}/${SUBJECT}/ses-* 2>/dev/null | wc -l)
+
+        if [ ${N_SESSIONS} -eq 0 ]; then
+            print_warning "No sessions found for ${SUBJECT}, skipping"
+            continue
+        fi
+
+        print_info "Submitting ${N_SESSIONS} session jobs for ${SUBJECT}..."
+
+        SBATCH_ARGS="--parsable --export=ALL,FMRIPREP_SUBJECT=${SUBJECT} --array=1-${N_SESSIONS}"
+        if [ -n "${dependency}" ]; then
+            SBATCH_ARGS="${SBATCH_ARGS} --dependency=afterok:${dependency}"
+        fi
+
+        JOB_ID=$(sbatch ${SBATCH_ARGS} "${SCRIPT_DIR}/fmriprep_func.sbatch")
+
+        if [ $? -eq 0 ]; then
+            print_success "${SUBJECT}: submitted job ${JOB_ID} (${N_SESSIONS} sessions)"
+        else
+            print_error "${SUBJECT}: submission failed"
+        fi
+    done
+}
+
+# Function to submit split pipeline (anat -> func with dependency)
+submit_split() {
+    print_info "Submitting split pipeline: anat-only -> per-session func"
+    echo ""
+
+    # Stage 1: anat-only
+    print_info "=== Stage 1: Anatomical preprocessing ==="
+    check_email "${SCRIPT_DIR}/fmriprep_anat.sbatch"
+    check_email "${SCRIPT_DIR}/fmriprep_func.sbatch"
+
+    N_SUBJECTS=$(ls -d /projects/hulacon/shared/mmmdata/sub-* 2>/dev/null | wc -l)
+    ANAT_JOB_ID=$(sbatch --parsable "${SCRIPT_DIR}/fmriprep_anat.sbatch")
+
+    if [ $? -ne 0 ]; then
+        print_error "Anat job submission failed"
+        return 1
+    fi
+
+    print_success "Anat job submitted: ${ANAT_JOB_ID} (${N_SUBJECTS} subjects)"
+    echo ""
+
+    # Stage 2: per-session func (depends on anat completing)
+    print_info "=== Stage 2: Functional preprocessing (will start after anat completes) ==="
+    submit_func "${ANAT_JOB_ID}"
+
+    echo ""
+    print_success "Split pipeline submitted!"
+    print_info "Anat job: ${ANAT_JOB_ID}"
+    print_info "Func jobs will start after anat completes successfully"
+    print_info "Monitor with: squeue -u \$USER -r"
+}
+
 # Main script
 if [ $# -eq 0 ]; then
     print_error "No option specified"
@@ -161,6 +258,18 @@ case "$1" in
 
     test)
         submit_test
+        ;;
+
+    anat)
+        submit_anat
+        ;;
+
+    func)
+        submit_func
+        ;;
+
+    split)
+        submit_split
         ;;
 
     -h|--help)
