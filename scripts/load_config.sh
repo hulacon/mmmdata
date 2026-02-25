@@ -17,11 +17,14 @@
 #   SLURM_EMAIL - Email for notifications
 #==============================================================================
 
-# Find the script directory
-SCRIPT_DIR_INTERNAL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Find config directory (one level up from scripts, then into config)
-CONFIG_DIR_INTERNAL="${SCRIPT_DIR_INTERNAL}/../config"
+# Find config directory. Prefer REPO_ROOT if set (needed when sourced from
+# SLURM spool where BASH_SOURCE resolves to the spool copy, not the original).
+if [ -n "${REPO_ROOT}" ]; then
+    CONFIG_DIR_INTERNAL="${REPO_ROOT}/config"
+else
+    SCRIPT_DIR_INTERNAL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    CONFIG_DIR_INTERNAL="${SCRIPT_DIR_INTERNAL}/../config"
+fi
 
 # Python script to extract config values from TOML
 read -r -d '' PYTHON_EXTRACT_CONFIG <<'EOF'

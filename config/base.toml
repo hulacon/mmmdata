@@ -8,7 +8,7 @@ bids_project_dir = "/projects/hulacon/shared/mmmdata"
 code_root = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
 
 # Singularity/Apptainer images directory
-singularity_dir = "/projects/hulacon/shared/mmmdata/singularity_images"
+singularity_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/containers"
 
 # Python virtual environment directory
 venv_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/.venv"

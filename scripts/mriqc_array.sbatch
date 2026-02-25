@@ -47,9 +47,12 @@ echo ""
 # Load required modules (if any)
 # module load singularity  # Uncomment if singularity is a module
 
+# Activate Python virtual environment first (needed for tomllib in config loader)
+export REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
+source "${REPO_ROOT}/.venv/bin/activate"
+
 # Load configuration from config files
-SCRIPT_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR_HERE}/load_config.sh"
+source "${REPO_ROOT}/scripts/load_config.sh"
 
 # Set up environment using config values
 export SINGULARITYENV_TEMPLATEFLOW_HOME=${BIDS_DIR}/.cache/templateflow
@@ -72,9 +75,6 @@ SUBJECT=${SUBJECTS[$((SLURM_ARRAY_TASK_ID - 1))]}
 echo "Processing subject: ${SUBJECT}"
 echo "Subject index: ${SLURM_ARRAY_TASK_ID} of ${#SUBJECTS[@]}"
 echo ""
-
-# Activate Python virtual environment
-source ${VENV_DIR}/bin/activate
 
 # Change to script directory
 cd ${SCRIPT_DIR}

@@ -1,28 +1,28 @@
 #!/bin/bash
-#SBATCH --job-name=mriqc_participant
-#SBATCH --partition=compute
-#SBATCH --time=24:00:00
+#SBATCH --job-name=fmriprep_participant
+#SBATCH --partition=computelong
+#SBATCH --time=48:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/mriqc_participant_%j.out
-#SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/mriqc_participant_%j.err
+#SBATCH --mem=48G
+#SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fmriprep_participant_%j.out
+#SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fmriprep_participant_%j.err
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=your-email@uoregon.edu
 
 #==============================================================================
-# MRIQC Participant-Level Analysis (All Subjects)
+# fMRIPrep Participant-Level Preprocessing (All Subjects)
 #==============================================================================
-# This script runs MRIQC quality control on all subjects and sessions
+# This script runs fMRIPrep preprocessing on all subjects and sessions
 # in the MMMData BIDS dataset.
 #
 # Usage:
-#   sbatch mriqc_participant.sbatch
+#   sbatch fmriprep_participant.sbatch
 #
 # Output:
 #   - Logs: /gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/
-#   - Results: /projects/hulacon/shared/mmmdata/derivatives/mriqc/
+#   - Results: /projects/hulacon/shared/mmmdata/derivatives/fmriprep/
 #==============================================================================
 
 # Print job information
@@ -39,9 +39,6 @@ echo "Start Time: $(date)"
 echo "=========================================="
 echo ""
 
-# Load required modules (if any)
-# module load singularity  # Uncomment if singularity is a module
-
 # Activate Python virtual environment first (needed for tomllib in config loader)
 export REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
 source "${REPO_ROOT}/.venv/bin/activate"
@@ -57,12 +54,11 @@ mkdir -p ${SINGULARITY_TMPDIR}
 # Change to script directory
 cd ${SCRIPT_DIR}
 
-# Run MRIQC on all subjects
-echo "Running MRIQC participant-level analysis..."
+# Run fMRIPrep on all subjects
+echo "Running fMRIPrep participant-level preprocessing..."
 echo ""
 
-python run_mriqc.py \
-    --analysis-level participant \
+python run_fmriprep.py \
     --nprocs ${SLURM_CPUS_PER_TASK} \
     --mem-gb $((${SLURM_MEM_PER_NODE} / 1024))
 

@@ -35,7 +35,8 @@ def run_mriqc(
     nprocs=4,
     mem_gb=16,
     fs_license=None,
-    mriqc_version='24.0.0'
+    mriqc_version='24.0.0',
+    singularity_dir=None,
 ):
     """
     Run MRIQC using Singularity
@@ -59,12 +60,18 @@ def run_mriqc(
         Path to FreeSurfer license file
     mriqc_version : str
         MRIQC version to use
+    singularity_dir : str or Path, optional
+        Directory containing Singularity images. If None, uses config value
+        or falls back to <bids_dir>/singularity_images/.
     """
 
     bids_dir = Path(bids_dir)
     output_dir = Path(output_dir)
     work_dir = output_dir / 'work'
-    singularity_dir = bids_dir / 'singularity_images'
+    if singularity_dir is None:
+        singularity_dir = bids_dir / 'singularity_images'
+    else:
+        singularity_dir = Path(singularity_dir)
     mriqc_image = singularity_dir / f'mriqc-{mriqc_version}.simg'
 
     # Create directories
@@ -225,9 +232,10 @@ def main():
 
     # Load config
     config = load_config()
+    paths = config.get('paths', {})
 
     # Get BIDS directory
-    bids_dir = args.bids_dir or config.get('bids_project_dir')
+    bids_dir = args.bids_dir or paths.get('bids_project_dir')
     if not bids_dir:
         print("ERROR: BIDS directory not specified and not found in config")
         sys.exit(1)
@@ -238,7 +246,10 @@ def main():
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
-        output_dir = bids_dir / 'derivatives' / 'mriqc'
+        output_dir = Path(paths.get('output_dir', str(bids_dir / 'derivatives'))) / 'mriqc'
+
+    # Get singularity directory from config
+    singularity_dir = paths.get('singularity_dir')
 
     # Run MRIQC
     run_mriqc(
@@ -249,7 +260,8 @@ def main():
         nprocs=args.nprocs,
         mem_gb=args.mem_gb,
         fs_license=args.fs_license,
-        mriqc_version=args.mriqc_version
+        mriqc_version=args.mriqc_version,
+        singularity_dir=singularity_dir,
     )
 
 
