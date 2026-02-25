@@ -25,7 +25,7 @@ mkdir -p "${SCRIPT_DIR}/../logs"
 
 for SESSION in "$@"; do
     echo "Submitting: ${SUBJECT} / ${SESSION}"
-    sbatch --export="SUBJECT=${SUBJECT},SESSION=${SESSION}" \
+    sbatch --export="ALL,SUBJECT=${SUBJECT},SESSION=${SESSION},REPO_ROOT=${SCRIPT_DIR}/.." \
            --job-name="dcm2bids_${SUBJECT}_${SESSION}" \
            "${SCRIPT_DIR}/dcm2bids.sbatch"
 done

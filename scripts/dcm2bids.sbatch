@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=dcm2bids
 #SBATCH --partition=compute
-#SBATCH --time=01:00:00
+#SBATCH --time=03:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
@@ -21,8 +21,9 @@
 #   sbatch --export=SUBJECT=sub-03,SESSION=all dcm2bids.sbatch
 #
 # Environment variables:
-#   SUBJECT  - Subject ID (required, e.g. sub-03)
-#   SESSION  - Session ID (required, e.g. ses-06 or "all")
+#   SUBJECT   - Subject ID (required, e.g. sub-03)
+#   SESSION   - Session ID (required, e.g. ses-06 or "all")
+#   REPO_ROOT - mmmdata repo root (set by submit_dcm2bids.sh)
 #==============================================================================
 
 # Validate required variables
@@ -34,6 +35,13 @@ if [ -z "${SESSION}" ]; then
     echo "ERROR: SESSION not set. Use: sbatch --export=SUBJECT=sub-03,SESSION=ses-06 dcm2bids.sbatch"
     exit 1
 fi
+if [ -z "${REPO_ROOT}" ]; then
+    echo "ERROR: REPO_ROOT not set. Use submit_dcm2bids.sh or pass --export=REPO_ROOT=/path/to/mmmdata"
+    exit 1
+fi
+
+# Resolve REPO_ROOT to absolute path
+REPO_ROOT="$(cd "${REPO_ROOT}" && pwd)"
 
 # Print job information
 echo "=========================================="
@@ -48,18 +56,17 @@ echo "Start Time: $(date)"
 echo "=========================================="
 echo ""
 
+# Activate Python virtual environment first (load_config.sh needs Python 3.11+ for tomllib)
+source "${REPO_ROOT}/.venv/bin/activate"
+
 # Load configuration from config files
-SCRIPT_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR_HERE}/load_config.sh"
+source "${REPO_ROOT}/scripts/load_config.sh"
 
-# Activate Python virtual environment
-source ${VENV_DIR}/bin/activate
-
-# Change to script directory
-cd ${SCRIPT_DIR}
+# Change to repo root (run_dcm2bids.py expects this)
+cd "${REPO_ROOT}"
 
 # Run dcm2bids (config generation + conversion)
-python run_dcm2bids.py \
+python scripts/run_dcm2bids.py \
     --subject "${SUBJECT}" \
     --session "${SESSION}" \
     --force

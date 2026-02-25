@@ -80,10 +80,11 @@ def run_dcm2bids(
     bids_root: Path,
     config_dir: Path,
     dicom_dir: Path,
+    container: Path,
     *,
     force: bool = False,
 ) -> int:
-    """Run dcm2bids for a single subject/session.
+    """Run dcm2bids for a single subject/session via Singularity.
 
     Returns the dcm2bids exit code.
     """
@@ -92,7 +93,16 @@ def run_dcm2bids(
         print(f"  [!] Config not found: {config_path}")
         return 1
 
+    if not container.exists():
+        print(f"  [!] Singularity container not found: {container}")
+        return 1
+
     cmd = [
+        "singularity", "exec",
+        "--cleanenv",
+        "-B", f"{bids_root}:{bids_root}",
+        "-B", f"{config_dir}:{config_dir}",
+        str(container),
         "dcm2bids",
         "-d", str(dicom_dir),
         "-p", subject.replace("sub-", ""),
@@ -101,7 +111,7 @@ def run_dcm2bids(
         "-o", str(bids_root),
     ]
     if force:
-        cmd.append("--forceDcm2niix")
+        cmd.append("--force_dcm2bids")
 
     print(f"  Running: {' '.join(cmd)}")
     result = subprocess.run(cmd)
@@ -144,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
 
     bids_root = Path(cfg["paths"]["bids_project_dir"])
     code_root = Path(cfg["paths"]["code_root"])
+    singularity_dir = Path(cfg["paths"]["singularity_dir"])
+    container = singularity_dir / "dcm2bids-3.2.0.sif"
 
     if args.config_dir:
         config_dir = Path(args.config_dir)
@@ -200,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
 
         rc = run_dcm2bids(
             args.subject, session, bids_root, config_dir, dicom_dir,
-            force=args.force,
+            container, force=args.force,
         )
         if rc != 0:
             print(f"  [!] {args.subject}/{session}: dcm2bids failed (exit {rc})")

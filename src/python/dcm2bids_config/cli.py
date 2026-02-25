@@ -191,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.config_dir:
         config_dir = Path(args.config_dir)
     else:
-        config_dir = Path(cfg["paths"]["code_root"]).parent / "dcm2bids_configfiles"
+        config_dir = Path(cfg["paths"]["code_root"]) / "config" / "dcm2bids_overrides"
 
     # Determine sessions
     if args.session == "all":
