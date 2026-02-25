@@ -1,406 +1,593 @@
 #!/usr/bin/env python3
-"""
-Generate Jekyll-compatible markdown documentation from Python utility modules.
+"""Generate Jekyll-compatible markdown documentation from Python packages.
 
-This script parses Python source files, extracts function docstrings,
-and generates .md files suitable for Jekyll documentation with the just-the-docs theme.
+Walks a source tree, discovers packages and modules, extracts docstrings
+from functions and classes, and produces .md files for a Jekyll site using
+the just-the-docs theme.
+
+Hierarchy (3 levels, matching just-the-docs sidebar limits):
+
+    Code Documentation  (level 1 – code_index.md)
+    └── Package         (level 2 – <package>.md)
+        └── Module      (level 3 – <package>_<module>.md, items inline)
 """
 
 import ast
 import re
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any, List, Dict, Optional
 import argparse
 
 
-class FunctionDocExtractor:
-    """Extract documentation from Python functions."""
+# ---------------------------------------------------------------------------
+# AST extraction
+# ---------------------------------------------------------------------------
+
+class DocExtractor:
+    """Extract documentation from a Python module."""
 
     def __init__(self, source_file: Path):
         self.source_file = source_file
         self.module_name = source_file.stem
-        with open(source_file, 'r') as f:
+        with open(source_file) as f:
             self.source = f.read()
         self.tree = ast.parse(self.source)
 
-    def extract_functions(self) -> List[Dict[str, Any]]:
-        """Extract all function definitions with their docstrings."""
-        functions = []
+    def module_docstring(self) -> str:
+        """Return the module-level docstring."""
+        return ast.get_docstring(self.tree) or ""
 
-        for node in ast.walk(self.tree):
-            if isinstance(node, ast.FunctionDef):
-                # Skip private functions (starting with _)
-                if node.name.startswith('_'):
-                    continue
+    def functions(self) -> List[Dict[str, Any]]:
+        """Top-level public functions (excludes private and ``main``)."""
+        return [
+            self._func_info(node)
+            for node in ast.iter_child_nodes(self.tree)
+            if isinstance(node, ast.FunctionDef)
+            and not node.name.startswith("_")
+            and node.name != "main"
+        ]
 
-                func_info = {
-                    'name': node.name,
-                    'signature': self._get_signature(node),
-                    'docstring': ast.get_docstring(node) or '',
-                    'line_number': node.lineno
-                }
+    def classes(self) -> List[Dict[str, Any]]:
+        """Top-level public classes."""
+        results = []
+        for node in ast.iter_child_nodes(self.tree):
+            if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
+                results.append(self._class_info(node))
+        return results
 
-                # Parse the docstring
-                parsed_doc = self._parse_docstring(func_info['docstring'])
-                func_info.update(parsed_doc)
+    # -- internal helpers --------------------------------------------------
 
-                functions.append(func_info)
-
-        return functions
-
-    def _get_signature(self, node: ast.FunctionDef) -> str:
-        """Extract function signature as a string."""
-        args = []
-
-        # Regular arguments
-        for arg in node.args.args:
-            arg_str = arg.arg
-            if arg.annotation:
-                arg_str += f": {ast.unparse(arg.annotation)}"
-            args.append(arg_str)
-
-        # Default values
-        defaults = node.args.defaults
-        if defaults:
-            num_defaults = len(defaults)
-            for i, default in enumerate(defaults):
-                idx = len(args) - num_defaults + i
-                args[idx] += f" = {ast.unparse(default)}"
-
-        # Return annotation
-        return_annotation = ""
-        if node.returns:
-            return_annotation = f" -> {ast.unparse(node.returns)}"
-
-        return f"{node.name}({', '.join(args)}){return_annotation}"
-
-    def _parse_docstring(self, docstring: str) -> Dict[str, Any]:
-        """Parse NumPy-style docstring into structured data."""
-        if not docstring:
-            return {
-                'description': '',
-                'parameters': [],
-                'returns': '',
-                'examples': ''
-            }
-
-        lines = docstring.split('\n')
-
-        # Extract description (everything before first section)
-        description_lines = []
-        i = 0
-        while i < len(lines):
-            line = lines[i].strip()
-            if line in ['Parameters', 'Returns', 'Examples', 'Raises', 'Notes']:
-                break
-            description_lines.append(lines[i])
-            i += 1
-
-        description = '\n'.join(description_lines).strip()
-
-        # Extract sections
-        sections = self._extract_sections(docstring)
-
+    def _func_info(self, node: ast.FunctionDef) -> Dict[str, Any]:
+        raw = ast.get_docstring(node) or ""
+        parsed = _parse_docstring(raw)
         return {
-            'description': description,
-            'parameters': sections.get('Parameters', []),
-            'returns': sections.get('Returns', ''),
-            'examples': sections.get('Examples', ''),
-            'raises': sections.get('Raises', ''),
-            'notes': sections.get('Notes', '')
+            "name": node.name,
+            "signature": self._signature(node),
+            "docstring_raw": raw,
+            "line": node.lineno,
+            **parsed,
         }
 
-    def _extract_sections(self, docstring: str) -> Dict[str, Any]:
-        """Extract sections from NumPy-style docstring."""
-        sections = {}
-        lines = docstring.split('\n')
+    def _class_info(self, node: ast.ClassDef) -> Dict[str, Any]:
+        raw = ast.get_docstring(node) or ""
+        parsed = _parse_docstring(raw)
 
-        current_section = None
-        section_content = []
-
-        for line in lines:
-            stripped = line.strip()
-
-            # Check if this is a section header
-            if stripped in ['Parameters', 'Returns', 'Examples', 'Raises', 'Notes', 'See Also']:
-                # Save previous section
-                if current_section:
-                    sections[current_section] = self._process_section(
-                        current_section, section_content
+        # Detect @dataclass decorator
+        is_dataclass = any(
+            (isinstance(d, ast.Name) and d.id == "dataclass")
+            or (isinstance(d, ast.Attribute) and d.attr == "dataclass")
+            or (
+                isinstance(d, ast.Call)
+                and (
+                    (isinstance(d.func, ast.Name) and d.func.id == "dataclass")
+                    or (
+                        isinstance(d.func, ast.Attribute)
+                        and d.func.attr == "dataclass"
                     )
-
-                current_section = stripped
-                section_content = []
-            elif current_section:
-                section_content.append(line)
-
-        # Save last section
-        if current_section:
-            sections[current_section] = self._process_section(
-                current_section, section_content
+                )
             )
+            for d in node.decorator_list
+        )
 
-        return sections
-
-    def _process_section(self, section_name: str, content: List[str]) -> Any:
-        """Process section content based on section type."""
-        if section_name == 'Parameters':
-            return self._parse_parameters(content)
-        else:
-            # For other sections, just return cleaned text
-            return '\n'.join(content).strip()
-
-    def _parse_parameters(self, lines: List[str]) -> List[Dict[str, str]]:
-        """Parse parameter section into structured format."""
-        parameters = []
-        current_param = None
-
-        for line in lines:
-            # Skip separator lines
-            if re.match(r'^-+$', line.strip()):
-                continue
-
-            # Check if this is a parameter definition line
-            match = re.match(r'^\s*(\w+)\s*:\s*(.+)$', line)
-            if match:
-                # Save previous parameter
-                if current_param:
-                    parameters.append(current_param)
-
-                param_name = match.group(1)
-                param_type = match.group(2).strip()
-
-                current_param = {
-                    'name': param_name,
-                    'type': param_type,
-                    'description': ''
+        # Class-level annotated fields (dataclass fields or typed attrs)
+        fields: List[Dict[str, str]] = []
+        for item in node.body:
+            if isinstance(item, ast.AnnAssign) and isinstance(
+                item.target, ast.Name
+            ):
+                field: Dict[str, str] = {
+                    "name": item.target.id,
+                    "type": ast.unparse(item.annotation),
                 }
-            elif current_param and line.strip():
-                # Continuation of description
-                if current_param['description']:
-                    current_param['description'] += ' '
-                current_param['description'] += line.strip()
+                if item.value is not None:
+                    field["default"] = ast.unparse(item.value)
+                fields.append(field)
 
-        # Save last parameter
-        if current_param:
-            parameters.append(current_param)
+        # Public methods (skip dunder and private)
+        methods = [
+            self._func_info(m)
+            for m in node.body
+            if isinstance(m, ast.FunctionDef) and not m.name.startswith("_")
+        ]
 
-        return parameters
+        return {
+            "name": node.name,
+            "is_dataclass": is_dataclass,
+            "fields": fields,
+            "methods": methods,
+            "line": node.lineno,
+            "docstring_raw": raw,
+            **parsed,
+        }
+
+    def _signature(self, node: ast.FunctionDef) -> str:
+        """Build a human-readable signature string.
+
+        Handles positional, keyword-only, *args, **kwargs, and skips
+        ``self``/``cls`` for methods.
+        """
+        parts: List[str] = []
+        all_args = node.args.args
+        defaults = node.args.defaults
+        n_defaults = len(defaults)
+
+        # Skip self/cls
+        start = 0
+        if all_args and all_args[0].arg in ("self", "cls"):
+            start = 1
+
+        for i in range(start, len(all_args)):
+            arg = all_args[i]
+            s = arg.arg
+            if arg.annotation:
+                s += f": {ast.unparse(arg.annotation)}"
+            default_idx = i - (len(all_args) - n_defaults)
+            if default_idx >= 0:
+                s += f" = {ast.unparse(defaults[default_idx])}"
+            parts.append(s)
+
+        # *args
+        if node.args.vararg:
+            v = f"*{node.args.vararg.arg}"
+            if node.args.vararg.annotation:
+                v += f": {ast.unparse(node.args.vararg.annotation)}"
+            parts.append(v)
+        elif node.args.kwonlyargs:
+            parts.append("*")
+
+        # keyword-only args
+        kw_defaults = node.args.kw_defaults
+        for i, arg in enumerate(node.args.kwonlyargs):
+            s = arg.arg
+            if arg.annotation:
+                s += f": {ast.unparse(arg.annotation)}"
+            if kw_defaults[i] is not None:
+                s += f" = {ast.unparse(kw_defaults[i])}"
+            parts.append(s)
+
+        # **kwargs
+        if node.args.kwarg:
+            k = f"**{node.args.kwarg.arg}"
+            if node.args.kwarg.annotation:
+                k += f": {ast.unparse(node.args.kwarg.annotation)}"
+            parts.append(k)
+
+        ret = ""
+        if node.returns:
+            ret = f" -> {ast.unparse(node.returns)}"
+
+        return f"{node.name}({', '.join(parts)}){ret}"
 
 
-class JekyllDocGenerator:
-    """Generate Jekyll-compatible markdown documentation."""
+# ---------------------------------------------------------------------------
+# Docstring parsing (NumPy style)
+# ---------------------------------------------------------------------------
+
+_SECTION_HEADERS = frozenset(
+    {
+        "Parameters",
+        "Returns",
+        "Examples",
+        "Raises",
+        "Notes",
+        "See Also",
+        "Attributes",
+        "Yields",
+        "Warnings",
+    }
+)
+
+
+def _parse_docstring(docstring: str) -> Dict[str, Any]:
+    """Parse a NumPy-style docstring into structured fields."""
+    if not docstring:
+        return {
+            "description": "",
+            "parameters": [],
+            "returns": "",
+            "examples": "",
+            "raises": "",
+            "notes": "",
+        }
+
+    lines = docstring.split("\n")
+    desc_lines: List[str] = []
+    for line in lines:
+        if line.strip() in _SECTION_HEADERS:
+            break
+        desc_lines.append(line)
+
+    sections = _extract_sections(docstring)
+    return {
+        "description": "\n".join(desc_lines).strip(),
+        "parameters": sections.get("Parameters", []),
+        "returns": sections.get("Returns", ""),
+        "examples": sections.get("Examples", ""),
+        "raises": sections.get("Raises", ""),
+        "notes": sections.get("Notes", ""),
+    }
+
+
+def _extract_sections(docstring: str) -> Dict[str, Any]:
+    sections: Dict[str, Any] = {}
+    lines = docstring.split("\n")
+    current: Optional[str] = None
+    content: List[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped in _SECTION_HEADERS:
+            if current:
+                sections[current] = _process_section(current, content)
+            current = stripped
+            content = []
+        elif current is not None:
+            content.append(line)
+
+    if current:
+        sections[current] = _process_section(current, content)
+    return sections
+
+
+def _process_section(name: str, content: List[str]) -> Any:
+    if name == "Parameters":
+        return _parse_parameters(content)
+    # Strip separator lines (------) that follow the section header
+    filtered = [l for l in content if not re.match(r"^\s*-+\s*$", l)]
+    return "\n".join(filtered).strip()
+
+
+def _parse_parameters(lines: List[str]) -> List[Dict[str, str]]:
+    params: List[Dict[str, str]] = []
+    current: Optional[Dict[str, str]] = None
+
+    for line in lines:
+        # Skip separator lines (-------)
+        if re.match(r"^-+$", line.strip()):
+            continue
+
+        # Parameter definition: "name : type"
+        m = re.match(r"^\s{0,4}(\w+)\s*:\s*(.+)$", line)
+        if m:
+            if current:
+                params.append(current)
+            current = {
+                "name": m.group(1),
+                "type": m.group(2).strip(),
+                "description": "",
+            }
+        elif current and line.strip():
+            if current["description"]:
+                current["description"] += " "
+            current["description"] += line.strip()
+
+    if current:
+        params.append(current)
+    return params
+
+
+# ---------------------------------------------------------------------------
+# Jekyll markdown generation
+# ---------------------------------------------------------------------------
+
+# Human-friendly display names for known packages
+_DISPLAY_OVERRIDES = {
+    "dcm2bids_config": "DCM2BIDS Config",
+    "raw2bids_converters": "Raw-to-BIDS Converters",
+    "core": "Core",
+}
+
+
+def _pkg_display_name(name: str) -> str:
+    return _DISPLAY_OVERRIDES.get(name, name.replace("_", " ").title())
+
+
+class JekyllGenerator:
+    """Produce Jekyll-compatible markdown files."""
 
     def __init__(self, output_dir: Path, base_nav_order: int = 50):
         self.output_dir = output_dir
-        self.base_nav_order = base_nav_order
+        self.base_nav = base_nav_order
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def generate_module_docs(self, source_file: Path, module_nav_order: int) -> List[str]:
-        """Generate documentation for a Python module."""
-        extractor = FunctionDocExtractor(source_file)
-        functions = extractor.extract_functions()
+    # -- top-level index ---------------------------------------------------
 
-        if not functions:
-            print(f"No public functions found in {source_file}")
-            return []
-
-        module_name = source_file.stem
-        generated_files = []
-
-        # Generate individual function pages
-        for i, func in enumerate(functions):
-            md_file = self.output_dir / f"{module_name}_{func['name']}.md"
-            self._write_function_page(func, module_name, md_file, module_nav_order, i)
-            generated_files.append(md_file.name)
-
-        return generated_files
-
-    def _write_function_page(
-        self,
-        func: Dict[str, Any],
-        module_name: str,
-        output_file: Path,
-        parent_nav_order: int,
-        func_index: int
-    ):
-        """Write a single function's documentation page."""
-        nav_order = parent_nav_order + (func_index + 1) * 0.01
-
-        with open(output_file, 'w') as f:
-            # Jekyll front matter
+    def write_main_index(self, packages: List[Dict[str, Any]]) -> Path:
+        p = self.output_dir / "code_index.md"
+        with open(p, "w") as f:
             f.write("---\n")
-            f.write(f"title: {func['name']}\n")
-            f.write(f"parent: {self._format_module_name(module_name)}\n")
-            f.write(f"grand_parent: Code Documentation\n")
-            f.write(f"nav_order: {nav_order:.2f}\n")
+            f.write("title: Code Documentation\n")
+            f.write(f"nav_order: {self.base_nav}\n")
+            f.write("has_children: true\n")
             f.write("---\n\n")
+            f.write("# Code Documentation\n\n")
+            f.write(
+                "API reference for Python packages in the MMMData project.\n"
+                "This documentation is auto-generated from source docstrings.\n\n"
+            )
+            for pkg in packages:
+                display = _pkg_display_name(pkg["name"])
+                f.write(f"### [{display}]({pkg['name']})\n\n")
+                for mod in pkg["modules"]:
+                    f.write(
+                        f"- [{mod['name']}]({pkg['name']}_{mod['name']})\n"
+                    )
+                f.write("\n")
+        return p
 
-            # Function header
-            f.write(f"# `{func['name']}`\n\n")
+    # -- package index -----------------------------------------------------
 
-            # Description
-            if func['description']:
-                f.write(f"{func['description']}\n\n")
-
-            # Signature
-            f.write("## Signature\n\n")
-            f.write("```python\n")
-            f.write(func['signature'])
-            f.write("\n```\n\n")
-
-            # Parameters
-            if func['parameters']:
-                f.write("## Parameters\n\n")
-                for param in func['parameters']:
-                    f.write(f"**`{param['name']}`** : `{param['type']}`\n")
-                    if param['description']:
-                        f.write(f"  \n{param['description']}\n\n")
-
-            # Returns
-            if func['returns']:
-                f.write("## Returns\n\n")
-                f.write(f"{func['returns']}\n\n")
-
-            # Examples
-            if func['examples']:
-                f.write("## Examples\n\n")
-                f.write("```python\n")
-                f.write(func['examples'])
-                f.write("\n```\n\n")
-
-            # Notes
-            if func.get('notes'):
-                f.write("## Notes\n\n")
-                f.write(f"{func['notes']}\n\n")
-
-            # Source reference
-            f.write("## Source\n\n")
-            f.write(f"Defined in `{module_name}.py` at line {func['line_number']}\n")
-
-    def generate_module_index(self, module_name: str, function_names: List[str], nav_order: int) -> Path:
-        """Generate an index page for a module."""
-        index_file = self.output_dir / f"{module_name}_index.md"
-
-        with open(index_file, 'w') as f:
-            # Jekyll front matter
+    def write_package_index(
+        self,
+        pkg_name: str,
+        modules: List[Dict[str, Any]],
+        nav_order: int,
+    ) -> Path:
+        display = _pkg_display_name(pkg_name)
+        p = self.output_dir / f"{pkg_name}.md"
+        with open(p, "w") as f:
             f.write("---\n")
-            f.write(f"title: {self._format_module_name(module_name)}\n")
-            f.write(f"parent: Code Documentation\n")
+            f.write(f"title: {display}\n")
+            f.write("parent: Code Documentation\n")
             f.write(f"nav_order: {nav_order}\n")
             f.write("has_children: true\n")
             f.write("---\n\n")
+            f.write(f"# {display}\n\n")
+            f.write(f"Modules in the `{pkg_name}` package.\n\n")
+            f.write("| Module | Description |\n")
+            f.write("|--------|-------------|\n")
+            for mod in modules:
+                short = mod.get("module_docstring", "").split("\n")[0][:80]
+                f.write(
+                    f"| [{mod['name']}]({pkg_name}_{mod['name']}) "
+                    f"| {short} |\n"
+                )
+        return p
 
-            # Module header
-            f.write(f"# {self._format_module_name(module_name)}\n\n")
-            f.write(f"Documentation for functions in the `{module_name}` module.\n\n")
+    # -- module page (functions + classes inline) --------------------------
 
-            # Function list
-            f.write("## Functions\n\n")
-            for func_name in function_names:
-                f.write(f"- [{func_name}]({module_name}_{func_name})\n")
-
-        return index_file
-
-    def generate_main_index(self, modules: List[Dict[str, Any]]) -> Path:
-        """Generate the main Code Documentation index page."""
-        index_file = self.output_dir / "code_index.md"
-
-        with open(index_file, 'w') as f:
-            # Jekyll front matter
+    def write_module_page(
+        self,
+        pkg_name: str,
+        mod: Dict[str, Any],
+        nav_order: float,
+    ) -> Path:
+        display = _pkg_display_name(pkg_name)
+        fname = f"{pkg_name}_{mod['name']}.md"
+        p = self.output_dir / fname
+        with open(p, "w") as f:
             f.write("---\n")
-            f.write("title: Code Documentation\n")
-            f.write(f"nav_order: {self.base_nav_order}\n")
-            f.write("has_children: true\n")
+            f.write(f"title: {mod['name']}\n")
+            f.write(f"parent: {display}\n")
+            f.write("grand_parent: Code Documentation\n")
+            f.write(f"nav_order: {nav_order}\n")
             f.write("---\n\n")
+            f.write(f"# {mod['name']}\n\n")
 
-            # Header
-            f.write("# Code Documentation\n\n")
-            f.write("API documentation for Python utility functions in the MMMData project.\n\n")
+            if mod.get("module_docstring"):
+                f.write(f"{mod['module_docstring']}\n\n")
 
-            # Module list
-            f.write("## Available Modules\n\n")
-            for module in modules:
-                f.write(f"### [{self._format_module_name(module['name'])}]({module['name']}_index)\n\n")
-                if module['functions']:
-                    for func in module['functions']:
-                        f.write(f"- [`{func}`]({module['name']}_{func})\n")
-                    f.write("\n")
+            f.write(
+                f"**Source:** `src/python/{pkg_name}/{mod['name']}.py`\n"
+            )
+            f.write("{: .fs-3 .text-grey-dk-000 }\n\n")
 
-        return index_file
+            has_classes = bool(mod.get("classes"))
+            has_functions = bool(mod.get("functions"))
 
-    def _format_module_name(self, module_name: str) -> str:
-        """Format module name for display."""
-        return module_name.replace('_', ' ').title()
+            if has_classes or has_functions:
+                f.write("---\n\n")
+
+            if has_classes:
+                f.write("## Classes\n\n")
+                for cls in mod["classes"]:
+                    self._write_class(f, cls)
+
+            if has_functions:
+                f.write("## Functions\n\n")
+                for func in mod["functions"]:
+                    self._write_function(f, func)
+
+        return p
+
+    # -- renderers ---------------------------------------------------------
+
+    def _write_function(self, f, func: Dict[str, Any]):
+        f.write(f"### `{func['name']}`\n\n")
+        if func["description"]:
+            f.write(f"{func['description']}\n\n")
+        f.write("```python\n")
+        f.write(func["signature"])
+        f.write("\n```\n\n")
+        self._write_params_returns_examples(f, func)
+        f.write("---\n\n")
+
+    def _write_class(self, f, cls: Dict[str, Any]):
+        label = "dataclass" if cls.get("is_dataclass") else "class"
+        f.write(f"### `{cls['name']}` ({label})\n\n")
+        if cls["description"]:
+            f.write(f"{cls['description']}\n\n")
+
+        if cls.get("fields"):
+            f.write("**Fields**\n\n")
+            for fld in cls["fields"]:
+                default = (
+                    f" = `{fld['default']}`" if "default" in fld else ""
+                )
+                f.write(
+                    f"- **`{fld['name']}`** (`{fld['type']}`){default}\n"
+                )
+            f.write("\n")
+
+        if cls.get("methods"):
+            f.write("**Methods**\n\n")
+            for m in cls["methods"]:
+                f.write(f"#### `{m['name']}`\n\n")
+                if m["description"]:
+                    f.write(f"{m['description']}\n\n")
+                f.write("```python\n")
+                f.write(m["signature"])
+                f.write("\n```\n\n")
+                self._write_params_returns_examples(f, m)
+        f.write("---\n\n")
+
+    @staticmethod
+    def _write_params_returns_examples(f, item: Dict[str, Any]):
+        if item.get("parameters"):
+            f.write("**Parameters**\n\n")
+            for p in item["parameters"]:
+                desc = p["description"] or ""
+                f.write(f"- **`{p['name']}`** (`{p['type']}`) — {desc}\n")
+            f.write("\n")
+
+        if item.get("returns"):
+            f.write(f"**Returns**\n\n{item['returns']}\n\n")
+
+        if item.get("examples"):
+            f.write("**Examples**\n\n```python\n")
+            f.write(item["examples"])
+            f.write("\n```\n\n")
+
+        if item.get("notes"):
+            f.write(f"**Notes**\n\n{item['notes']}\n\n")
+
+
+# ---------------------------------------------------------------------------
+# Discovery
+# ---------------------------------------------------------------------------
+
+
+def discover_packages(src_root: Path) -> List[Dict[str, Any]]:
+    """Find packages (directories with ``__init__.py``) under *src_root*."""
+    packages = []
+    for init in sorted(src_root.glob("*/__init__.py")):
+        pkg_dir = init.parent
+        modules = sorted(
+            p
+            for p in pkg_dir.glob("*.py")
+            if p.name != "__init__.py" and not p.name.startswith("_")
+        )
+        if modules:
+            packages.append(
+                {"name": pkg_dir.name, "dir": pkg_dir, "files": modules}
+            )
+    return packages
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate Jekyll documentation from Python utility modules'
+        description="Generate Jekyll documentation from Python packages",
     )
     parser.add_argument(
-        'source_files',
-        nargs='+',
+        "source_root",
         type=Path,
-        help='Python source files to document'
+        help="Root directory containing Python packages (e.g. src/python)",
     )
     parser.add_argument(
-        '--output-dir',
+        "--output-dir",
         type=Path,
-        default=Path('docs/doc/code'),
-        help='Output directory for generated markdown files (default: docs/doc/code)'
+        default=Path("docs/doc/code"),
+        help="Output directory (default: docs/doc/code)",
     )
     parser.add_argument(
-        '--nav-order',
+        "--nav-order",
         type=int,
         default=50,
-        help='Base navigation order for the Code Documentation section (default: 50)'
+        help="Base navigation order (default: 50)",
+    )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Remove existing .md files from output dir before generating",
     )
 
     args = parser.parse_args()
+    gen = JekyllGenerator(args.output_dir, args.nav_order)
 
-    # Initialize generator
-    generator = JekyllDocGenerator(args.output_dir, args.nav_order)
+    # Optionally clean stale output
+    if args.clean:
+        for old in args.output_dir.glob("*.md"):
+            old.unlink()
+            print(f"  removed {old.name}")
 
-    # Process each module
-    modules = []
-    for i, source_file in enumerate(args.source_files):
-        if not source_file.exists():
-            print(f"Warning: {source_file} not found, skipping")
-            continue
+    packages = discover_packages(args.source_root)
+    if not packages:
+        print(f"No packages found under {args.source_root}")
+        return
 
-        print(f"Processing {source_file}...")
-        module_nav_order = args.nav_order + i + 1
+    all_pkg_info: List[Dict[str, Any]] = []
 
-        # Extract functions
-        extractor = FunctionDocExtractor(source_file)
-        functions = extractor.extract_functions()
-        function_names = [f['name'] for f in functions]
+    for pkg_idx, pkg in enumerate(packages):
+        pkg_nav = args.nav_order + pkg_idx + 1
+        print(f"\nPackage: {pkg['name']}")
 
-        if not function_names:
-            continue
+        mod_infos: List[Dict[str, Any]] = []
 
-        # Generate function pages
-        generator.generate_module_docs(source_file, module_nav_order)
+        for mod_idx, mod_file in enumerate(pkg["files"]):
+            ext = DocExtractor(mod_file)
+            funcs = ext.functions()
+            classes = ext.classes()
 
-        # Generate module index
-        generator.generate_module_index(source_file.stem, function_names, module_nav_order)
+            if not funcs and not classes:
+                continue
 
-        modules.append({
-            'name': source_file.stem,
-            'functions': function_names
-        })
+            mod_info = {
+                "name": mod_file.stem,
+                "module_docstring": ext.module_docstring(),
+                "functions": funcs,
+                "classes": classes,
+            }
+            mod_nav = pkg_nav + (mod_idx + 1) * 0.01
+            gen.write_module_page(pkg["name"], mod_info, mod_nav)
+            mod_infos.append(mod_info)
 
-        print(f"  Generated docs for {len(function_names)} functions")
+            n_items = len(funcs) + len(classes)
+            print(f"  {mod_file.stem}: {n_items} items")
 
-    # Generate main index
-    if modules:
-        main_index = generator.generate_main_index(modules)
-        print(f"\nGenerated main index: {main_index}")
-        print(f"Total modules documented: {len(modules)}")
+        if mod_infos:
+            gen.write_package_index(pkg["name"], mod_infos, pkg_nav)
+            all_pkg_info.append(
+                {"name": pkg["name"], "modules": mod_infos}
+            )
+
+    if all_pkg_info:
+        gen.write_main_index(all_pkg_info)
+        total = sum(
+            len(m["functions"]) + len(m["classes"])
+            for p in all_pkg_info
+            for m in p["modules"]
+        )
+        print(
+            f"\nDone — {len(all_pkg_info)} packages, {total} documented items"
+        )
     else:
-        print("No modules to document")
+        print("No documentable items found")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
