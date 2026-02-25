@@ -56,6 +56,7 @@ def run_fmriprep(
     fs_subjects_dir=None,
     fmriprep_version=DEFAULT_FMRIPREP_VERSION,
     singularity_dir=None,
+    work_dir=None,
 ):
     """
     Run fMRIPrep using Singularity.
@@ -86,7 +87,10 @@ def run_fmriprep(
     """
     bids_dir = Path(bids_dir)
     output_dir = Path(output_dir)
-    work_dir = output_dir / 'work'
+    if work_dir is None:
+        work_dir = output_dir / 'work'
+    else:
+        work_dir = Path(work_dir) / 'fmriprep'
 
     if singularity_dir is None:
         singularity_dir = bids_dir / 'singularity_images'
@@ -290,6 +294,9 @@ def main():
     # Get singularity directory from config
     singularity_dir = paths.get('singularity_dir')
 
+    # Get work directory from config (must be outside BIDS tree)
+    work_dir = paths.get('work_dir')
+
     # Run fMRIPrep
     run_fmriprep(
         bids_dir=bids_dir,
@@ -302,6 +309,7 @@ def main():
         fs_subjects_dir=args.fs_subjects_dir,
         fmriprep_version=args.fmriprep_version,
         singularity_dir=singularity_dir,
+        work_dir=work_dir,
     )
 
 

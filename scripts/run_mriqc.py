@@ -37,6 +37,7 @@ def run_mriqc(
     fs_license=None,
     mriqc_version='24.0.0',
     singularity_dir=None,
+    work_dir=None,
 ):
     """
     Run MRIQC using Singularity
@@ -67,7 +68,10 @@ def run_mriqc(
 
     bids_dir = Path(bids_dir)
     output_dir = Path(output_dir)
-    work_dir = output_dir / 'work'
+    if work_dir is None:
+        work_dir = output_dir / 'work'
+    else:
+        work_dir = Path(work_dir) / 'mriqc'
     if singularity_dir is None:
         singularity_dir = bids_dir / 'singularity_images'
     else:
@@ -251,6 +255,9 @@ def main():
     # Get singularity directory from config
     singularity_dir = paths.get('singularity_dir')
 
+    # Get work directory from config (must be outside BIDS tree)
+    work_dir = paths.get('work_dir')
+
     # Run MRIQC
     run_mriqc(
         bids_dir=bids_dir,
@@ -262,6 +269,7 @@ def main():
         fs_license=args.fs_license,
         mriqc_version=args.mriqc_version,
         singularity_dir=singularity_dir,
+        work_dir=work_dir,
     )
 
 

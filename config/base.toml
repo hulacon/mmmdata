@@ -17,6 +17,9 @@ venv_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/.venv"
 output_dir = "/projects/hulacon/shared/mmmdata/derivatives"
 inventory_dir = "/projects/hulacon/shared/mmmdata/inventory"
 
+# Working directory for pipeline intermediate files (must be outside bids_project_dir)
+work_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/work"
+
 [slurm]
 # Default SLURM configuration
 partition = "medium"

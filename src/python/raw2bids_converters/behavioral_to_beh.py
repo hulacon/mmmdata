@@ -71,9 +71,9 @@ def convert_outscan_recognition(csv_path, output_tsv, dry_run=False):
     events = pd.DataFrame({
         "onset": onsets.values,
         "duration": rt_vals.values,
-        "subject": subj,
-        "session": sess,
-        "run": run,
+        "subject_id": subj,
+        "session_num": sess,
+        "run_num": run,
         "trial_type": "recognition",
         "modality": "visual",
         "word": df["word"].values,
@@ -192,9 +192,9 @@ def convert_file(csv_path, output_tsv, dry_run=False):
 SIDECAR_RECOGNITION = {
     "onset": {"Description": "Cumulative onset (sum of prior response times)", "Units": "s"},
     "duration": {"Description": "Response time for this trial", "Units": "s"},
-    "subject": {"Description": "Subject identifier number"},
-    "session": {"Description": "Cued recall session number"},
-    "run": {"Description": "Run number within the session"},
+    "subject_id": {"Description": "Subject identifier number"},
+    "session_num": {"Description": "Cued recall session number"},
+    "run_num": {"Description": "Run number within the session"},
     "trial_type": {
         "Description": "Type of trial",
         "Levels": {"recognition": "Two-alternative forced-choice recognition"},

@@ -16,7 +16,7 @@
 # Configuration
 BIDS_DIR="/projects/hulacon/shared/mmmdata"
 OUTPUT_DIR="${BIDS_DIR}/derivatives/mriqc"
-WORK_DIR="${OUTPUT_DIR}/work"
+WORK_DIR="/gpfs/projects/hulacon/shared/mmmdata/code/work/mriqc"
 SINGULARITY_DIR="${BIDS_DIR}/singularity_images"
 MRIQC_VERSION="24.0.0"
 MRIQC_IMAGE="${SINGULARITY_DIR}/mriqc-${MRIQC_VERSION}.simg"
