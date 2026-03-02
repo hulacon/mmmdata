@@ -64,7 +64,9 @@ EXAMPLES:
 NOTES:
     - fMRIPrep is participant-level only (no group stage)
     - For datasets with many sessions, use 'split' to avoid wall time limits
-    - The split pipeline: anat (48hr) -> func per-session (12hr each)
+    - The split pipeline: anat (48hr) -> pilot session 1 (48hr) -> remaining sessions (48hr, %6 throttle)
+    - The pilot session establishes anat postprocessing outputs (ribbon, probseg
+      warps, MNI transforms) before parallel sessions start, avoiding write races
     - Output: /projects/hulacon/shared/mmmdata/derivatives/fmriprep/
 
 EOF
@@ -175,6 +177,19 @@ submit_anat() {
 }
 
 # Function to submit per-session functional jobs for all subjects
+#
+# Uses a pilot-then-parallel strategy to avoid race conditions:
+#   1. Session 1 runs first (alone) to establish anat postprocessing outputs
+#      (ribbon mask, MNI probseg warps, etc.) in the shared derivatives dir.
+#   2. Remaining sessions launch after the pilot completes, with %6 throttle.
+#
+# This prevents 29 concurrent sessions from racing on DerivativesDataSink
+# writes to the same anat output files.
+#
+# TODO (future): Fold anat postprocessing into the anat-only stage or a
+# dedicated "stage 1.5" so the pilot session is no longer needed. The
+# --anat-only flag stops before postprocessing (ribbon, probseg warps,
+# MNI transforms), so currently the func stage must redo it.
 submit_func() {
     local dependency=${1:-}
 
@@ -191,19 +206,35 @@ submit_func() {
             continue
         fi
 
-        print_info "Submitting ${N_SESSIONS} session jobs for ${SUBJECT}..."
+        print_info "Submitting func jobs for ${SUBJECT} (${N_SESSIONS} sessions)..."
 
-        SBATCH_ARGS="--parsable --export=ALL,FMRIPREP_SUBJECT=${SUBJECT} --array=1-${N_SESSIONS}"
+        # Stage 2a: Pilot session runs first to establish anat postprocessing
+        PILOT_ARGS="--parsable --export=ALL,FMRIPREP_SUBJECT=${SUBJECT} --array=1"
         if [ -n "${dependency}" ]; then
-            SBATCH_ARGS="${SBATCH_ARGS} --dependency=afterok:${dependency}"
+            PILOT_ARGS="${PILOT_ARGS} --dependency=afterok:${dependency}"
         fi
 
-        JOB_ID=$(sbatch ${SBATCH_ARGS} "${SCRIPT_DIR}/fmriprep_func.sbatch")
+        PILOT_JOB_ID=$(sbatch ${PILOT_ARGS} "${SCRIPT_DIR}/fmriprep_func.sbatch")
 
         if [ $? -eq 0 ]; then
-            print_success "${SUBJECT}: submitted job ${JOB_ID} (${N_SESSIONS} sessions)"
+            print_success "${SUBJECT}: pilot session submitted as job ${PILOT_JOB_ID}"
         else
-            print_error "${SUBJECT}: submission failed"
+            print_error "${SUBJECT}: pilot session submission failed"
+            continue
+        fi
+
+        # Stage 2b: Remaining sessions after pilot completes, with throttle
+        if [ ${N_SESSIONS} -gt 1 ]; then
+            REMAINING_ARGS="--parsable --export=ALL,FMRIPREP_SUBJECT=${SUBJECT} --array=2-${N_SESSIONS}%6"
+            REMAINING_ARGS="${REMAINING_ARGS} --dependency=afterok:${PILOT_JOB_ID}"
+
+            REMAINING_JOB_ID=$(sbatch ${REMAINING_ARGS} "${SCRIPT_DIR}/fmriprep_func.sbatch")
+
+            if [ $? -eq 0 ]; then
+                print_success "${SUBJECT}: sessions 2-${N_SESSIONS} submitted as job ${REMAINING_JOB_ID} (after pilot, %6 throttle)"
+            else
+                print_error "${SUBJECT}: remaining sessions submission failed"
+            fi
         fi
     done
 }
@@ -230,13 +261,15 @@ submit_split() {
     echo ""
 
     # Stage 2: per-session func (depends on anat completing)
-    print_info "=== Stage 2: Functional preprocessing (will start after anat completes) ==="
+    # Uses pilot-then-parallel: session 1 first (anat postprocessing), then rest
+    print_info "=== Stage 2: Functional preprocessing (pilot + parallel) ==="
     submit_func "${ANAT_JOB_ID}"
 
     echo ""
     print_success "Split pipeline submitted!"
     print_info "Anat job: ${ANAT_JOB_ID}"
-    print_info "Func jobs will start after anat completes successfully"
+    print_info "Pilot sessions will start after anat completes"
+    print_info "Remaining sessions will start after each pilot completes (%6 throttle)"
     print_info "Monitor with: squeue -u \$USER -r"
 }
 

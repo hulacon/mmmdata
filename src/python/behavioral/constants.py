@@ -1,5 +1,7 @@
 """Constants, enums, and mappings for MMMData behavioral analysis."""
 
+from __future__ import annotations
+
 from enum import IntEnum
 from pathlib import Path
 

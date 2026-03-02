@@ -32,7 +32,9 @@ def run_mriqc(
     output_dir,
     analysis_level='participant',
     subjects=None,
+    session=None,
     nprocs=4,
+    omp_nthreads=None,
     mem_gb=16,
     fs_license=None,
     mriqc_version='24.0.0',
@@ -55,6 +57,8 @@ def run_mriqc(
         If None, processes all subjects
     nprocs : int
         Number of parallel processes
+    omp_nthreads : int, optional
+        Number of OpenMP threads per process (for ANTS/FSL internal parallelism)
     mem_gb : int
         Memory limit in GB
     fs_license : str or Path, optional
@@ -72,6 +76,14 @@ def run_mriqc(
         work_dir = output_dir / 'work'
     else:
         work_dir = Path(work_dir) / 'mriqc'
+
+    # Isolate work dir per-session to prevent race conditions when multiple
+    # session jobs run concurrently for the same subject
+    if session and subjects and len(subjects) == 1:
+        ses_id = session.replace('ses-', '')
+        subj_id = subjects[0].replace('sub-', '')
+        work_dir = work_dir / f'sub-{subj_id}_ses-{ses_id}'
+
     if singularity_dir is None:
         singularity_dir = bids_dir / 'singularity_images'
     else:
@@ -114,6 +126,7 @@ def run_mriqc(
         analysis_level,
         '--work-dir', str(work_dir),
         '--nprocs', str(nprocs),
+        '--omp-nthreads', str(omp_nthreads or nprocs),
         '--mem', str(mem_gb),
         '--verbose-reports',
         '--no-sub'
@@ -125,6 +138,11 @@ def run_mriqc(
             # Remove 'sub-' prefix if present for consistency
             subj_id = subj.replace('sub-', '')
             cmd.extend(['--participant-label', subj_id])
+
+    # Add session filter if specified
+    if session:
+        ses_id = session.replace('ses-', '')
+        cmd.extend(['--session-id', ses_id])
 
     # Add FreeSurfer license if provided
     if fs_license:
@@ -145,7 +163,11 @@ def run_mriqc(
         print(f"Subjects: {', '.join(subjects)}")
     else:
         print("Subjects: ALL")
+    if session:
+        ses_id = session.replace('ses-', '')
+        print(f"Session: ses-{ses_id}")
     print(f"Processes: {nprocs}")
+    print(f"OMP Threads: {omp_nthreads or nprocs}")
     print(f"Memory: {mem_gb} GB")
     print("=" * 60)
     print()
@@ -212,6 +234,18 @@ def main():
     )
 
     parser.add_argument(
+        '--omp-nthreads',
+        type=int,
+        default=None,
+        help='Number of OpenMP threads per process (default: same as --nprocs)'
+    )
+
+    parser.add_argument(
+        '--session',
+        help='Process only this session (e.g., ses-01 or 01)'
+    )
+
+    parser.add_argument(
         '--fs-license',
         help='Path to FreeSurfer license file (optional)'
     )
@@ -264,7 +298,9 @@ def main():
         output_dir=output_dir,
         analysis_level=args.analysis_level,
         subjects=args.subjects,
+        session=args.session,
         nprocs=args.nprocs,
+        omp_nthreads=args.omp_nthreads,
         mem_gb=args.mem_gb,
         fs_license=args.fs_license,
         mriqc_version=args.mriqc_version,

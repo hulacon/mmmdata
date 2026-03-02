@@ -41,15 +41,15 @@ Submit MRIQC jobs to SLURM cluster
 
 OPTIONS:
     participant     Submit participant-level analysis (all subjects, sequential)
-    array           Submit participant-level analysis (parallel array job) [RECOMMENDED]
+    array           Submit per-session analysis for all subjects [RECOMMENDED]
     group           Submit group-level analysis
     pipeline        Submit full pipeline (participant + group with dependency)
-    array-pipeline  Submit full pipeline using array job [RECOMMENDED]
+    array-pipeline  Submit full pipeline using per-session array jobs [RECOMMENDED]
 
     -h, --help      Show this help message
 
 EXAMPLES:
-    # Process all subjects in parallel (recommended)
+    # Process all subjects per-session in parallel (recommended)
     $0 array
 
     # Run full pipeline with automatic group report
@@ -95,29 +95,44 @@ submit_participant() {
     fi
 }
 
-# Function to submit array job
+# Function to submit per-session array jobs for all subjects
 submit_array() {
-    print_info "Submitting participant-level analysis (parallel array)..."
+    print_info "Submitting per-session MRIQC analysis for all subjects..."
     check_email "${SCRIPT_DIR}/mriqc_array.sbatch"
 
-    # Count subjects
-    N_SUBJECTS=$(ls -d /projects/hulacon/shared/mmmdata/sub-* 2>/dev/null | wc -l)
-    print_info "Found ${N_SUBJECTS} subjects"
+    BIDS_DIR="/projects/hulacon/shared/mmmdata"
+    SUBJECTS=($(ls -d ${BIDS_DIR}/sub-* | xargs -n 1 basename | sort))
+    print_info "Found ${#SUBJECTS[@]} subjects"
 
-    JOB_ID=$(sbatch --parsable "${SCRIPT_DIR}/mriqc_array.sbatch")
+    ALL_JOB_IDS=""
 
-    if [ $? -eq 0 ]; then
-        print_success "Array job submitted successfully!"
-        print_info "Job ID: ${JOB_ID}"
-        print_info "Array tasks: 1-${N_SUBJECTS}"
-        print_info "Monitor with: squeue -u \$USER -r"
-        print_info "View logs: tail -f ${SCRIPT_DIR}/../logs/mriqc_array_${JOB_ID}_*.out"
-        echo "$JOB_ID"
-        return 0
-    else
-        print_error "Job submission failed"
-        return 1
-    fi
+    for SUBJECT in "${SUBJECTS[@]}"; do
+        # Count sessions for this subject
+        N_SESSIONS=$(ls -d ${BIDS_DIR}/${SUBJECT}/ses-* 2>/dev/null | wc -l)
+
+        if [ ${N_SESSIONS} -eq 0 ]; then
+            print_warning "No sessions found for ${SUBJECT}, skipping"
+            continue
+        fi
+
+        print_info "Submitting ${N_SESSIONS} session jobs for ${SUBJECT}..."
+
+        JOB_ID=$(sbatch --parsable --export=ALL,MRIQC_SUBJECT=${SUBJECT} --array=1-${N_SESSIONS} "${SCRIPT_DIR}/mriqc_array.sbatch")
+
+        if [ $? -eq 0 ]; then
+            print_success "${SUBJECT}: submitted job ${JOB_ID} (${N_SESSIONS} sessions)"
+            if [ -n "$ALL_JOB_IDS" ]; then
+                ALL_JOB_IDS="${ALL_JOB_IDS}:${JOB_ID}"
+            else
+                ALL_JOB_IDS="${JOB_ID}"
+            fi
+        else
+            print_error "${SUBJECT}: submission failed"
+        fi
+    done
+
+    print_info "Monitor with: squeue -u \$USER -r"
+    echo "$ALL_JOB_IDS"
 }
 
 # Function to submit group job
@@ -187,19 +202,19 @@ case "$1" in
         ;;
 
     array-pipeline)
-        print_info "=== Submitting Full MRIQC Pipeline (Array) ==="
-        print_info "Step 1: Participant-level analysis (parallel array)"
-        ARRAY_JOB=$(submit_array)
+        print_info "=== Submitting Full MRIQC Pipeline (Per-Session Array) ==="
+        print_info "Step 1: Participant-level analysis (per-session)"
+        ALL_JOBS=$(submit_array)
 
-        if [ $? -eq 0 ]; then
+        if [ $? -eq 0 ] && [ -n "$ALL_JOBS" ]; then
             echo ""
-            print_info "Step 2: Group-level analysis (will run after all array tasks complete)"
-            submit_group "$ARRAY_JOB"
+            print_info "Step 2: Group-level analysis (will run after all session jobs complete)"
+            submit_group "$ALL_JOBS"
 
             echo ""
             print_success "=== Pipeline Submitted ==="
-            print_info "Array Job ID: ${ARRAY_JOB}"
-            print_info "Group job will automatically run after all array tasks complete"
+            print_info "Session Job IDs: ${ALL_JOBS}"
+            print_info "Group job will automatically run after all session jobs complete"
         fi
         ;;
 

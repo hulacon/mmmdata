@@ -60,6 +60,7 @@ def run_fmriprep(
     work_dir=None,
     anat_only=False,
     session=None,
+    derivatives=None,
 ):
     """
     Run fMRIPrep using Singularity.
@@ -92,6 +93,11 @@ def run_fmriprep(
     session : str, optional
         Process only this session (e.g., 'ses-01' or '01'). Creates a
         BIDS filter file to restrict functional processing to one session.
+        When session is specified with a single subject, the work directory
+        is isolated per-session to prevent race conditions between concurrent jobs.
+    derivatives : str or Path, optional
+        Path to pre-computed derivatives (e.g., fmriprep anat output).
+        Passed to fMRIPrep's --derivatives flag to skip reprocessing.
     """
     bids_dir = Path(bids_dir)
     output_dir = Path(output_dir)
@@ -99,6 +105,13 @@ def run_fmriprep(
         work_dir = output_dir / 'work'
     else:
         work_dir = Path(work_dir) / 'fmriprep'
+
+    # Isolate work dir per-session to prevent race conditions when multiple
+    # session jobs run concurrently for the same subject
+    if session and subjects and len(subjects) == 1:
+        ses_id = session.replace('ses-', '')
+        subj_id = subjects[0].replace('sub-', '')
+        work_dir = work_dir / f'sub-{subj_id}_ses-{ses_id}'
 
     if singularity_dir is None:
         singularity_dir = bids_dir / 'singularity_images'
@@ -147,6 +160,17 @@ def run_fmriprep(
             print(f"WARNING: FreeSurfer subjects dir not found: {fs_subjects_dir}")
             fs_subjects_dir = None
 
+    # Bind-mount pre-computed derivatives directory if needed
+    if derivatives:
+        derivatives = Path(derivatives)
+        if derivatives.exists():
+            deriv_str = str(derivatives)
+            if not deriv_str.startswith(str(output_dir)):
+                binds.extend(['-B', f'{deriv_str}:{deriv_str}:ro'])
+        else:
+            print(f"WARNING: Derivatives dir not found: {derivatives}, skipping")
+            derivatives = None
+
     # Build fMRIPrep command
     cmd = [
         'singularity', 'run', '--cleanenv',
@@ -186,6 +210,10 @@ def run_fmriprep(
         filter_file.write_text(json.dumps(bids_filter, indent=2))
         cmd.extend(['--bids-filter-file', str(filter_file)])
 
+    # Add pre-computed derivatives (e.g., anat from Stage 1)
+    if derivatives:
+        cmd.extend(['--derivatives', str(derivatives)])
+
     # Add FreeSurfer subjects dir if reusing
     if fs_subjects_dir:
         cmd.extend(['--fs-subjects-dir', str(fs_subjects_dir)])
@@ -201,6 +229,8 @@ def run_fmriprep(
     print(f"FS License:        {fs_license}")
     if fs_subjects_dir:
         print(f"FS Subjects Dir:   {fs_subjects_dir}")
+    if derivatives:
+        print(f"Derivatives:       {derivatives}")
     if anat_only:
         print(f"Mode:              anat-only")
     elif session:
@@ -304,6 +334,11 @@ def main():
     )
 
     parser.add_argument(
+        '--derivatives',
+        help='Path to pre-computed derivatives (e.g., fmriprep anat output) to skip reprocessing'
+    )
+
+    parser.add_argument(
         '--bids-dir',
         help='Override BIDS directory from config'
     )
@@ -354,6 +389,7 @@ def main():
         work_dir=work_dir,
         anat_only=args.anat_only,
         session=args.session,
+        derivatives=args.derivatives,
     )
 
 

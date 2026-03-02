@@ -1,15 +1,16 @@
 #!/bin/bash
 #SBATCH --job-name=fmriprep_func
-#SBATCH --partition=compute
-#SBATCH --time=12:00:00
+#SBATCH --partition=computelong
+#SBATCH --time=48:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=48G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fmriprep_func_%A_%a.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fmriprep_func_%A_%a.err
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=your-email@uoregon.edu
+#SBATCH --exclude=n0119,n0123,n0190
 
 #==============================================================================
 # fMRIPrep Functional Preprocessing - Per Session (SLURM Array Job)
@@ -88,9 +89,13 @@ cd ${SCRIPT_DIR}
 echo "Running fMRIPrep functional preprocessing for ${FMRIPREP_SUBJECT} ${SESSION}..."
 echo ""
 
+# Determine fmriprep derivatives dir for pre-computed anat results
+FMRIPREP_DERIVATIVES="${BIDS_DIR}/derivatives/fmriprep"
+
 python run_fmriprep.py \
     --subjects ${FMRIPREP_SUBJECT} \
     --session ${SESSION} \
+    --derivatives ${FMRIPREP_DERIVATIVES} \
     --nprocs ${SLURM_CPUS_PER_TASK} \
     --mem-gb $((${SLURM_MEM_PER_NODE} / 1024))
 
