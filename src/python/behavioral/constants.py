@@ -122,7 +122,7 @@ SESSION_ORDER: dict[str, int] = {f"{s:02d}": s - 4 for s in range(4, 19)}
 # ---------------------------------------------------------------------------
 
 TB2AFC_COLUMNS: list[str] = [
-    "onset", "duration", "subject_id", "session_num", "run_num",
+    "onset", "duration", "subj_num", "ses_num", "run_idx",
     "trial_type", "modality", "word", "image1", "image2",
     "correct_resp", "resp", "resp_RT", "trial_accuracy",
     "enCon", "reCon", "cueId", "pairId", "recog", "trial_id",
@@ -150,11 +150,11 @@ FINTIMELINE_COLUMNS: list[str] = [
 ]
 
 # Normalized column names after io.py loading
-# TB2AFC: subject_id -> subject, session_num -> session
+# TB2AFC: subj_num -> subject, ses_num -> session
 COLUMN_RENAMES: dict[str, str] = {
-    "subject_id": "subject",
-    "session_num": "session",
-    "run_num": "run",
+    "subj_num": "subject",
+    "ses_num": "session",
+    "run_idx": "run",
 }
 
 

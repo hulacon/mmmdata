@@ -250,19 +250,19 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize column types and drop redundant raw columns.
 
     Since ``load_tsv`` always injects ``subject`` and ``session``
-    from the BIDS filename, the raw ``subject_id`` and ``session_num``
+    from the BIDS filename, the raw ``subj_num`` and ``ses_num``
     columns (if present) are redundant. We drop them to avoid
     confusion but do NOT rename them (the filename-based values are
     already authoritative).
     """
     # Drop redundant raw columns that conflict with filename-based values
-    for raw_col in ("subject_id", "session_num"):
+    for raw_col in ("subj_num", "ses_num"):
         if raw_col in df.columns and COLUMN_RENAMES.get(raw_col) in df.columns:
             df = df.drop(columns=[raw_col])
 
-    # Rename run_num -> run if present
-    if "run_num" in df.columns:
-        df = df.rename(columns={"run_num": "run"})
+    # Rename run_idx -> run if present
+    if "run_idx" in df.columns:
+        df = df.rename(columns={"run_idx": "run"})
 
     # Ensure subject/session are zero-padded strings
     for col in ("subject", "session"):
