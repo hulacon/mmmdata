@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --mem=192G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/mriqc_array_%A_%a.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/mriqc_array_%A_%a.err
 #SBATCH --mail-type=END,FAIL
@@ -97,7 +97,7 @@ python run_mriqc.py \
     --subjects ${MRIQC_SUBJECT} \
     --session ${SESSION} \
     --nprocs 1 \
-    --omp-nthreads 4 \
+    --omp-nthreads 2 \
     --mem-gb $((${SLURM_MEM_PER_NODE} / 1024))
 
 # Capture exit status
