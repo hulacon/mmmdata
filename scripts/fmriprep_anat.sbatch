@@ -11,7 +11,7 @@
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fmriprep_anat_%A_%a.err
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=your-email@uoregon.edu
-#SBATCH --exclude=n0119,n0123,n0190
+#SBATCH --exclude=n0119,n0123,n0128,n0130,n0131,n0190
 
 #==============================================================================
 # fMRIPrep Anatomical-Only Preprocessing (SLURM Array Job)

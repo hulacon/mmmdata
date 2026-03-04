@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=fmriprep_func
-#SBATCH --partition=computelong
-#SBATCH --time=48:00:00
+#SBATCH --partition=compute
+#SBATCH --time=04:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -10,7 +10,7 @@
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fmriprep_func_%A_%a.err
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=your-email@uoregon.edu
-#SBATCH --exclude=n0119,n0123,n0190
+#SBATCH --exclude=n0119,n0123,n0128,n0130,n0131,n0190
 
 #==============================================================================
 # fMRIPrep Functional Preprocessing - Per Session (SLURM Array Job)

@@ -64,7 +64,7 @@ EXAMPLES:
 NOTES:
     - fMRIPrep is participant-level only (no group stage)
     - For datasets with many sessions, use 'split' to avoid wall time limits
-    - The split pipeline: anat (48hr) -> pilot session 1 (48hr) -> remaining sessions (48hr, %6 throttle)
+    - The split pipeline: anat (48hr) -> pilot session 1 (8hr computelong) -> remaining sessions (4hr compute, %6 throttle)
     - The pilot session establishes anat postprocessing outputs (ribbon, probseg
       warps, MNI transforms) before parallel sessions start, avoiding write races
     - Output: /projects/hulacon/shared/mmmdata/derivatives/fmriprep/
@@ -208,8 +208,12 @@ submit_func() {
 
         print_info "Submitting func jobs for ${SUBJECT} (${N_SESSIONS} sessions)..."
 
-        # Stage 2a: Pilot session runs first to establish anat postprocessing
+        # Stage 2a (stage 1.5): Pilot session runs first to establish anat
+        # postprocessing outputs (ribbon, probseg warps, MNI transforms).
+        # Gets extra time on computelong since it must redo anat postprocessing
+        # that --anat-only skips, in addition to func processing.
         PILOT_ARGS="--parsable --export=ALL,FMRIPREP_SUBJECT=${SUBJECT} --array=1"
+        PILOT_ARGS="${PILOT_ARGS} --partition=computelong --time=08:00:00"
         if [ -n "${dependency}" ]; then
             PILOT_ARGS="${PILOT_ARGS} --dependency=afterok:${dependency}"
         fi

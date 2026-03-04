@@ -14,6 +14,9 @@ _site/
 # Archives
 *.zip
 
+# Jupyter
+.ipynb_checkpoints/
+
 # Python
 __pycache__/
 *.py[cod]

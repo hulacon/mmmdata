@@ -5,12 +5,12 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=96G
+#SBATCH --mem=128G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/mriqc_array_%A_%a.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/mriqc_array_%A_%a.err
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=your-email@uoregon.edu
-#SBATCH --exclude=n0119,n0123,n0190
+#SBATCH --exclude=n0119,n0123,n0128,n0130,n0131,n0190
 
 #==============================================================================
 # MRIQC Participant-Level Analysis - Per Session (SLURM Array Job)
