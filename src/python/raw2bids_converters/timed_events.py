@@ -24,7 +24,7 @@ import sys
 import pandas as pd
 
 from common import (
-    NA, BIDS_ROOT, CR_SESSION_OFFSET, FR_SESSION_OFFSET,
+    NA, BIDS_ROOT, CR_SESSION_OFFSET, FINAL_SESSION, FR_SESSION_OFFSET,
     bids_ses_cr, bids_ses_fr, bids_sub, float_or_na, int_or_na,
     write_events_tsv, write_json_sidecar,
 )
@@ -334,7 +334,7 @@ SIDECAR_CUED_ENCODING = {
     "onset_actual": {"Description": "Measured event onset time", "Units": "s"},
     "duration_actual": {"Description": "Measured event duration", "Units": "s"},
     "subject_id": {"Description": "Subject identifier number"},
-    "session_num": {"Description": "Cued recall session number"},
+    "session_num": {"Description": "BIDS session number"},
     "run_num": {"Description": "Run number within the session"},
     "trial_type": {
         "Description": "Type of trial event",
@@ -371,7 +371,7 @@ SIDECAR_CUED_MATH = {
     "onset_actual": {"Description": "Measured event onset time", "Units": "s"},
     "duration_actual": {"Description": "Measured event duration", "Units": "s"},
     "subject_id": {"Description": "Subject identifier number"},
-    "session_num": {"Description": "Cued recall session number"},
+    "session_num": {"Description": "BIDS session number"},
     "run_num": {"Description": "Run number within the session"},
     "trial_type": {
         "Description": "Type of trial event",
@@ -394,7 +394,7 @@ SIDECAR_CUED_RETRIEVAL = {
     "onset_actual": {"Description": "Measured event onset time", "Units": "s"},
     "duration_actual": {"Description": "Measured event duration", "Units": "s"},
     "subject_id": {"Description": "Subject identifier number"},
-    "session_num": {"Description": "Cued recall session number"},
+    "session_num": {"Description": "BIDS session number"},
     "run_num": {"Description": "Run number within the session"},
     "trial_type": {
         "Description": "Type of trial event",
@@ -487,6 +487,16 @@ def convert_file(behavioral_csv, timing_csv, output_tsv, dry_run=False):
     task = detect_task(behavioral_csv)
     subj, sess, run = parse_subj_sess_run(behavioral_csv)
 
+    # Map raw behavioral session number to absolute BIDS session number
+    if task.startswith("cued_recall"):
+        bids_session = sess + CR_SESSION_OFFSET
+    elif task == "free_recall_math":
+        bids_session = sess + FR_SESSION_OFFSET
+    elif task == "final_cued_recall":
+        bids_session = FINAL_SESSION
+    else:
+        raise ValueError(f"Unknown task type for session mapping: {task}")
+
     beh_df = pd.read_csv(behavioral_csv)
     timing_df = pd.read_csv(timing_csv)
 
@@ -498,7 +508,7 @@ def convert_file(behavioral_csv, timing_csv, output_tsv, dry_run=False):
         "final_cued_recall": convert_final_cued_recall,
     }
 
-    events_df = converters[task](beh_df, timing_df, subj, sess, run)
+    events_df = converters[task](beh_df, timing_df, subj, bids_session, run)
     write_events_tsv(events_df, output_tsv, dry_run=dry_run)
 
     # Write JSON sidecar (same path but .json extension)
@@ -522,9 +532,10 @@ def find_timing_csv(behavioral_csv):
 
     # Search locations (in priority order)
     search_dirs = [
+        beh_dir,                                # same directory as behavioral
         os.path.join(beh_dir, "timing_data"),
-        os.path.join(beh_dir, "Timing"),       # sub_05 variant
-        os.path.join(beh_dir, "timing"),        # final cued recall variant
+        os.path.join(beh_dir, "Timing"),        # sub_05 variant
+        os.path.join(beh_dir, "timing"),         # final cued recall variant
     ]
 
     for d in search_dirs:

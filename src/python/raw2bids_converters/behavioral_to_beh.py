@@ -62,6 +62,7 @@ def convert_outscan_recognition(csv_path, output_tsv, dry_run=False):
     duration = resp_RT for current trial
     """
     subj, sess, run = parse_subj_sess_run(csv_path)
+    bids_session = sess + CR_SESSION_OFFSET
     df = pd.read_csv(csv_path)
 
     # Compute cumulative onset from resp_RT
@@ -72,7 +73,7 @@ def convert_outscan_recognition(csv_path, output_tsv, dry_run=False):
         "onset": onsets.values,
         "duration": rt_vals.values,
         "subject_id": subj,
-        "session_num": sess,
+        "session_num": bids_session,
         "run_num": run,
         "trial_type": "recognition",
         "modality": "visual",
@@ -193,7 +194,7 @@ SIDECAR_RECOGNITION = {
     "onset": {"Description": "Cumulative onset (sum of prior response times)", "Units": "s"},
     "duration": {"Description": "Response time for this trial", "Units": "s"},
     "subject_id": {"Description": "Subject identifier number"},
-    "session_num": {"Description": "Cued recall session number"},
+    "session_num": {"Description": "BIDS session number"},
     "run_num": {"Description": "Run number within the session"},
     "trial_type": {
         "Description": "Type of trial",
