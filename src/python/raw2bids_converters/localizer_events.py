@@ -56,16 +56,42 @@ def parse_subj_run(csv_path):
 
 
 def convert_auditory(csv_path, output_tsv, dry_run=False):
-    """Convert auditory localizer timing CSV -> BIDS events TSV."""
-    subj, _ = parse_subj_run(csv_path)
+    """Convert auditory localizer timing CSV -> BIDS events TSV.
+
+    Source has one row per trial with stim_start/stim_end and
+    stim_fixation_start/stim_fixation_end. Output has two events:
+    stimulus (auditory presentation) and fixation (post-stimulus).
+    """
+    subj, run = parse_subj_run(csv_path)
     df = pd.read_csv(csv_path)
 
-    events = pd.DataFrame({
-        "onset": df["stim_start"].astype(float),
-        "duration": df["stim_end"].astype(float) - df["stim_start"].astype(float),
-        "trial_type": "auditory_localizer",
-    })
+    events_list = []
+    for _, row in df.iterrows():
+        stim_start = float(row["stim_start"])
+        stim_end = float(row["stim_end"])
+        fix_end = float(row["stim_fixation_end"])
+        trial_id = int(row["trial_id"])
 
+        events_list.append({
+            "onset": stim_start,
+            "duration": stim_end - stim_start,
+            "subj_num": subj,
+            "ses_num": FINAL_SESSION,
+            "run_idx": run,
+            "trial_type": "stimulus",
+            "trial_id": trial_id,
+        })
+        events_list.append({
+            "onset": stim_end,
+            "duration": fix_end - stim_end,
+            "subj_num": subj,
+            "ses_num": FINAL_SESSION,
+            "run_idx": run,
+            "trial_type": "fixation",
+            "trial_id": trial_id,
+        })
+
+    events = pd.DataFrame(events_list)
     write_events_tsv(events, output_tsv, dry_run=dry_run)
 
     json_path = output_tsv.replace("_events.tsv", "_events.json")
@@ -81,6 +107,9 @@ def convert_motor(csv_path, output_tsv, dry_run=False):
     events = pd.DataFrame({
         "onset": df["onset"].astype(float),
         "duration": df["offset"].astype(float) - df["onset"].astype(float),
+        "subj_num": subj,
+        "ses_num": FINAL_SESSION,
+        "run_idx": run,
         "trial_type": df["task"],
     })
 
@@ -101,29 +130,27 @@ def convert_file(csv_path, output_tsv, dry_run=False):
 
 
 SIDECAR_AUDITORY = {
-    "onset": {
-        "Description": "Stimulus onset time relative to scanner start",
-        "Units": "s",
-    },
-    "duration": {
-        "Description": "Auditory stimulus duration",
-        "Units": "s",
-    },
+    "onset": {"Description": "Event onset time relative to scanner start", "Units": "s"},
+    "duration": {"Description": "Event duration", "Units": "s"},
+    "subj_num": {"Description": "Subject identifier number"},
+    "ses_num": {"Description": "BIDS session number"},
+    "run_idx": {"Description": "Run number within the session"},
     "trial_type": {
-        "Description": "Type of trial event",
-        "Levels": {"auditory_localizer": "Auditory localizer stimulus presentation"},
+        "Description": "Type of event",
+        "Levels": {
+            "stimulus": "Auditory localizer stimulus presentation",
+            "fixation": "Post-stimulus fixation period",
+        },
     },
+    "trial_id": {"Description": "Sequential trial number within the run"},
 }
 
 SIDECAR_MOTOR = {
-    "onset": {
-        "Description": "Block onset time relative to scanner start",
-        "Units": "s",
-    },
-    "duration": {
-        "Description": "Block duration",
-        "Units": "s",
-    },
+    "onset": {"Description": "Block onset time relative to scanner start", "Units": "s"},
+    "duration": {"Description": "Block duration", "Units": "s"},
+    "subj_num": {"Description": "Subject identifier number"},
+    "ses_num": {"Description": "BIDS session number"},
+    "run_idx": {"Description": "Run number within the session"},
     "trial_type": {
         "Description": "Motor task condition",
         "Levels": {
@@ -131,6 +158,7 @@ SIDECAR_MOTOR = {
             "mouth": "Mouth movement block",
             "saccade": "Saccade (eye movement) block",
             "hand": "Hand movement block",
+            "speak": "Speech production block",
             "rest": "Rest block (fixation)",
         },
     },

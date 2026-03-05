@@ -199,39 +199,73 @@ def convert_cued_recall_retrieval(beh_df, timing_df, subj, sess, run):
         stim_image_start, stim_image_end, stim_word_start, stim_word_end,
         stim_fixation_start, stim_fixation_end
 
-    onset = stim_word_start (word cue; stim_image columns are empty)
-    duration = stim_word_end - stim_word_start
+    Cue type is determined per-trial from which timing columns are populated:
+      - stim_image_* populated -> visual/image cue (cueId=1), duration=3.0s
+      - stim_word_*  populated -> auditory/word cue (cueId=2), duration=0.54s
 
     Rest trials: behavioral fields are empty, timing duplicates previous trial.
-    For rest trials, use fixation_end of previous trial as onset_actual,
-    and scheduled duration (0.54s) as duration_actual.
+    For rest trials, use fixation_end of previous trial as onset_actual.
+    Rest duration matches the session's cue type (3.0s image, 0.54s word).
     """
     beh_df = beh_df.copy()
     timing_df = timing_df.copy()
     beh_df["trial_id"] = beh_df["trial"]
     merged = pd.merge(beh_df, timing_df, on="trial_id", suffixes=("", "_timing"))
 
+    n_trials = len(merged)
+
     # Detect rest trials: cueId is NaN/empty
     is_rest = merged["cueId"].isna() | (merged["cueId"].astype(str).str.strip() == "")
 
-    # For normal trials, onset = stim_word_start
-    onset_actual = merged["stim_word_start"].astype(float).values.copy()
-    word_end = merged["stim_word_end"].astype(float).values
-    duration_actual = (word_end - onset_actual).copy()
+    # Detect cue type per-trial from which timing columns are populated
+    is_image = pd.notna(merged["stim_image_start"]) & pd.notna(merged["stim_image_end"])
+    is_word = pd.notna(merged["stim_word_start"]) & pd.notna(merged["stim_word_end"])
 
-    # For rest trials, use previous trial's stim_fixation_end as onset
+    # Build onset_actual and duration_actual from the correct timing columns
+    onset_actual = [None] * n_trials
+    duration_actual = [None] * n_trials
     fix_end = merged["stim_fixation_end"].astype(float).values
-    for i in range(len(merged)):
-        if is_rest.iloc[i] and i > 0:
-            onset_actual[i] = fix_end[i - 1]
-            duration_actual[i] = 0.54  # scheduled duration
 
-    n_trials = len(merged)
+    for i in range(n_trials):
+        if is_rest.iloc[i]:
+            # Rest trial: onset = previous trial's fixation end
+            if i > 0:
+                onset_actual[i] = fix_end[i - 1]
+            # duration_actual set below after we know the session cue type
+        elif is_image.iloc[i]:
+            onset_actual[i] = float(merged["stim_image_start"].iloc[i])
+            duration_actual[i] = float(merged["stim_image_end"].iloc[i]) - onset_actual[i]
+        elif is_word.iloc[i]:
+            onset_actual[i] = float(merged["stim_word_start"].iloc[i])
+            duration_actual[i] = float(merged["stim_word_end"].iloc[i]) - onset_actual[i]
+
+    # Rest trial duration is always 3.0s regardless of session cue type
+    rest_duration = 3.0
+
+    # Fill rest trial duration_actual
+    for i in range(n_trials):
+        if is_rest.iloc[i]:
+            duration_actual[i] = rest_duration
+
     onset_scheduled = [9.0 + 4.5 * i for i in range(n_trials)]
 
-    # Build trial_type: "word" for normal, "rest" for rest
-    trial_type = ["rest" if is_rest.iloc[i] else "word" for i in range(n_trials)]
-    modality = ["" if is_rest.iloc[i] else "auditory" for i in range(n_trials)]
+    # Build trial_type and modality per trial
+    trial_type = []
+    modality = []
+    duration_scheduled = []
+    for i in range(n_trials):
+        if is_rest.iloc[i]:
+            trial_type.append("rest")
+            modality.append(NA)
+            duration_scheduled.append(rest_duration)
+        elif is_image.iloc[i]:
+            trial_type.append("image")
+            modality.append("visual")
+            duration_scheduled.append(3.0)
+        else:
+            trial_type.append("word")
+            modality.append("auditory")
+            duration_scheduled.append(0.54)
 
     # For rest trials, null out behavioral columns
     def maybe_na(series, rest_mask, converter=None):
@@ -247,7 +281,7 @@ def convert_cued_recall_retrieval(beh_df, timing_df, subj, sess, run):
 
     events = pd.DataFrame({
         "onset": onset_scheduled,
-        "duration": [0.54] * n_trials,
+        "duration": duration_scheduled,
         "onset_actual": onset_actual,
         "duration_actual": duration_actual,
         "subj_num": subj,
@@ -284,14 +318,23 @@ def convert_free_recall_math(beh_df, timing_df, subj, sess, run):
 
 
 def convert_final_cued_recall(beh_df, timing_df, subj, sess, run):
-    """Final cued recall -> BIDS events.
+    """Final cued recall (ses-30) -> BIDS events.
 
     Behavioral columns: subjId, session, run, trial, enSession, enRun,
         enTrial, pairId, mmmId, nsdId, itmno, word, voiceId, sharedId,
         enCon, reCon, voice, trial_accuracy, cueId, resp, resp_RT
-    Timing columns: same as cued recall retrieval (stim_image empty, uses stim_word)
+    Timing columns: sub_id, task_id, sess_id, run_id, trial_id,
+        stim_image_start, stim_image_end, stim_word_start, stim_word_end,
+        stim_fixation_start, stim_fixation_end
 
-    Same structure as cued recall retrieval but with extra columns
+    Cue type is determined per-trial from which timing columns are populated:
+      - stim_image_* populated -> visual/image cue (cueId=1), duration=3.0s
+      - stim_word_*  populated -> auditory/word cue (cueId=2), duration=0.54s
+
+    Rest trials: behavioral fields are empty, timing duplicates previous trial.
+    Rest duration matches the run's cue type (3.0s for image runs, 0.54s for word runs).
+
+    Same structure as cued recall retrieval but with extra FIN-specific columns
     (enSession, enRun, enTrial, trial_accuracy).
     """
     beh_df = beh_df.copy()
@@ -299,26 +342,98 @@ def convert_final_cued_recall(beh_df, timing_df, subj, sess, run):
     beh_df["trial_id"] = beh_df["trial"]
     merged = pd.merge(beh_df, timing_df, on="trial_id", suffixes=("", "_timing"))
 
-    onset_actual = merged["stim_word_start"].astype(float)
-    fix_end = merged["stim_fixation_end"].astype(float)
-    duration_actual = fix_end - onset_actual  # full trial duration
-
     n_trials = len(merged)
 
+    # Detect rest trials: cueId is NaN/empty
+    is_rest = merged["cueId"].isna() | (merged["cueId"].astype(str).str.strip() == "")
+
+    # Detect cue type per-trial from which timing columns are populated
+    is_image = pd.notna(merged["stim_image_start"]) & pd.notna(merged["stim_image_end"])
+    is_word = pd.notna(merged["stim_word_start"]) & pd.notna(merged["stim_word_end"])
+
+    # Build onset_actual and duration_actual from the correct timing columns
+    onset_actual = [None] * n_trials
+    duration_actual = [None] * n_trials
+    fix_end = merged["stim_fixation_end"].astype(float).values
+
+    for i in range(n_trials):
+        if is_rest.iloc[i]:
+            if i > 0:
+                onset_actual[i] = fix_end[i - 1]
+        elif is_image.iloc[i]:
+            onset_actual[i] = float(merged["stim_image_start"].iloc[i])
+            duration_actual[i] = float(merged["stim_image_end"].iloc[i]) - onset_actual[i]
+        elif is_word.iloc[i]:
+            onset_actual[i] = float(merged["stim_word_start"].iloc[i])
+            duration_actual[i] = float(merged["stim_word_end"].iloc[i]) - onset_actual[i]
+
+    # Rest duration matches run's cue type: detect from non-rest trials
+    non_rest_image = is_image[~is_rest].any()
+    rest_duration = 3.0 if non_rest_image else 0.54
+
+    for i in range(n_trials):
+        if is_rest.iloc[i]:
+            duration_actual[i] = rest_duration
+
+    onset_scheduled = [9.0 + 4.5 * i for i in range(n_trials)]
+
+    # Build trial_type, modality, and scheduled duration per trial
+    trial_type = []
+    modality = []
+    duration_scheduled = []
+    for i in range(n_trials):
+        if is_rest.iloc[i]:
+            trial_type.append("rest")
+            modality.append(NA)
+            duration_scheduled.append(rest_duration)
+        elif is_image.iloc[i]:
+            trial_type.append("image")
+            modality.append("visual")
+            duration_scheduled.append(3.0)
+        else:
+            trial_type.append("word")
+            modality.append("auditory")
+            duration_scheduled.append(0.54)
+
+    # For rest trials, null out behavioral columns
+    def maybe_na(series, rest_mask, converter=None):
+        vals = []
+        for i, v in enumerate(series):
+            if rest_mask.iloc[i]:
+                vals.append(NA)
+            elif converter:
+                vals.append(converter(v))
+            else:
+                vals.append(v)
+        return vals
+
     events = pd.DataFrame({
-        "onset": onset_actual.values,
-        "duration": duration_actual.values,
-        "trial_type": "word",
-        "word": merged["word"].values,
-        "voice": merged["voice"].values,
-        "pairId": merged["pairId"].apply(int_or_na).values,
-        "mmmId": merged["mmmId"].apply(int_or_na).values,
-        "nsdId": merged["nsdId"].apply(int_or_na).values,
-        "sharedId": merged["sharedId"].apply(int_or_na).values,
-        "enCon": merged["enCon"].apply(int_or_na).values,
-        "reCon": merged["reCon"].apply(int_or_na).values,
-        "response": merged["resp"].apply(int_or_na).values,
-        "response_time": merged["resp_RT"].apply(float_or_na).values,
+        "onset": onset_scheduled,
+        "duration": duration_scheduled,
+        "onset_actual": onset_actual,
+        "duration_actual": duration_actual,
+        "subj_num": subj,
+        "ses_num": sess,
+        "run_idx": run,
+        "trial_type": trial_type,
+        "modality": modality,
+        "word": maybe_na(merged["word"], is_rest),
+        "pairId": maybe_na(merged["pairId"], is_rest, int_or_na),
+        "mmmId": maybe_na(merged["mmmId"], is_rest, int_or_na),
+        "nsdId": maybe_na(merged["nsdId"], is_rest, int_or_na),
+        "itmno": maybe_na(merged["itmno"], is_rest, int_or_na),
+        "sharedId": maybe_na(merged["sharedId"], is_rest, int_or_na),
+        "voiceId": maybe_na(merged["voiceId"], is_rest, int_or_na),
+        "voice": maybe_na(merged["voice"], is_rest),
+        "enCon": maybe_na(merged["enCon"], is_rest, int_or_na),
+        "reCon": maybe_na(merged["reCon"], is_rest, int_or_na),
+        "resp": maybe_na(merged["resp"], is_rest, int_or_na),
+        "resp_RT": maybe_na(merged["resp_RT"], is_rest, float_or_na),
+        "cueId": maybe_na(merged["cueId"], is_rest, float_or_na),
+        "enSession": maybe_na(merged["enSession"], is_rest, int_or_na),
+        "enRun": maybe_na(merged["enRun"], is_rest, int_or_na),
+        "enTrial": maybe_na(merged["enTrial"], is_rest, int_or_na),
+        "trial_accuracy": maybe_na(merged["trial_accuracy"], is_rest, float_or_na),
         "trial_id": merged["trial_id"].values,
     })
     return events
@@ -399,6 +514,7 @@ SIDECAR_CUED_RETRIEVAL = {
     "trial_type": {
         "Description": "Type of trial event",
         "Levels": {
+            "image": "Visual image presentation",
             "word": "Auditory word presentation",
             "rest": "Empty trial (fixation cross, no stimulus)",
         },
@@ -406,8 +522,9 @@ SIDECAR_CUED_RETRIEVAL = {
     "modality": {
         "Description": "Stimulus modality",
         "Levels": {
+            "visual": "Visual image presentation",
             "auditory": "Auditory word presentation",
-            "": "None (rest)",
+            "n/a": "None (rest)",
         },
     },
     "word": {"Description": "Word stimulus presented, if applicable"},
@@ -422,27 +539,51 @@ SIDECAR_CUED_RETRIEVAL = {
     "reCon": {"Description": "Retrieval condition (1=within, 2=across)"},
     "resp": {"Description": "Participant response button", "Units": "button number"},
     "resp_RT": {"Description": "Reaction time for participant response", "Units": "s"},
-    "cueId": {"Description": "Retrieval cue identifier"},
+    "cueId": {"Description": "Cue type identifier (1=visual/image, 2=auditory/word)"},
     "trial_id": {"Description": "Sequential trial number within the run"},
 }
 
 SIDECAR_FINAL_CUED_RECALL = {
-    "onset": {"Description": "Event onset time relative to scanner start", "Units": "s"},
-    "duration": {"Description": "Full trial duration", "Units": "s"},
+    "onset": {"Description": "Scheduled event onset time (design-based)", "Units": "s"},
+    "duration": {"Description": "Scheduled event duration (design-based)", "Units": "s"},
+    "onset_actual": {"Description": "Measured event onset time", "Units": "s"},
+    "duration_actual": {"Description": "Measured event duration", "Units": "s"},
+    "subj_num": {"Description": "Subject identifier number"},
+    "ses_num": {"Description": "BIDS session number"},
+    "run_idx": {"Description": "Run number within the session"},
     "trial_type": {
         "Description": "Type of trial event",
-        "Levels": {"word": "Auditory word cue presentation"},
+        "Levels": {
+            "image": "Visual image presentation",
+            "word": "Auditory word presentation",
+            "rest": "Empty trial (fixation cross, no stimulus)",
+        },
     },
-    "word": {"Description": "Cue word presented"},
-    "voice": {"Description": "Voice identity label"},
+    "modality": {
+        "Description": "Stimulus modality",
+        "Levels": {
+            "visual": "Visual image presentation",
+            "auditory": "Auditory word presentation",
+            "n/a": "None (rest)",
+        },
+    },
+    "word": {"Description": "Word stimulus presented, if applicable"},
     "pairId": {"Description": "Unique identifier for stimulus pair"},
     "mmmId": {"Description": "Unique stimulus ID in multimodal memory dataset"},
     "nsdId": {"Description": "Identifier for NSD stimulus set"},
+    "itmno": {"Description": "Internal stimulus number"},
     "sharedId": {"Description": "Shared stimulus ID across conditions"},
+    "voiceId": {"Description": "Numeric code for voice identity in auditory trials"},
+    "voice": {"Description": "Label for voice identity in auditory trials"},
     "enCon": {"Description": "Encoding condition (1=single, 2=repeats, 3=triplets)"},
     "reCon": {"Description": "Retrieval condition (1=within, 2=across)"},
-    "response": {"Description": "Participant response button", "Units": "button number"},
-    "response_time": {"Description": "Reaction time for participant response", "Units": "s"},
+    "resp": {"Description": "Participant response button", "Units": "button number"},
+    "resp_RT": {"Description": "Reaction time for participant response", "Units": "s"},
+    "cueId": {"Description": "Cue type identifier (1=visual/image, 2=auditory/word)"},
+    "enSession": {"Description": "Original encoding session number"},
+    "enRun": {"Description": "Original encoding run number"},
+    "enTrial": {"Description": "Original encoding trial number"},
+    "trial_accuracy": {"Description": "Trial accuracy (1.0=correct, 0.0=incorrect)"},
     "trial_id": {"Description": "Sequential trial number within the run"},
 }
 
