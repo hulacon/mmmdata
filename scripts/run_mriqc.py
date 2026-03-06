@@ -37,7 +37,7 @@ def run_mriqc(
     omp_nthreads=None,
     mem_gb=16,
     fs_license=None,
-    mriqc_version='24.0.0',
+    mriqc_version='24.0.2',
     singularity_dir=None,
     work_dir=None,
 ):
@@ -252,8 +252,8 @@ def main():
 
     parser.add_argument(
         '--mriqc-version',
-        default='24.0.0',
-        help='MRIQC version to use (default: 24.0.0)'
+        default='24.0.2',
+        help='MRIQC version to use (default: 24.0.2)'
     )
 
     parser.add_argument(

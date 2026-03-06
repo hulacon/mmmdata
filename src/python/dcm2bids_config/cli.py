@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ..core.config import load_config
 from .config_builder import build_config
-from .dicom_inspect import inspect_fieldmaps
+from .dicom_inspect import inspect_bold_series, inspect_fieldmaps
 from .overrides import apply_overrides, load_overrides
 from .session_defs import SESSION_SCHEDULE, get_session_def
 
@@ -129,6 +129,29 @@ def generate_one(
         return result
 
     result["config"] = config
+
+    # 5b. Check for truncated / duplicate BOLD series
+    dicom_dir = _resolve_dicom_dir(bids_root, subject, session)
+    if dicom_dir.is_dir():
+        bold_check = inspect_bold_series(dicom_dir)
+        if bold_check.truncated or bold_check.duplicates:
+            result["warnings"].extend(bold_check.warnings)
+            # Check if run_series overrides cover the duplicates
+            if ovr_result.run_series and bold_check.duplicates:
+                covered_tasks = set(ovr_result.run_series.keys())
+                for proto, entries in bold_check.duplicates.items():
+                    # Check if any task's protocol base matches
+                    task_covered = any(
+                        proto.rstrip("0123456789").rstrip("_run")
+                        in t.protocol_base.replace("{n}", "")
+                        for t in session_def.tasks
+                        if t.task_label in covered_tasks
+                    )
+                    if task_covered:
+                        result["warnings"].append(
+                            f"  -> Duplicate '{proto}' is handled by "
+                            f"run_series override"
+                        )
 
     # 6. Write or preview
     output_path = _resolve_output_path(config_dir, subject, session)

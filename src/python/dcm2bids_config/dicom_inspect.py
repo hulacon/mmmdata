@@ -4,6 +4,10 @@ This is the only module that touches the filesystem.  It scans the DICOM
 directory structure (``Series_##_<description>/``) to determine:
 - Which fieldmap strategy applies (series_description vs series_number)
 - The actual series numbers for each AP/PA pair
+
+It also provides post-conversion validation:
+- Detect truncated/aborted BOLD series (duplicate protocol names with few volumes)
+- Flag duplicate protocol names that may cause run-numbering issues
 """
 
 from __future__ import annotations
@@ -149,6 +153,132 @@ def inspect_fieldmaps(dicom_dir: Path) -> FieldmapDetection:
         else:
             result.warnings.append(
                 f"Unexpected fieldmap count: {len(ap_all)} AP, {len(pa_all)} PA."
+            )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# BOLD series inspection — detect aborted / duplicate acquisitions
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BoldSeriesInfo:
+    """Metadata for a single BOLD DICOM series directory."""
+
+    series_number: int
+    protocol_name: str
+    dicom_count: int
+    dir_name: str
+
+
+@dataclass
+class BoldInspection:
+    """Result of scanning BOLD series in a DICOM session directory.
+
+    Attributes
+    ----------
+    series : list[BoldSeriesInfo]
+        All non-SBRef, non-PhysioLog series found.
+    duplicates : dict[str, list[BoldSeriesInfo]]
+        Protocol names that appear more than once (potential aborts).
+    truncated : list[BoldSeriesInfo]
+        Series with fewer DICOMs than ``min_volumes``.
+    warnings : list[str]
+        Human-readable warnings about detected issues.
+    """
+
+    series: list[BoldSeriesInfo] = field(default_factory=list)
+    duplicates: dict[str, list[BoldSeriesInfo]] = field(default_factory=dict)
+    truncated: list[BoldSeriesInfo] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def inspect_bold_series(
+    dicom_dir: Path,
+    *,
+    min_volumes: int = 20,
+    protocol_filter: str | None = None,
+) -> BoldInspection:
+    """Scan a DICOM session directory for BOLD series anomalies.
+
+    Detects:
+    - Duplicate protocol names (same scan run twice, one likely aborted)
+    - Truncated series (fewer DICOMs than ``min_volumes``)
+
+    Parameters
+    ----------
+    dicom_dir : Path
+        Path to ``sourcedata/sub-XX/ses-YY/dicom/``.
+    min_volumes : int
+        Minimum DICOM count to consider a series complete. Series below
+        this threshold are flagged as truncated.
+    protocol_filter : str, optional
+        If provided, only inspect series whose directory name contains this
+        substring (e.g. ``"localizer_floc"``).
+
+    Returns
+    -------
+    BoldInspection
+        Detected series, duplicates, truncated entries, and warnings.
+    """
+    result = BoldInspection()
+
+    if not dicom_dir.is_dir():
+        result.warnings.append(f"Directory not found: {dicom_dir}")
+        return result
+
+    # Collect all non-SBRef, non-PhysioLog, non-scout, non-fmap series
+    skip_patterns = {"_SBRef", "_PhysioLog", "AAhead_scout", "se_epi_"}
+    for item in sorted(dicom_dir.iterdir()):
+        if not item.is_dir():
+            continue
+        if any(pat in item.name for pat in skip_patterns):
+            continue
+        m = re.match(r"Series_(\d+)_(.+)", item.name)
+        if not m:
+            continue
+        if protocol_filter and protocol_filter not in item.name:
+            continue
+
+        series_num = int(m.group(1))
+        protocol = m.group(2)
+        dcm_count = sum(1 for f in item.iterdir() if f.suffix == ".dcm")
+
+        info = BoldSeriesInfo(
+            series_number=series_num,
+            protocol_name=protocol,
+            dicom_count=dcm_count,
+            dir_name=item.name,
+        )
+        result.series.append(info)
+
+    # Detect duplicates (same protocol name, multiple series)
+    by_protocol: dict[str, list[BoldSeriesInfo]] = {}
+    for s in result.series:
+        by_protocol.setdefault(s.protocol_name, []).append(s)
+    for proto, entries in by_protocol.items():
+        if len(entries) > 1:
+            result.duplicates[proto] = entries
+            counts = [
+                f"Series {e.series_number} ({e.dicom_count} DICOMs)"
+                for e in entries
+            ]
+            result.warnings.append(
+                f"Duplicate protocol '{proto}': {', '.join(counts)}. "
+                f"Likely aborted scan — use run_series override to pin "
+                f"the correct series."
+            )
+
+    # Detect truncated series
+    for s in result.series:
+        if s.dicom_count < min_volumes:
+            result.truncated.append(s)
+            result.warnings.append(
+                f"Truncated series: {s.dir_name} has only {s.dicom_count} "
+                f"DICOMs (minimum: {min_volumes}). Likely an aborted "
+                f"acquisition."
             )
 
     return result

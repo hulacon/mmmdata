@@ -220,7 +220,9 @@ EXCEPTIONS: dict[tuple[str, str], dict[str, str]] = {
     ("sub-05", "ses-02"): {
         "dcm2bids": (
             "custom task list: prf (3 runs) + floc (3 runs) + tone; "
-            "2 fmap groups; scan stopped during tone (bathroom break)"
+            "2 fmap groups; scan stopped during tone (bathroom break); "
+            "floc_run1 aborted after 5 volumes (Series 27) and restarted "
+            "(Series 30) — requires run_series override to skip abort"
         ),
         "verified": "false",
     },

@@ -88,7 +88,8 @@
       "custom_entities": "task-floc",
       "criteria": {
         "ProtocolName": "localizer_floc_run1",
-        "MultibandAccelerationFactor": 3
+        "MultibandAccelerationFactor": 3,
+        "SeriesNumber": "30"
       },
       "sidecar_changes": {
         "TaskName": "floc",
@@ -101,7 +102,8 @@
       "suffix": "sbref",
       "custom_entities": "task-floc",
       "criteria": {
-        "SeriesDescription": "localizer_floc_run1_SBRef"
+        "SeriesDescription": "localizer_floc_run1_SBRef",
+        "SeriesNumber": "29"
       },
       "sidecar_changes": {
         "TaskName": "floc",
@@ -115,7 +117,8 @@
       "custom_entities": "task-floc",
       "criteria": {
         "ProtocolName": "localizer_floc_run2",
-        "MultibandAccelerationFactor": 3
+        "MultibandAccelerationFactor": 3,
+        "SeriesNumber": "34"
       },
       "sidecar_changes": {
         "TaskName": "floc",
@@ -128,7 +131,8 @@
       "suffix": "sbref",
       "custom_entities": "task-floc",
       "criteria": {
-        "SeriesDescription": "localizer_floc_run2_SBRef"
+        "SeriesDescription": "localizer_floc_run2_SBRef",
+        "SeriesNumber": "33"
       },
       "sidecar_changes": {
         "TaskName": "floc",
@@ -142,7 +146,8 @@
       "custom_entities": "task-floc",
       "criteria": {
         "ProtocolName": "localizer_floc_run3",
-        "MultibandAccelerationFactor": 3
+        "MultibandAccelerationFactor": 3,
+        "SeriesNumber": "38"
       },
       "sidecar_changes": {
         "TaskName": "floc",
@@ -155,7 +160,8 @@
       "suffix": "sbref",
       "custom_entities": "task-floc",
       "criteria": {
-        "SeriesDescription": "localizer_floc_run3_SBRef"
+        "SeriesDescription": "localizer_floc_run3_SBRef",
+        "SeriesNumber": "37"
       },
       "sidecar_changes": {
         "TaskName": "floc",

@@ -20,6 +20,13 @@ fmap_group = "second"
 runs = 3
 has_sbref = true
 
+# floc_run1 was aborted after 5 volumes (Series 27) and restarted (Series 30).
+# Pin to the correct (complete) series to skip the truncated acquisition.
+[ses-02.run_series.floc]
+1 = {bold = 30, sbref = 29}
+2 = {bold = 34, sbref = 33}
+3 = {bold = 38, sbref = 37}
+
 [[ses-02.tasks]]
 task_label = "tone"
 protocol_base = "localizer_tone"

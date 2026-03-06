@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=mriqc_array
-#SBATCH --partition=computelong
-#SBATCH --time=24:00:00
+#SBATCH --partition=compute
+#SBATCH --time=06:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=192G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=64G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/mriqc_array_%A_%a.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/mriqc_array_%A_%a.err
 #SBATCH --mail-type=END,FAIL
