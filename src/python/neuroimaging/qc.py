@@ -556,13 +556,12 @@ def summarize_motion(
     ses_part = f"ses-{session}" if session else "ses-*"
     task_part = f"task-{task}" if task else "task-*"
 
-    pattern = f"{sub_part}/{ses_part}/func/*_{task_part}_*_desc-confounds_timeseries.tsv"
-    tsv_files = sorted(fmriprep_dir.glob(pattern))
-
-    # If task filter didn't match (maybe no run entity), try without trailing *
-    if not tsv_files and task:
-        pattern = f"{sub_part}/{ses_part}/func/*_{task_part}_desc-confounds_timeseries.tsv"
-        tsv_files = sorted(fmriprep_dir.glob(pattern))
+    # Match confounds files both with and without a run- entity
+    pattern_with_run = f"{sub_part}/{ses_part}/func/*_{task_part}_*_desc-confounds_timeseries.tsv"
+    pattern_no_run = f"{sub_part}/{ses_part}/func/*_{task_part}_desc-confounds_timeseries.tsv"
+    tsv_files = sorted(
+        set(fmriprep_dir.glob(pattern_with_run)) | set(fmriprep_dir.glob(pattern_no_run))
+    )
 
     runs = []
     for tsv in tsv_files:
