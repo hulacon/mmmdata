@@ -28,7 +28,6 @@ pytest tests/ -v
 
 ```bash
 pytest tests/test_config.py
-pytest tests/test_create_bids_inventory.py
 ```
 
 ### Run Specific Test Classes or Methods
@@ -45,7 +44,6 @@ pytest tests/test_config.py::TestLoadConfig::test_load_base_config_only
 
 - `conftest.py` - Shared fixtures and pytest configuration
 - `test_config.py` - Tests for configuration loading utilities
-- `test_create_bids_inventory.py` - Tests for BIDS inventory creation script
 - `__init__.py` - Package marker
 
 ## Writing New Tests
