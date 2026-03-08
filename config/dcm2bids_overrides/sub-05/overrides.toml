@@ -27,11 +27,7 @@ has_sbref = true
 2 = {bold = 34, sbref = 33}
 3 = {bold = 38, sbref = 37}
 
-[[ses-02.tasks]]
-task_label = "tone"
-protocol_base = "localizer_tone"
-fmap_group = "second"
-has_sbref = true
+# tone excluded: truncated scan (279/320 volumes); 2 good runs in ses-03
 
 [ses-02.fmap_series.first]
 ap = 5

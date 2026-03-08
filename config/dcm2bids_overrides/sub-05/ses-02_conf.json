@@ -169,33 +169,6 @@
       }
     },
     {
-      "id": "task_tone",
-      "datatype": "func",
-      "suffix": "bold",
-      "custom_entities": "task-tone",
-      "criteria": {
-        "ProtocolName": "localizer_tone",
-        "MultibandAccelerationFactor": 3
-      },
-      "sidecar_changes": {
-        "TaskName": "tone",
-        "B0FieldSource": "B0map_second_sub05_ses02"
-      }
-    },
-    {
-      "id": "task_tone",
-      "datatype": "func",
-      "suffix": "sbref",
-      "custom_entities": "task-tone",
-      "criteria": {
-        "SeriesDescription": "localizer_tone_SBRef"
-      },
-      "sidecar_changes": {
-        "TaskName": "tone",
-        "B0FieldSource": "B0map_second_sub05_ses02"
-      }
-    },
-    {
       "datatype": "fmap",
       "suffix": "epi",
       "custom_entities": "dir-AP",
