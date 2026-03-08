@@ -142,7 +142,13 @@ def _category_matches_check(category: str, check_name: str, result: dict) -> boo
 
 def apply_exceptions(results: list[dict], exceptions: list[dict]) -> list[dict]:
     """
-    Downgrade results that match known exceptions from fail/warn to info.
+    Apply known exceptions to validation results.
+
+    By default, matching exceptions downgrade fail/warn → info (design
+    deviations that are fully accounted for).  Exceptions with
+    ``data_missing = true`` instead keep the original status and annotate
+    the message — the data is genuinely absent, even though the reason is
+    known.
 
     Modifies results in place and returns them.
     """
@@ -150,11 +156,17 @@ def apply_exceptions(results: list[dict], exceptions: list[dict]) -> list[dict]:
         if r["status"] in ("fail", "warn"):
             exc = match_exception(r, exceptions)
             if exc:
-                r["status"] = "info"
                 desc = exc.get("description", "known exception")
-                r["message"] = f"[EXCEPTION] {desc}" + (
-                    f" | {r['message']}" if r["message"] else ""
-                )
+                if exc.get("data_missing", False):
+                    # Keep original status — data is genuinely missing
+                    r["message"] = f"[KNOWN MISSING] {desc}" + (
+                        f" | {r['message']}" if r["message"] else ""
+                    )
+                else:
+                    r["status"] = "info"
+                    r["message"] = f"[EXCEPTION] {desc}" + (
+                        f" | {r['message']}" if r["message"] else ""
+                    )
     return results
 
 
@@ -189,8 +201,13 @@ def store_results(conn: sqlite3.Connection, results: list[dict]):
 def print_summary(results: list[dict]):
     """Print a summary table to the terminal."""
     counts = {"pass": 0, "fail": 0, "warn": 0, "info": 0}
+    n_known_missing = 0
     for r in results:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
+        if r["message"] and r["message"].startswith("[KNOWN MISSING]"):
+            n_known_missing += 1
+
+    n_new_warn = counts["warn"] - n_known_missing
 
     total = len(results)
     print(f"\n{'='*60}")
@@ -198,8 +215,8 @@ def print_summary(results: list[dict]):
     print(f"{'='*60}")
     print(f"  PASS: {counts['pass']}")
     print(f"  FAIL: {counts['fail']}")
-    print(f"  WARN: {counts['warn']}")
-    print(f"  INFO: {counts['info']}  (known exceptions)")
+    print(f"  WARN: {n_new_warn}  (+{n_known_missing} known missing)")
+    print(f"  INFO: {counts['info']}  (design exceptions)")
     print(f"{'='*60}")
 
     # Group failures and warnings by check
@@ -208,24 +225,56 @@ def print_summary(results: list[dict]):
         print("\n  No unresolved failures or warnings.\n")
         return
 
-    print(f"\n  Unresolved issues ({len(issues)}):\n")
+    # Split known-missing from new issues
+    new_issues = [r for r in issues
+                  if not (r["message"] and r["message"].startswith("[KNOWN MISSING]"))]
+    known_missing = [r for r in issues
+                     if r["message"] and r["message"].startswith("[KNOWN MISSING]")]
 
-    by_check = {}
-    for r in issues:
-        by_check.setdefault(r["check_name"], []).append(r)
+    if new_issues:
+        print(f"\n  Unresolved issues ({len(new_issues)}):\n")
 
-    for check, items in sorted(by_check.items()):
-        print(f"  [{check}] ({len(items)} issues)")
-        for r in items[:10]:  # cap per-check display
-            run_str = f" run-{r['run']}" if r["run"] else ""
-            task_str = f" {r['task']}" if r["task"] else ""
-            print(f"    {r['status'].upper()}: {r['subject']} {r['session']}"
-                  f"{task_str}{run_str}")
-            if r["message"]:
-                print(f"           {r['message']}")
-        if len(items) > 10:
-            print(f"    ... and {len(items) - 10} more")
-        print()
+        by_check = {}
+        for r in new_issues:
+            by_check.setdefault(r["check_name"], []).append(r)
+
+        for check, items in sorted(by_check.items()):
+            print(f"  [{check}] ({len(items)} issues)")
+            for r in items[:10]:  # cap per-check display
+                run_str = f" run-{r['run']}" if r["run"] else ""
+                task_str = f" {r['task']}" if r["task"] else ""
+                print(f"    {r['status'].upper()}: {r['subject']} {r['session']}"
+                      f"{task_str}{run_str}")
+                if r["message"]:
+                    print(f"           {r['message']}")
+            if len(items) > 10:
+                print(f"    ... and {len(items) - 10} more")
+            print()
+
+    if known_missing:
+        print(f"\n  Known missing data ({len(known_missing)}):\n")
+
+        by_check = {}
+        for r in known_missing:
+            by_check.setdefault(r["check_name"], []).append(r)
+
+        for check, items in sorted(by_check.items()):
+            # Group by unique description to avoid repetition
+            by_desc = {}
+            for r in items:
+                desc = r["message"].replace("[KNOWN MISSING] ", "").split(" | ")[0]
+                by_desc.setdefault(desc, []).append(r)
+
+            print(f"  [{check}] ({len(items)} items)")
+            for desc, group in by_desc.items():
+                sessions = sorted({f"{r['subject']}/{r['session']}" for r in group})
+                if len(sessions) <= 5:
+                    print(f"    {desc}")
+                    print(f"      Sessions: {', '.join(sessions)}")
+                else:
+                    print(f"    {desc}")
+                    print(f"      {len(sessions)} subject/session pairs affected")
+            print()
 
 
 def export_tsv(results: list[dict], out_path: Path):

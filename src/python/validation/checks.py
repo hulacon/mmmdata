@@ -525,19 +525,20 @@ def check_json_sidecar(conn, schema, subjects, sessions):
 
 
 def check_physio_presence(conn, schema, subjects, sessions):
-    """Check expected physio channels are present for bold runs."""
+    """Check expected physio channels are present for all functional sessions.
+
+    Compares against the *ideal* dataset (every bold session should have
+    physio) rather than only sessions where physio was actually collected.
+    Sessions listed in ``[physio] exclude_sessions`` are skipped.
+    """
     results = []
     cur = conn.cursor()
-    expected_recs = schema.get("physio", {}).get("recording_types", [])
+    physio_cfg = schema.get("physio", {})
+    expected_recs = physio_cfg.get("recording_types", [])
     if not expected_recs:
         return results
 
-    # Get sessions where physio_used=true
-    physio_sessions = cur.execute(
-        """SELECT subject, session FROM session_metadata
-           WHERE physio_used IN ('True', 'true', '1', 'TRUE', 'yes')"""
-    ).fetchall()
-    physio_set = {(s, ss) for s, ss in physio_sessions}
+    exclude = set(physio_cfg.get("exclude_sessions", []))
 
     bold_sessions = cur.execute(
         """SELECT DISTINCT subject, session FROM files
@@ -552,7 +553,7 @@ def check_physio_presence(conn, schema, subjects, sessions):
     ).fetchall()
 
     for sub, ses in bold_sessions:
-        if (sub, ses) not in physio_set:
+        if ses in exclude:
             continue
 
         for rec in expected_recs:
@@ -568,23 +569,40 @@ def check_physio_presence(conn, schema, subjects, sessions):
                     "physio_presence", sub, ses, "warn",
                     expected=f"{rec} physio files",
                     actual="none",
-                    message=f"No {rec} physio despite physio_used=true"
+                    message=f"No {rec} physio for {sub} {ses}"
                 ))
 
     return results
 
 
 def check_eyetracking_presence(conn, schema, subjects, sessions):
-    """Check eyetracking files for sessions where eyetracking_used=true."""
+    """Check eyetracking files are present for all functional sessions.
+
+    Compares against the *ideal* dataset (every bold session should have
+    eyetracking) rather than only sessions where it was actually collected.
+    Sessions listed in ``[physio.eyetracking] exclude_sessions`` are skipped.
+    """
     results = []
     cur = conn.cursor()
 
-    et_sessions = cur.execute(
-        """SELECT subject, session FROM session_metadata
-           WHERE eyetracking_used IN ('True', 'true', '1', 'TRUE', 'yes')"""
+    et_cfg = schema.get("physio", {}).get("eyetracking", {})
+    exclude = set(et_cfg.get("exclude_sessions", []))
+
+    bold_sessions = cur.execute(
+        """SELECT DISTINCT subject, session FROM files
+           WHERE suffix='bold'
+             AND (%s OR subject IN (%s))
+             AND (%s OR session IN (%s))""" % (
+            "1" if not subjects else "0",
+            ",".join(f"'{s}'" for s in subjects) if subjects else "'_'",
+            "1" if not sessions else "0",
+            ",".join(f"'{s}'" for s in sessions) if sessions else "'_'",
+        )
     ).fetchall()
 
-    for sub, ses in et_sessions:
+    for sub, ses in bold_sessions:
+        if ses in exclude:
+            continue
         if subjects and sub not in subjects:
             continue
         if sessions and ses not in sessions:
@@ -602,7 +620,7 @@ def check_eyetracking_presence(conn, schema, subjects, sessions):
                 "eyetracking_presence", sub, ses, "warn",
                 expected="eyetracking files",
                 actual="none",
-                message="No eyetracking files despite eyetracking_used=true"
+                message=f"No eyetracking for {sub} {ses}"
             ))
 
     return results
