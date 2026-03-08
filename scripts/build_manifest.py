@@ -111,7 +111,8 @@ CREATE TABLE IF NOT EXISTS events_meta (
     n_rows INTEGER,
     columns TEXT,
     onset_min REAL, onset_max REAL,
-    duration_min REAL, duration_max REAL
+    duration_min REAL, duration_max REAL,
+    end_max REAL
 );
 
 CREATE TABLE IF NOT EXISTS physio_meta (
@@ -360,29 +361,38 @@ def ingest_events_meta(conn: sqlite3.Connection, bids_dir: Path):
                 columns = reader.fieldnames or []
                 onsets = []
                 durations = []
+                ends = []
                 n_rows = 0
                 for row in reader:
                     n_rows += 1
+                    onset_val = None
+                    dur_val = None
                     if "onset" in row and row["onset"] not in ("n/a", ""):
                         try:
-                            onsets.append(float(row["onset"]))
+                            onset_val = float(row["onset"])
+                            onsets.append(onset_val)
                         except ValueError:
                             pass
                     if "duration" in row and row["duration"] not in ("n/a", ""):
                         try:
-                            durations.append(float(row["duration"]))
+                            dur_val = float(row["duration"])
+                            durations.append(dur_val)
                         except ValueError:
                             pass
+                    if onset_val is not None and dur_val is not None:
+                        ends.append(onset_val + dur_val)
 
             cursor.execute(
                 """INSERT OR REPLACE INTO events_meta
-                   (path, n_rows, columns, onset_min, onset_max, duration_min, duration_max)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (path, n_rows, columns, onset_min, onset_max,
+                    duration_min, duration_max, end_max)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (rel_path, n_rows, json.dumps(columns),
                  min(onsets) if onsets else None,
                  max(onsets) if onsets else None,
                  min(durations) if durations else None,
-                 max(durations) if durations else None)
+                 max(durations) if durations else None,
+                 max(ends) if ends else None)
             )
             count += 1
         except Exception as e:

@@ -119,6 +119,58 @@ def check_file_presence(conn, schema, subjects, sessions):
     return results
 
 
+def check_total_runs(conn, schema, subjects, sessions):
+    """Verify total run count per subject matches expectations."""
+    results = []
+    cur = conn.cursor()
+    tasks = schema.get("tasks", {})
+
+    for sub in subjects:
+        for task_name, task_cfg in tasks.items():
+            task_label = task_cfg.get("task_label", task_name)
+            expected_total = task_cfg.get("total_runs_per_subject")
+            if expected_total is None or isinstance(expected_total, str):
+                continue  # skip "variable" or unset
+
+            datatype = task_cfg.get("datatype", "func")
+            if datatype == "beh":
+                suffix, fmt = "beh", ".tsv"
+            else:
+                suffix, fmt = "bold", ".nii.gz"
+
+            actual_total = cur.execute(
+                """SELECT COUNT(*) FROM files
+                   WHERE subject=? AND task=? AND suffix=? AND format=?""",
+                (sub, task_label, suffix, fmt)
+            ).fetchone()[0]
+
+            if actual_total == expected_total:
+                results.append(_result(
+                    "total_runs", sub, "", "pass",
+                    task=task_label,
+                    expected=f"{expected_total} total runs",
+                    actual=str(actual_total),
+                ))
+            elif actual_total < expected_total:
+                results.append(_result(
+                    "total_runs", sub, "", "fail",
+                    task=task_label,
+                    expected=f"{expected_total} total runs",
+                    actual=str(actual_total),
+                    message=f"Missing {expected_total - actual_total} {task_label} run(s) across all sessions"
+                ))
+            else:
+                results.append(_result(
+                    "total_runs", sub, "", "warn",
+                    task=task_label,
+                    expected=f"{expected_total} total runs",
+                    actual=str(actual_total),
+                    message=f"Extra {actual_total - expected_total} {task_label} run(s) across all sessions"
+                ))
+
+    return results
+
+
 def check_volume_count(conn, schema, subjects, sessions):
     """Verify NIfTI volume counts match expectations."""
     results = []
@@ -327,14 +379,14 @@ def check_events_columns(conn, schema, subjects, sessions):
 
 
 def check_events_timing(conn, schema, subjects, sessions):
-    """Verify event onsets are monotonically increasing and within scan duration."""
+    """Verify event onsets are non-negative and events end within scan duration."""
     results = []
     cur = conn.cursor()
     meta_tr = schema.get("meta", {}).get("tr", 1.5)
 
     rows = cur.execute(
         """SELECT f.subject, f.session, f.task, f.run,
-                  em.onset_min, em.onset_max, em.path
+                  em.onset_min, em.onset_max, em.end_max, em.path
            FROM files f
            JOIN events_meta em ON f.path = em.path
            WHERE f.suffix='events'
@@ -347,7 +399,7 @@ def check_events_timing(conn, schema, subjects, sessions):
         )
     ).fetchall()
 
-    for sub, ses, task, run, onset_min, onset_max, path in rows:
+    for sub, ses, task, run, onset_min, onset_max, end_max, path in rows:
         if onset_min is not None and onset_min < 0:
             results.append(_result(
                 "events_timing", sub, ses, "warn",
@@ -357,7 +409,7 @@ def check_events_timing(conn, schema, subjects, sessions):
                 message=f"Negative onset in {path}"
             ))
 
-        # Check onset_max against scan duration (bold nt * tr)
+        # Check that no event extends past the end of the scan
         bold_meta = cur.execute(
             """SELECT n.nt, n.tr FROM nifti_meta n
                JOIN files f ON n.path = f.path
@@ -367,17 +419,31 @@ def check_events_timing(conn, schema, subjects, sessions):
             (sub, ses, task, run, run)
         ).fetchone()
 
-        if bold_meta and onset_max is not None:
+        if bold_meta:
             nt, tr = bold_meta
             tr = tr or meta_tr
             scan_dur = nt * tr
-            if onset_max > scan_dur:
+
+            # Prefer end_max (onset + duration) if available, fall back to onset_max
+            event_end = end_max if end_max is not None else onset_max
+            if event_end is not None and event_end > scan_dur:
+                overshoot = event_end - scan_dur
+                # Within 1 TR is a timing precision issue (warn);
+                # beyond 1 TR is a genuine problem (fail)
+                severity = "warn" if overshoot <= tr else "fail"
                 results.append(_result(
-                    "events_timing", sub, ses, "warn",
+                    "events_timing", sub, ses, severity,
                     task=task, run=run,
-                    expected=f"onset_max < {scan_dur:.1f}s",
-                    actual=f"onset_max={onset_max:.1f}s",
-                    message=f"Event onset exceeds scan duration in {path}"
+                    expected=f"events end <= {scan_dur:.1f}s ({nt} vols × {tr}s)",
+                    actual=f"last event ends at {event_end:.1f}s (+{overshoot:.2f}s)",
+                    message=f"Event extends past scan duration in {path}"
+                ))
+            elif event_end is not None:
+                results.append(_result(
+                    "events_timing", sub, ses, "pass",
+                    task=task, run=run,
+                    expected=f"events end <= {scan_dur:.1f}s",
+                    actual=f"last event ends at {event_end:.1f}s",
                 ))
 
     return results
@@ -622,6 +688,7 @@ def check_session_metadata(conn, schema, subjects, sessions):
 
 ALL_CHECKS = {
     "file_presence": check_file_presence,
+    "total_runs": check_total_runs,
     "volume_count": check_volume_count,
     "events_row_count": check_events_row_count,
     "events_columns": check_events_columns,

@@ -128,7 +128,7 @@ def _category_matches_check(category: str, check_name: str, result: dict) -> boo
         "physio": ["physio_presence"],
         "physio_collection": ["physio_presence"],
         "eyetracking": ["eyetracking_presence"],
-        "run_count": ["file_presence"],
+        "run_count": ["file_presence", "total_runs"],
         "volume_count": ["volume_count"],
     }
 
