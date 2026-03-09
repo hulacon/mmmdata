@@ -53,7 +53,7 @@ echo ""
 
 echo "=== Running validation ==="
 cd "$REPO_ROOT"
-$PYTHON -m validation.run
+PYTHONPATH=src/python $PYTHON -m validation.run
 echo ""
 
 echo "=== Inventory rebuild complete ==="

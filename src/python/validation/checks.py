@@ -267,6 +267,62 @@ def check_volume_count(conn, schema, subjects, sessions):
     return results
 
 
+def check_events_presence(conn, schema, subjects, sessions):
+    """Verify that every bold run with has_events=true has a matching events file."""
+    results = []
+    cur = conn.cursor()
+    tasks = schema.get("tasks", {})
+
+    for sub in subjects:
+        for task_name, task_cfg in tasks.items():
+            if not task_cfg.get("has_events", False):
+                continue
+
+            task_label = task_cfg.get("task_label", task_name)
+            datatype = task_cfg.get("datatype", "func")
+            if datatype != "func":
+                continue
+
+            # Find all bold NIfTIs for this task
+            bold_rows = cur.execute(
+                """SELECT f.subject, f.session, f.task, f.run
+                   FROM files f
+                   WHERE f.subject=? AND f.task=? AND f.suffix='bold'
+                     AND f.format='.nii.gz'
+                     AND (%s OR f.session IN (%s))""" % (
+                    "1" if not sessions else "0",
+                    ",".join(f"'{s}'" for s in sessions) if sessions else "'_'",
+                ),
+                (sub, task_label)
+            ).fetchall()
+
+            for _, ses, task, run in bold_rows:
+                has_events = cur.execute(
+                    """SELECT 1 FROM files
+                       WHERE subject=? AND session=? AND task=? AND suffix='events'
+                         AND (run=? OR (run IS NULL AND ? IS NULL))""",
+                    (sub, ses, task, run, run)
+                ).fetchone()
+
+                if has_events:
+                    results.append(_result(
+                        "events_presence", sub, ses, "pass",
+                        task=task, run=run,
+                        expected="events file",
+                        actual="present",
+                    ))
+                else:
+                    results.append(_result(
+                        "events_presence", sub, ses, "fail",
+                        task=task, run=run,
+                        expected="events file",
+                        actual="missing",
+                        message=f"No events.tsv for {sub} {ses} {task} run-{run or '(none)'}"
+                    ))
+
+    return results
+
+
 def check_events_row_count(conn, schema, subjects, sessions):
     """Verify events.tsv row counts match expectations."""
     results = []
@@ -708,6 +764,7 @@ ALL_CHECKS = {
     "file_presence": check_file_presence,
     "total_runs": check_total_runs,
     "volume_count": check_volume_count,
+    "events_presence": check_events_presence,
     "events_row_count": check_events_row_count,
     "events_columns": check_events_columns,
     "events_timing": check_events_timing,

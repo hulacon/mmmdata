@@ -124,7 +124,7 @@ def _category_matches_check(category: str, check_name: str, result: dict) -> boo
         "dcm2bids": ["file_presence"],
         "behavioral": ["file_presence", "events_row_count", "events_columns"],
         "events": ["events_row_count", "events_columns", "events_timing"],
-        "events_conversion": ["file_presence", "events_row_count", "events_columns"],
+        "events_conversion": ["file_presence", "events_presence", "events_row_count", "events_columns"],
         "physio": ["physio_presence"],
         "physio_collection": ["physio_presence"],
         "eyetracking": ["eyetracking_presence"],
@@ -144,11 +144,10 @@ def apply_exceptions(results: list[dict], exceptions: list[dict]) -> list[dict]:
     """
     Apply known exceptions to validation results.
 
-    By default, matching exceptions downgrade fail/warn → info (design
-    deviations that are fully accounted for).  Exceptions with
-    ``data_missing = true`` instead keep the original status and annotate
-    the message — the data is genuinely absent, even though the reason is
-    known.
+    Matching exceptions annotate the message with the reason but never
+    change the status — all deviations remain visible as fail/warn.
+    The ``[KNOWN]`` prefix distinguishes explained deviations from
+    unexpected ones.
 
     Modifies results in place and returns them.
     """
@@ -157,16 +156,9 @@ def apply_exceptions(results: list[dict], exceptions: list[dict]) -> list[dict]:
             exc = match_exception(r, exceptions)
             if exc:
                 desc = exc.get("description", "known exception")
-                if exc.get("data_missing", False):
-                    # Keep original status — data is genuinely missing
-                    r["message"] = f"[KNOWN MISSING] {desc}" + (
-                        f" | {r['message']}" if r["message"] else ""
-                    )
-                else:
-                    r["status"] = "info"
-                    r["message"] = f"[EXCEPTION] {desc}" + (
-                        f" | {r['message']}" if r["message"] else ""
-                    )
+                r["message"] = f"[KNOWN] {desc}" + (
+                    f" | {r['message']}" if r["message"] else ""
+                )
     return results
 
 
@@ -200,47 +192,43 @@ def store_results(conn: sqlite3.Connection, results: list[dict]):
 
 def print_summary(results: list[dict]):
     """Print a summary table to the terminal."""
-    counts = {"pass": 0, "fail": 0, "warn": 0, "info": 0}
-    n_known_missing = 0
+    counts = {"pass": 0, "fail": 0, "warn": 0}
     for r in results:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
-        if r["message"] and r["message"].startswith("[KNOWN MISSING]"):
-            n_known_missing += 1
 
-    n_new_warn = counts["warn"] - n_known_missing
+    # Split issues into explained (matched an exception) vs unexplained
+    issues = [r for r in results if r["status"] in ("fail", "warn")]
+    explained = [r for r in issues
+                 if r["message"] and r["message"].startswith("[KNOWN]")]
+    unexplained = [r for r in issues
+                   if not (r["message"] and r["message"].startswith("[KNOWN]"))]
 
     total = len(results)
     print(f"\n{'='*60}")
     print(f"  Validation Summary: {total} checks")
     print(f"{'='*60}")
-    print(f"  PASS: {counts['pass']}")
-    print(f"  FAIL: {counts['fail']}")
-    print(f"  WARN: {n_new_warn}  (+{n_known_missing} known missing)")
-    print(f"  INFO: {counts['info']}  (design exceptions)")
+    print(f"  PASS:        {counts['pass']}")
+    print(f"  FAIL:        {counts['fail']}  ({len([r for r in unexplained if r['status']=='fail'])} unexplained, "
+          f"{len([r for r in explained if r['status']=='fail'])} known)")
+    print(f"  WARN:        {counts['warn']}  ({len([r for r in unexplained if r['status']=='warn'])} unexplained, "
+          f"{len([r for r in explained if r['status']=='warn'])} known)")
     print(f"{'='*60}")
 
-    # Group failures and warnings by check
-    issues = [r for r in results if r["status"] in ("fail", "warn")]
     if not issues:
-        print("\n  No unresolved failures or warnings.\n")
+        print("\n  No failures or warnings.\n")
         return
 
-    # Split known-missing from new issues
-    new_issues = [r for r in issues
-                  if not (r["message"] and r["message"].startswith("[KNOWN MISSING]"))]
-    known_missing = [r for r in issues
-                     if r["message"] and r["message"].startswith("[KNOWN MISSING]")]
-
-    if new_issues:
-        print(f"\n  Unresolved issues ({len(new_issues)}):\n")
+    # --- Unexplained issues first ---
+    if unexplained:
+        print(f"\n  Unexplained issues ({len(unexplained)}):\n")
 
         by_check = {}
-        for r in new_issues:
+        for r in unexplained:
             by_check.setdefault(r["check_name"], []).append(r)
 
         for check, items in sorted(by_check.items()):
             print(f"  [{check}] ({len(items)} issues)")
-            for r in items[:10]:  # cap per-check display
+            for r in items[:10]:
                 run_str = f" run-{r['run']}" if r["run"] else ""
                 task_str = f" {r['task']}" if r["task"] else ""
                 print(f"    {r['status'].upper()}: {r['subject']} {r['session']}"
@@ -251,18 +239,19 @@ def print_summary(results: list[dict]):
                 print(f"    ... and {len(items) - 10} more")
             print()
 
-    if known_missing:
-        print(f"\n  Known missing data ({len(known_missing)}):\n")
+    # --- Known/explained issues ---
+    if explained:
+        print(f"\n  Known deviations ({len(explained)}):\n")
 
         by_check = {}
-        for r in known_missing:
+        for r in explained:
             by_check.setdefault(r["check_name"], []).append(r)
 
         for check, items in sorted(by_check.items()):
-            # Group by unique description to avoid repetition
+            # Group by description to reduce repetition
             by_desc = {}
             for r in items:
-                desc = r["message"].replace("[KNOWN MISSING] ", "").split(" | ")[0]
+                desc = r["message"].replace("[KNOWN] ", "").split(" | ")[0]
                 by_desc.setdefault(desc, []).append(r)
 
             print(f"  [{check}] ({len(items)} items)")
