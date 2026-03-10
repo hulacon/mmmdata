@@ -37,5 +37,8 @@ logs/
 *.out
 *.err
 
+# Pipeline work directories
+work_*/
+
 # Generated reports
 validation_report.tsv
