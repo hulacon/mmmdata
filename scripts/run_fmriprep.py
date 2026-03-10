@@ -348,6 +348,11 @@ def main():
         help='Override output directory (default: <derivatives>/fmriprep)'
     )
 
+    parser.add_argument(
+        '--work-dir',
+        help='Override work directory from config (must be outside BIDS tree)'
+    )
+
     args = parser.parse_args()
 
     # Load config
@@ -371,8 +376,8 @@ def main():
     # Get singularity directory from config
     singularity_dir = paths.get('singularity_dir')
 
-    # Get work directory from config (must be outside BIDS tree)
-    work_dir = paths.get('work_dir')
+    # Get work directory from CLI or config (must be outside BIDS tree)
+    work_dir = args.work_dir or paths.get('work_dir')
 
     # Run fMRIPrep
     run_fmriprep(
