@@ -44,15 +44,16 @@ source "${REPO_ROOT}/scripts/load_config.sh"
 NORDIC_BIDS="${BIDS_DIR}/derivatives/nordic/bids_input"
 NORDIC_OUTPUT="${BIDS_DIR}/derivatives/fmriprep_nordic"
 NORDIC_WORK="${CODE_ROOT}/work_nordic"
-FMRIPREP_DERIVATIVES="${BIDS_DIR}/derivatives/fmriprep"
+# Use anat-only trimmed derivatives so fMRIPrep does NOT reuse
+# functional HMC/coreg from the original (non-NORDIC) run
+FMRIPREP_DERIVATIVES="${BIDS_DIR}/derivatives/nordic/fmriprep_anat"
 
 export SINGULARITYENV_TEMPLATEFLOW_HOME=${BIDS_DIR}/.cache/templateflow
 export SINGULARITY_TMPDIR=${CODE_ROOT}/tmp/${SLURM_JOB_ID}
 mkdir -p ${SINGULARITY_TMPDIR}
 
-# The NORDIC BIDS tree uses symlinks pointing to files under BIDS_DIR.
-# Ensure the main BIDS root is bind-mounted so Singularity can follow them.
-export SINGULARITY_BIND="${BIDS_DIR}:${BIDS_DIR}:ro"
+# No SINGULARITY_BIND needed — all NORDIC inputs are real copies (no symlinks)
+# and run_fmriprep.py handles bind mounts for bids_dir, output_dir, work_dir
 
 cd ${REPO_ROOT}/scripts
 

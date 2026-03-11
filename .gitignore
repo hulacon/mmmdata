@@ -40,5 +40,8 @@ logs/
 # Pipeline work directories
 work_*/
 
+# Local caches (atlas downloads, etc.)
+.cache/
+
 # Generated reports
 validation_report.tsv
