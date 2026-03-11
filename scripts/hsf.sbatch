@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=hsf
 #SBATCH --partition=compute
-#SBATCH --time=01:00:00
+#SBATCH --time=03:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -108,6 +108,10 @@ echo ""
 # --- Run HSF ---
 echo "Running HSF (bagging_accurate, T2w ${T2W_ACQ})..."
 echo ""
+
+# Limit onnxruntime thread count to allocated CPUs (prevents 100+ thread spawning)
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
+export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
 cd "${OUTPUT_DIR}"
 
