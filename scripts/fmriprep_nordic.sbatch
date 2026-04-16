@@ -12,14 +12,21 @@
 #SBATCH --exclude=n0119,n0123,n0128,n0130,n0131,n0190
 
 #==============================================================================
-# fMRIPrep on NORDIC-denoised data — Pilot (sub-03, ses-04)
+# fMRIPrep on NORDIC-denoised data
 #==============================================================================
 # Runs fMRIPrep functional preprocessing on NORDIC-denoised BOLD data,
 # reusing cached anatomical results from the existing fMRIPrep run.
 #
 # Usage:
-#   sbatch fmriprep_nordic.sbatch
+#   sbatch --export=ALL,FPREP_SUBJECT=sub-03,FPREP_SESSION=ses-04 fmriprep_nordic.sbatch
 #==============================================================================
+
+# Validate required environment variables
+if [ -z "${FPREP_SUBJECT}" ] || [ -z "${FPREP_SESSION}" ]; then
+    echo "ERROR: FPREP_SUBJECT and FPREP_SESSION must be set."
+    echo "Submit with: sbatch --export=ALL,FPREP_SUBJECT=sub-XX,FPREP_SESSION=ses-YY fmriprep_nordic.sbatch"
+    exit 1
+fi
 
 echo "=========================================="
 echo "fMRIPrep (NORDIC) — SLURM Job Info"
@@ -28,6 +35,8 @@ echo "Job ID: ${SLURM_JOB_ID}"
 echo "Node: ${SLURMD_NODENAME}"
 echo "CPUs: ${SLURM_CPUS_PER_TASK}"
 echo "Memory: ${SLURM_MEM_PER_NODE}M"
+echo "Subject: ${FPREP_SUBJECT}"
+echo "Session: ${FPREP_SESSION}"
 echo "Start Time: $(date)"
 echo "=========================================="
 echo ""
@@ -61,8 +70,8 @@ python run_fmriprep.py \
     --bids-dir "${NORDIC_BIDS}" \
     --output-dir "${NORDIC_OUTPUT}" \
     --work-dir "${NORDIC_WORK}" \
-    --subjects sub-03 \
-    --session ses-04 \
+    --subjects ${FPREP_SUBJECT} \
+    --session ${FPREP_SESSION} \
     --derivatives "${FMRIPREP_DERIVATIVES}" \
     --nprocs ${SLURM_CPUS_PER_TASK} \
     --mem-gb $((${SLURM_MEM_PER_NODE} / 1024))
@@ -77,9 +86,24 @@ echo "End Time: $(date)"
 echo "Exit Status: ${EXIT_STATUS}"
 echo "=========================================="
 
-# Clean up
+# Clean up Singularity temp
 if [ -d "${SINGULARITY_TMPDIR}" ]; then
     rm -rf ${SINGULARITY_TMPDIR}
+fi
+
+# Clean up fMRIPrep work directory for this session on success.
+# run_fmriprep.py isolates work per sub/ses (work_nordic/fmriprep/sub-XX_ses-YY),
+# so this only removes the current session — no multi-session side effects.
+if [ ${EXIT_STATUS} -eq 0 ]; then
+    SUBJ_ID="${FPREP_SUBJECT#sub-}"
+    SES_ID="${FPREP_SESSION#ses-}"
+    SESSION_WORK="${NORDIC_WORK}/fmriprep/sub-${SUBJ_ID}_ses-${SES_ID}"
+    if [ -d "${SESSION_WORK}" ]; then
+        echo "Cleaning up work directory: ${SESSION_WORK}"
+        rm -rf "${SESSION_WORK}"
+    fi
+else
+    echo "fMRIPrep failed — preserving work directory for debugging."
 fi
 
 exit ${EXIT_STATUS}
