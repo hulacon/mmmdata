@@ -3,11 +3,12 @@
 nordic_validation.py — Compare original vs NORDIC-denoised fMRIPrep outputs.
 
 Computes:
-  6a. tSNR maps (mean/std) per run, side-by-side slices + improvement histogram
-  6b. Temporal autocorrelation (lag 1-5) to check NORDIC doesn't smooth in time
+  7a. tSNR maps (mean/std) per run, side-by-side slices + improvement histogram
+  7b. Temporal autocorrelation (lag 1-5) to check NORDIC doesn't smooth in time
 
 Usage:
-    python nordic_validation.py [--output-dir PATH]
+    python nordic_validation.py --subject sub-03 --session ses-04
+    python nordic_validation.py --subject sub-03 --session ses-19 --output-dir PATH
 
 Reads MNI-space preprocessed BOLD from:
   - derivatives/fmriprep/          (original)
@@ -32,19 +33,22 @@ BIDS_ROOT = Path("/gpfs/projects/hulacon/shared/mmmdata")
 FMRIPREP_ORIG = BIDS_ROOT / "derivatives" / "fmriprep"
 FMRIPREP_NORDIC = BIDS_ROOT / "derivatives" / "fmriprep_nordic"
 
-SUBJECT = "sub-03"
-SESSION = "ses-04"
 SPACE = "MNI152NLin2009cAsym_res-2"
 
-RUNS = [
-    "task-TBencoding_run-01",
-    "task-TBencoding_run-02",
-    "task-TBencoding_run-03",
-    "task-TBretrieval_run-01",
-    "task-TBretrieval_run-02",
-    "task-TBmath",
-    "task-TBresting",
-]
+
+def discover_runs(subject, session):
+    """Auto-discover BOLD runs from fMRIPrep NORDIC output directory."""
+    func_dir = FMRIPREP_NORDIC / subject / session / "func"
+    pattern = f"{subject}_{session}_*_space-{SPACE}_desc-preproc_bold.nii.gz"
+    runs = []
+    for f in sorted(func_dir.glob(pattern)):
+        # Extract run label: everything between {session}_ and _space-
+        name = f.name
+        prefix = f"{subject}_{session}_"
+        suffix = f"_space-{SPACE}_desc-preproc_bold.nii.gz"
+        run = name[len(prefix):-len(suffix)]
+        runs.append(run)
+    return runs
 
 # ── ROI definitions ──────────────────────────────────────────────────────────
 # Schaefer 400-parcel 17-network atlas (cortical ROIs)
@@ -57,20 +61,8 @@ SCHAEFER_LUT = (
     / "tpl-MNI152NLin2009cAsym_atlas-Schaefer2018_seg-17n_scale-400_res-2_dseg.tsv"
 )
 
-# FreeSurfer aseg (subcortical — hippocampus)
-ASEG_MGZ = (
-    FMRIPREP_ORIG / "sourcedata" / "freesurfer" / SUBJECT / "mri" / "aparc+aseg.mgz"
-)
-# fMRIPrep T1w-to-MNI warp
-T1W_TO_MNI_XFM = (
-    FMRIPREP_ORIG / SUBJECT / "anat"
-    / f"{SUBJECT}_acq-MPR_from-T1w_to-MNI152NLin2009cAsym_mode-image_xfm.h5"
-)
-# MNI-space T1w as reference for resampling
-MNI_REF = (
-    FMRIPREP_ORIG / SUBJECT / "anat"
-    / f"{SUBJECT}_acq-MPR_space-MNI152NLin2009cAsym_res-2_desc-preproc_T1w.nii.gz"
-)
+def aseg_path(subject):
+    return FMRIPREP_ORIG / "sourcedata" / "freesurfer" / subject / "mri" / "aparc+aseg.mgz"
 
 # Schaefer parcel indices (bilateral, collapsed L+R) for each cortical ROI
 SCHAEFER_ROIS = {
@@ -89,23 +81,23 @@ SCHAEFER_ROIS = {
 ASEG_HIPPO_LABELS = [17, 53]  # Left-Hippocampus, Right-Hippocampus
 
 
-def bold_path(deriv_root, run):
+def bold_path(deriv_root, subject, session, run):
     return (
-        deriv_root / SUBJECT / SESSION / "func"
-        / f"{SUBJECT}_{SESSION}_{run}_space-{SPACE}_desc-preproc_bold.nii.gz"
+        deriv_root / subject / session / "func"
+        / f"{subject}_{session}_{run}_space-{SPACE}_desc-preproc_bold.nii.gz"
     )
 
 
-def mask_path(deriv_root, run):
+def mask_path(deriv_root, subject, session, run):
     return (
-        deriv_root / SUBJECT / SESSION / "func"
-        / f"{SUBJECT}_{SESSION}_{run}_space-{SPACE}_desc-brain_mask.nii.gz"
+        deriv_root / subject / session / "func"
+        / f"{subject}_{session}_{run}_space-{SPACE}_desc-brain_mask.nii.gz"
     )
 
 
 # ── ROI masks ────────────────────────────────────────────────────────────────
 
-def load_roi_masks(bold_ref_img):
+def load_roi_masks(bold_ref_img, subject):
     """
     Build ROI boolean masks in MNI BOLD space.
 
@@ -133,8 +125,9 @@ def load_roi_masks(bold_ref_img):
         print(f"  ROI '{roi_name}': {len(indices)} parcels, {mask.sum()} voxels")
 
     # --- Hippocampus from FreeSurfer aseg ---
-    if ASEG_MGZ.exists():
-        aseg_img = nib.load(str(ASEG_MGZ))
+    aseg_mgz = aseg_path(subject)
+    if aseg_mgz.exists():
+        aseg_img = nib.load(str(aseg_mgz))
         # Resample aseg to MNI BOLD grid via nilearn (nearest-neighbor).
         # The aseg is in FreeSurfer conformed space (~1mm T1w); nilearn will
         # use the image affines to align it to the BOLD reference.
@@ -149,7 +142,7 @@ def load_roi_masks(bold_ref_img):
         rois["Hippocampus"] = hippo_mask
         print(f"  ROI 'Hippocampus': labels {ASEG_HIPPO_LABELS}, {hippo_mask.sum()} voxels")
     else:
-        print(f"  WARNING: aseg not found at {ASEG_MGZ}, skipping hippocampus")
+        print(f"  WARNING: aseg not found at {aseg_mgz}, skipping hippocampus")
 
     return rois
 
@@ -346,27 +339,38 @@ def write_summary(results, roi_results, output_dir):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--output-dir", type=Path,
-                        default=BIDS_ROOT / "derivatives" / "nordic" / "validation",
-                        help="Directory for output plots and summary")
+    parser.add_argument("--subject", required=True, help="Subject ID (e.g. sub-03)")
+    parser.add_argument("--session", required=True, help="Session ID (e.g. ses-04)")
+    parser.add_argument("--output-dir", type=Path, default=None,
+                        help="Directory for output plots and summary "
+                             "(default: derivatives/nordic/validation/{subject}/{session})")
     args = parser.parse_args()
 
-    out = args.output_dir
+    subject = args.subject
+    session = args.session
+
+    out = args.output_dir or (BIDS_ROOT / "derivatives" / "nordic" / "validation" / subject / session)
     out.mkdir(parents=True, exist_ok=True)
+
+    runs = discover_runs(subject, session)
+    if not runs:
+        print(f"No NORDIC fMRIPrep outputs found for {subject}/{session}")
+        sys.exit(1)
+    print(f"Found {len(runs)} runs for {subject}/{session}: {runs}")
 
     # Load ROI masks once (using first available BOLD as spatial reference)
     roi_masks = None
     results = []
     roi_results = []
 
-    for run in RUNS:
+    for run in runs:
         run_label = run.replace("task-", "").replace("_", "-")
         print(f"\n{'='*60}")
         print(f"Processing {run_label}")
         print(f"{'='*60}")
 
-        orig_bold = bold_path(FMRIPREP_ORIG, run)
-        nordic_bold = bold_path(FMRIPREP_NORDIC, run)
+        orig_bold = bold_path(FMRIPREP_ORIG, subject, session, run)
+        nordic_bold = bold_path(FMRIPREP_NORDIC, subject, session, run)
 
         if not orig_bold.exists():
             print(f"  SKIP — original not found: {orig_bold}")
@@ -376,14 +380,14 @@ def main():
             continue
 
         # Use the original mask (same space, same subject)
-        mask_file = mask_path(FMRIPREP_ORIG, run)
+        mask_file = mask_path(FMRIPREP_ORIG, subject, session, run)
         mask_img = nib.load(str(mask_file))
         mask_data = mask_img.get_fdata().astype(bool)
 
         # Load ROI masks on first iteration (all runs share MNI grid)
         if roi_masks is None:
             print("  Loading ROI masks...")
-            roi_masks = load_roi_masks(mask_img)
+            roi_masks = load_roi_masks(mask_img, subject)
 
         # tSNR
         print("  Computing tSNR (original)...")
