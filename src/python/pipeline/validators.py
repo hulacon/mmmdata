@@ -305,46 +305,65 @@ def validate_preprocessing_qc(
     session: str,
     bids_root: Optional[Path] = None,
 ) -> ValidationResult:
-    """Check QC decisions TSV exists. Warn if still at default (un-reviewed)."""
+    """Check that every raw BOLD run has a QC decision JSON recorded.
+
+    One decision per run (``derivatives/preprocessing_qc/sub-XX/{run_key}_decision.json``,
+    where ``run_key`` is the BOLD filename minus ``.nii.gz``). The decision
+    applies to both fMRIPrep variants (original and NORDIC). Completion
+    means all expected decisions exist and each carries a valid decision
+    value in its latest history entry. ``exclude`` decisions still count
+    as "recorded" — they gate the Layer 2 streams via
+    ``qc_decisions.get_included_runs()``, not via step completion.
+    """
+    import json
+
     bids_root = _resolve_bids_root(bids_root)
     if not _session_has_raw(subject, session, bids_root):
         return _make_result("preprocessing_qc", subject, session, 0, 0,
                             details=["No raw sub/ses."])
 
-    qc_path = (
-        bids_root / DERIVATIVES_DIRS["preprocessing_qc"]
-        / f"sub-{subject}"
-        / f"sub-{subject}_ses-{session}_qc_decisions.tsv"
-    )
-    expected = 1
-    if not qc_path.exists():
-        return _make_result(
-            "preprocessing_qc", subject, session, expected, 0,
-            details=[f"QC decisions file not found: {qc_path.name}"],
-        )
+    bolds = _raw_bold_files(subject, session, bids_root)
+    expected = len(bolds)
+    if expected == 0:
+        return _make_result("preprocessing_qc", subject, session, 0, 0,
+                            details=["No raw BOLDs."])
 
-    # File exists. Lightweight sanity check (don't import pandas if we can help it).
+    decisions_dir = (
+        bids_root / DERIVATIVES_DIRS["preprocessing_qc"] / f"sub-{subject}"
+    )
+
+    valid_decisions = {"keep", "exclude", "investigate"}
     details: list[str] = []
-    try:
-        import pandas as pd
-        df = pd.read_csv(qc_path, sep="\t")
-        required_cols = {"task", "run", "exclude", "nordic"}
-        missing_cols = required_cols - set(df.columns)
-        if missing_cols:
+    found = 0
+    for bold in bolds:
+        run_key = bold.name.removesuffix(".nii.gz")
+        json_path = decisions_dir / f"{run_key}_decision.json"
+        if not json_path.exists():
+            details.append(f"Missing decision: {json_path.name}")
+            continue
+        try:
+            data = json.loads(json_path.read_text())
+            history = data.get("decisions", [])
+            if not history:
+                details.append(f"Empty decision history: {json_path.name}")
+                continue
+            latest = history[-1].get("decision")
+            if latest not in valid_decisions:
+                return _make_result(
+                    "preprocessing_qc", subject, session, expected, found,
+                    details=[f"Invalid decision {latest!r} in {json_path.name}"],
+                    override_status="error",
+                )
+        except Exception as exc:
             return _make_result(
-                "preprocessing_qc", subject, session, expected, 1,
-                details=[f"QC TSV missing columns: {sorted(missing_cols)}"],
+                "preprocessing_qc", subject, session, expected, found,
+                details=[f"Failed to parse {json_path.name}: {exc}"],
                 override_status="error",
             )
-    except Exception as exc:
-        return _make_result(
-            "preprocessing_qc", subject, session, expected, 1,
-            details=[f"Failed to parse QC TSV: {exc}"],
-            override_status="error",
-        )
+        found += 1
 
     return _make_result(
-        "preprocessing_qc", subject, session, expected, 1, details
+        "preprocessing_qc", subject, session, expected, found, details
     )
 
 
