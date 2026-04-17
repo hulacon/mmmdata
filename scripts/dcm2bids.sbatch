@@ -8,7 +8,6 @@
 #SBATCH --mem=8G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/dcm2bids_%j.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/dcm2bids_%j.err
-#SBATCH --mail-type=END,FAIL
 
 #==============================================================================
 # dcm2bids DICOM-to-BIDS Conversion

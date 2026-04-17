@@ -8,7 +8,6 @@
 #SBATCH --mem=48G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/nordic_isfc_%j.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/nordic_isfc_%j.err
-#SBATCH --mail-type=END,FAIL
 #SBATCH --exclude=n0119,n0123,n0128,n0130,n0131,n0190
 
 #==============================================================================

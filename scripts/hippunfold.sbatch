@@ -8,7 +8,6 @@
 #SBATCH --mem=16G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/hippunfold_%A_%a.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/hippunfold_%A_%a.err
-#SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=your-email@uoregon.edu
 
 #==============================================================================

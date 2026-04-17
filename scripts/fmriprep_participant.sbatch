@@ -8,7 +8,6 @@
 #SBATCH --mem=48G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fmriprep_participant_%j.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fmriprep_participant_%j.err
-#SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=your-email@uoregon.edu
 
 #==============================================================================

@@ -9,7 +9,6 @@
 #SBATCH --array=1-3
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fmriprep_array_%A_%a.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fmriprep_array_%A_%a.err
-#SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=your-email@uoregon.edu
 
 #==============================================================================

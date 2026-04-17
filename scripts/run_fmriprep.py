@@ -12,7 +12,7 @@ Arguments:
     --subjects          : Specific subjects to process (optional, default: all)
     --nprocs            : Number of parallel processes (default: 8)
     --mem-gb            : Memory limit in GB (default: 32)
-    --output-spaces     : fMRIPrep output spaces (default: MNI152NLin2009cAsym:res-2 fsaverage6)
+    --output-spaces     : fMRIPrep output spaces (default: MNI152NLin2009cAsym:res-2 fsaverage6 func)
     --fs-license        : Path to FreeSurfer license file (auto-detected if omitted)
     --fs-subjects-dir   : Reuse existing FreeSurfer recon-all output (optional)
 """
@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src' / 'python'))
 
 from core.config import load_config
 
-DEFAULT_OUTPUT_SPACES = ['MNI152NLin2009cAsym:res-2', 'fsaverage6']
+DEFAULT_OUTPUT_SPACES = ['MNI152NLin2009cAsym:res-2', 'fsaverage6', 'func']
 DEFAULT_FMRIPREP_VERSION = '24.1.1'
 
 
