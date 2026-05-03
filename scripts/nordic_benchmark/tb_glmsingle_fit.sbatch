@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --mem=384G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/tb_glmsingle_%A_%a.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/tb_glmsingle_%A_%a.err
 #SBATCH --exclude=n0119,n0123,n0128,n0130,n0131,n0190
@@ -41,7 +41,7 @@ echo "=========================================="
 export REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
 source "${REPO_ROOT}/.venv/bin/activate"
 
-python "${REPO_ROOT}/scripts/nordic_benchmark/tb_glmsingle_fit.py" \
+python -u "${REPO_ROOT}/scripts/nordic_benchmark/tb_glmsingle_fit.py" \
     --sub "${SUBJECT}" \
     --pipeline "${PIPELINE}"
 
