@@ -108,3 +108,81 @@ def list_tb_runs(sub: str, pipeline: str) -> list[tuple[str, int]]:
             if bold_path(sub, ses, r, "TBencoding", pipeline).exists():
                 runs.append((ses, r))
     return runs
+
+
+# ── Harvard-Oxford ROI masks (parallel to isc_confounds/extract_roi_timeseries.py) ──
+
+# Cortical atlas labels (cort-maxprob-thr25-2mm)
+CORTICAL_ROIS = {
+    "V1":  [24],      # Intracalcarine Cortex
+    "EAC": [45],      # Heschl's Gyrus
+    "MT+": [13],      # Middle Temporal Gyrus, temporooccipital part
+    "IFG": [5, 6],    # pars triangularis + opercularis
+}
+
+# Subcortical atlas labels (sub-maxprob-thr25-2mm)
+SUBCORTICAL_ROIS = {
+    "Hippocampus": {"L": [9], "R": [19]},
+}
+
+ROI_KEYS = [
+    ("V1", "L"), ("V1", "R"),
+    ("EAC", "L"), ("EAC", "R"),
+    ("MT+", "L"), ("MT+", "R"),
+    ("IFG", "L"), ("IFG", "R"),
+    ("Hippocampus", "L"), ("Hippocampus", "R"),
+]
+
+
+def load_roi_masks():
+    """Build volumetric Harvard-Oxford ROI masks. Cortical ROIs split L/R by x<0.
+
+    Returns:
+        masks: dict {(roi_name, hemi): bool ndarray (X, Y, Z)}
+        affine: 4x4 atlas affine (MNI 2mm)
+    """
+    import nibabel as nib
+    import numpy as np
+    from nilearn.datasets import fetch_atlas_harvard_oxford
+
+    cort = fetch_atlas_harvard_oxford("cort-maxprob-thr25-2mm")
+    cort_img = cort.maps if hasattr(cort.maps, "affine") else nib.load(cort.maps)
+    cort_data = np.asarray(cort_img.dataobj).astype(int)
+    affine = cort_img.affine
+
+    i_coords = np.arange(cort_data.shape[0])
+    x_coords = affine[0, 0] * i_coords + affine[0, 3]
+    left = x_coords < 0
+    right = ~left
+
+    masks = {}
+    for roi, labels in CORTICAL_ROIS.items():
+        m = np.isin(cort_data, labels)
+        masks[(roi, "L")] = m & left[:, None, None]
+        masks[(roi, "R")] = m & right[:, None, None]
+
+    sub = fetch_atlas_harvard_oxford("sub-maxprob-thr25-2mm")
+    sub_img = sub.maps if hasattr(sub.maps, "affine") else nib.load(sub.maps)
+    sub_data = np.asarray(sub_img.dataobj).astype(int)
+    for roi, hemi_labels in SUBCORTICAL_ROIS.items():
+        for hemi, labels in hemi_labels.items():
+            masks[(roi, hemi)] = np.isin(sub_data, labels)
+
+    return masks, affine
+
+
+def resample_masks_to_bold(masks, atlas_affine, bold_img):
+    """Resample atlas-space masks to BOLD voxel space (no-op if already aligned)."""
+    import nibabel as nib
+    import numpy as np
+    from nilearn.image import resample_to_img
+
+    bold_shape = bold_img.shape[:3]
+    atlas_shape = next(iter(masks.values())).shape
+    if atlas_shape == bold_shape and np.allclose(atlas_affine, bold_img.affine):
+        return masks
+    out = {}
+    for key, m in masks.items():
+        m_img = nib.Nifti1Image(m.astype(np.float32), atlas_affine)
+        out[key] = np.asarray(resample_to_img(m_img, bold_img, interpolation="nearest").dataobj) > 0.5
+    return out
