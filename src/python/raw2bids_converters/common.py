@@ -3,13 +3,33 @@
 
 import json
 import os
+import sys
+from pathlib import Path
 
 import pandas as pd
 
 # === Paths ===
-BIDS_ROOT = "/gpfs/projects/hulacon/shared/mmmdata"
-SOURCE_DIR = f"{BIDS_ROOT}/sourcedata"
-METAINFO_DIR = f"{BIDS_ROOT}/sourcedata/metainformation"
+# Loaded from config/base.toml (with config/local.toml overlay). Fallback
+# constants below preserve behavior if the config system is unreachable.
+_FALLBACK_BIDS_ROOT = "/gpfs/projects/hulacon/shared/mmmdata"
+_FALLBACK_SOURCE_DIR = "/gpfs/projects/hulacon/shared/mmmsourcedata"
+
+
+def _load_paths():
+    try:
+        code_root = Path(__file__).resolve().parents[3]
+        py_root = str(code_root / "src" / "python")
+        if py_root not in sys.path:
+            sys.path.insert(0, py_root)
+        from core.config import load_config
+        cfg = load_config()
+        return cfg["paths"]["bids_project_dir"], cfg["paths"]["source_dir"]
+    except Exception:
+        return _FALLBACK_BIDS_ROOT, _FALLBACK_SOURCE_DIR
+
+
+BIDS_ROOT, SOURCE_DIR = _load_paths()
+METAINFO_DIR = f"{SOURCE_DIR}/metainformation"
 
 # === Session offsets ===
 FR_SESSION_OFFSET = 18   # free recall session N -> BIDS ses-(N+18)

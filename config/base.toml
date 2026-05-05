@@ -4,6 +4,9 @@
 # Main BIDS dataset directory
 bids_project_dir = "/projects/hulacon/shared/mmmdata"
 
+# Raw source data directory (pre-BIDS conversion inputs)
+source_dir = "/projects/hulacon/shared/mmmsourcedata"
+
 # Code repository root (where this config file is located)
 code_root = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
 
