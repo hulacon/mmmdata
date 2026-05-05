@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """TB benchmark evaluation: within-stim vs between-stim β-pattern correlations.
 
-For each (subject, pipeline), reads the multi-session GLMsingle TYPED output
-(`TYPED_FITHRF_GLMDENOISE_RR.npy`) plus `trial_metadata.tsv`, and computes
-per-ROI per-session within/between cross-run trial-pair correlations.
+For each (subject, pipeline), reads the canonical multi-session GLMsingle TYPED
+output (`derivatives/glmsingle{,_nordic}/<sub>/glmsingle_outputs/TYPED_*.npy`)
+plus its sibling `trial_info.csv`, and computes per-ROI per-session
+within/between cross-run trial-pair correlations.
 
 Pair selection per the locked design (docs/nordic-benchmark-plan.md):
   - within-stim pair: same mmm_id, **different runs**, same session
@@ -32,7 +33,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 from shared import (  # noqa: E402
     BENCHMARK_OUT, MNI_SPACE, ROI_KEYS, SUMMARY_COLS, TB_SESSIONS,
-    bold_path, load_roi_masks, resample_masks_to_bold,
+    bold_path, glmsingle_outputs_dir, load_roi_masks, load_trial_metadata,
+    resample_masks_to_bold,
 )
 
 
@@ -84,16 +86,16 @@ def session_pair_stats(roi_betas: np.ndarray,
 
 def evaluate(sub: str, pipeline: str, output_root: Path) -> Path:
     out_dir = output_root / "tb" / sub / pipeline
-    glmsingle_dir = out_dir / "glmsingle"
-    metadata_path = out_dir / "trial_metadata.tsv"
+    glmsingle_dir = glmsingle_outputs_dir(sub, pipeline)
     pair_out = out_dir / "pair_correlations.tsv"
 
     print(f"=== TB eval: {sub} / {pipeline} ===")
+    print(f"  betas:    {glmsingle_dir}")
     t0 = time.time()
     betas = load_glmsingle_betas(glmsingle_dir)
     print(f"Loaded betas {betas.shape} ({betas.nbytes/1e9:.1f} GB) in {time.time()-t0:.0f}s")
 
-    metadata = pd.read_csv(metadata_path, sep="\t")
+    metadata = load_trial_metadata(sub, pipeline)
     if len(metadata) != betas.shape[3]:
         raise ValueError(f"metadata rows ({len(metadata)}) != n_trials in betas ({betas.shape[3]})")
 

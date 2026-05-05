@@ -1,6 +1,8 @@
 """Shared constants, path helpers, and event readers for the NORDIC benchmark.
 
-Minimal foundation for tb_glmsingle_fit.py / tb_eval.py / nat_eval.py.
+Minimal foundation for tb_eval.py / nat_eval.py. The TB GLMsingle fits
+themselves come from the canonical multi-session pipeline in
+scripts/glmsingle_tbencoding.py (outputs under derivatives/glmsingle{,_nordic}/).
 ROI mask loading is deferred to the eval scripts (parallel to
 isc_confounds/extract_roi_timeseries.py:load_roi_masks).
 """
@@ -28,6 +30,12 @@ MNI_SPACE = "MNI152NLin2009cAsym_res-2"
 PIPELINES = {
     "original": DERIV_ROOT / "fmriprep",
     "nordic":   DERIV_ROOT / "fmriprep_nordic",
+}
+
+# Canonical multi-session GLMsingle fits (produced by glmsingle_tbencoding.py).
+GLMSINGLE_DIRS = {
+    "original": DERIV_ROOT / "glmsingle",
+    "nordic":   DERIV_ROOT / "glmsingle_nordic",
 }
 
 BENCHMARK_OUT = DERIV_ROOT / "nordic" / "benchmark"
@@ -108,6 +116,32 @@ def list_tb_runs(sub: str, pipeline: str) -> list[tuple[str, int]]:
             if bold_path(sub, ses, r, "TBencoding", pipeline).exists():
                 runs.append((ses, r))
     return runs
+
+
+# ── canonical GLMsingle output access ────────────────────────────────────
+
+def glmsingle_outputs_dir(sub: str, pipeline: str) -> Path:
+    """Path to the canonical multi-session GLMsingle outputs directory."""
+    return GLMSINGLE_DIRS[pipeline] / sub / "glmsingle_outputs"
+
+
+def load_trial_metadata(sub: str, pipeline: str):
+    """Load trial_info.csv and normalize to columns: subject, session, run (int), mmm_id (str).
+
+    The canonical fits write `trial_info.csv` with columns including:
+    session, run ("run-01"), mmmId (numeric). We normalize to the schema
+    expected by tb_eval.py.
+    """
+    import pandas as pd
+    path = GLMSINGLE_DIRS[pipeline] / sub / "trial_info.csv"
+    df = pd.read_csv(path)
+    out = pd.DataFrame({
+        "subject": sub,
+        "session": df["session"].astype(str),
+        "run":     df["run"].astype(str).str.replace("run-", "", regex=False).astype(int),
+        "mmm_id":  df["mmmId"].astype(int).astype(str),
+    })
+    return out
 
 
 # ── Harvard-Oxford ROI masks (parallel to isc_confounds/extract_roi_timeseries.py) ──
