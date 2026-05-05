@@ -78,10 +78,12 @@ def convert_cued_recall_encoding(beh_df, timing_df, subj, sess, run):
         stim_image_start, stim_image_end, stim_word_start, stim_word_end,
         stim_fixation_start, stim_fixation_end
 
-    onset = stim_image_start (scanner-relative)
-    duration = stim_image_end - stim_image_start
-    trial_type = "image"
-    modality = "visual"
+    Each encoding trial presents an image and a spoken word simultaneously.
+    Two rows are emitted per non-rest trial:
+      1. trial_type="image", modality="visual"  — onset/duration from stim_image_*
+      2. trial_type="word",  modality="auditory" — onset/duration from stim_word_*
+    Both rows share the same behavioral metadata (mmmId, pairId, etc.).
+    Rest trials emit a single row as before.
     """
     # Merge on trial number
     beh_df = beh_df.copy()
@@ -92,61 +94,82 @@ def convert_cued_recall_encoding(beh_df, timing_df, subj, sess, run):
     # Detect rest trials: pairId == 0 or word is NaN
     is_rest = merged["word"].isna() | (merged["pairId"].astype(float) == 0)
 
-    onset_actual = merged["stim_image_start"].astype(float).values.copy()
+    # Precompute timing arrays
+    img_start = merged["stim_image_start"].astype(float).values
     img_end = merged["stim_image_end"].astype(float).values
-    duration_actual = (img_end - onset_actual).copy()
-
-    # For rest trials, onset_actual = previous trial's stim_fixation_end
+    word_start = merged["stim_word_start"].astype(float).values
+    word_end = merged["stim_word_end"].astype(float).values
     fix_end = merged["stim_fixation_end"].astype(float).values
-    for i in range(len(merged)):
-        if is_rest.iloc[i] and i > 0:
-            onset_actual[i] = fix_end[i - 1]
-            duration_actual[i] = 3.0  # scheduled duration
 
-    # Scheduled onset: 4.5s spacing starting at 9.0s
     n_trials = len(merged)
-    onset_scheduled = [9.0 + 4.5 * i for i in range(n_trials)]
 
-    # Build trial_type and modality based on rest status
-    trial_type = ["rest" if is_rest.iloc[i] else "image" for i in range(n_trials)]
-    modality = [NA if is_rest.iloc[i] else "visual" for i in range(n_trials)]
+    # Helper to null out behavioral columns for rest trials
+    def val_or_na(value, is_rest_trial, converter=None):
+        if is_rest_trial:
+            return NA
+        return converter(value) if converter else value
 
-    # For rest trials, null out behavioral columns
-    def maybe_na(series, rest_mask, converter=None):
-        vals = []
-        for i, v in enumerate(series):
-            if rest_mask.iloc[i]:
-                vals.append(NA)
-            elif converter:
-                vals.append(converter(v))
-            else:
-                vals.append(v)
-        return vals
+    rows = []
+    for i in range(n_trials):
+        onset_scheduled = 9.0 + 4.5 * i
+        rest = is_rest.iloc[i]
+        row_data = merged.iloc[i]
 
-    events = pd.DataFrame({
-        "onset": onset_scheduled,
-        "duration": [3.0] * n_trials,
-        "onset_actual": onset_actual,
-        "duration_actual": duration_actual,
-        "subj_num": subj,
-        "ses_num": sess,
-        "run_idx": run,
-        "trial_type": trial_type,
-        "modality": modality,
-        "word": maybe_na(merged["word"], is_rest),
-        "pairId": maybe_na(merged["pairId"], is_rest, int_or_na),
-        "mmmId": maybe_na(merged["mmmId"], is_rest, int_or_na),
-        "nsdId": maybe_na(merged["nsdId"], is_rest, int_or_na),
-        "itmno": maybe_na(merged["itmno"], is_rest, int_or_na),
-        "sharedId": maybe_na(merged["sharedId"], is_rest, int_or_na),
-        "voiceId": maybe_na(merged["voiceId"], is_rest, int_or_na),
-        "voice": maybe_na(merged["voice"], is_rest),
-        "enCon": maybe_na(merged["enCon"], is_rest, int_or_na),
-        "reCon": maybe_na(merged["reCon"], is_rest, int_or_na),
-        "resp": maybe_na(merged["resp"], is_rest, int_or_na),
-        "resp_RT": maybe_na(merged["resp_RT"], is_rest, float_or_na),
-        "trial_id": merged["trial_id"].values,
-    })
+        # Shared behavioral metadata for this trial
+        shared = {
+            "subj_num": subj,
+            "ses_num": sess,
+            "run_idx": run,
+            "word": val_or_na(row_data["word"], rest),
+            "pairId": val_or_na(row_data["pairId"], rest, int_or_na),
+            "mmmId": val_or_na(row_data["mmmId"], rest, int_or_na),
+            "nsdId": val_or_na(row_data["nsdId"], rest, int_or_na),
+            "itmno": val_or_na(row_data["itmno"], rest, int_or_na),
+            "sharedId": val_or_na(row_data["sharedId"], rest, int_or_na),
+            "voiceId": val_or_na(row_data["voiceId"], rest, int_or_na),
+            "voice": val_or_na(row_data["voice"], rest),
+            "enCon": val_or_na(row_data["enCon"], rest, int_or_na),
+            "reCon": val_or_na(row_data["reCon"], rest, int_or_na),
+            "resp": val_or_na(row_data["resp"], rest, int_or_na),
+            "resp_RT": val_or_na(row_data["resp_RT"], rest, float_or_na),
+            "trial_id": row_data["trial_id"],
+        }
+
+        if rest:
+            # Rest trial: single row
+            rest_onset = fix_end[i - 1] if i > 0 else img_start[i]
+            rows.append({
+                "onset": onset_scheduled,
+                "duration": 3.0,
+                "onset_actual": rest_onset,
+                "duration_actual": 3.0,
+                "trial_type": "rest",
+                "modality": NA,
+                **shared,
+            })
+        else:
+            # Image row
+            rows.append({
+                "onset": onset_scheduled,
+                "duration": 3.0,
+                "onset_actual": img_start[i],
+                "duration_actual": img_end[i] - img_start[i],
+                "trial_type": "image",
+                "modality": "visual",
+                **shared,
+            })
+            # Word row
+            rows.append({
+                "onset": onset_scheduled,
+                "duration": word_end[i] - word_start[i],
+                "onset_actual": word_start[i],
+                "duration_actual": word_end[i] - word_start[i],
+                "trial_type": "word",
+                "modality": "auditory",
+                **shared,
+            })
+
+    events = pd.DataFrame(rows)
     return events
 
 
@@ -452,9 +475,10 @@ SIDECAR_CUED_ENCODING = {
     "ses_num": {"Description": "BIDS session number"},
     "run_idx": {"Description": "Run number within the session"},
     "trial_type": {
-        "Description": "Type of trial event",
+        "Description": "Type of trial event. Each encoding trial presents an image and a spoken word simultaneously; these are represented as two separate rows.",
         "Levels": {
             "image": "Visual image presentation",
+            "word": "Auditory spoken word presentation (concurrent with image)",
             "rest": "Empty trial (fixation cross, no stimulus)",
         },
     },
@@ -462,6 +486,7 @@ SIDECAR_CUED_ENCODING = {
         "Description": "Stimulus modality",
         "Levels": {
             "visual": "Visual image presentation",
+            "auditory": "Auditory spoken word presentation",
             "": "None (rest)",
         },
     },
