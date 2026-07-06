@@ -32,8 +32,13 @@ ROI_ORDER = [f"{r}_{h}" for r, h in ROI_KEYS]
 PIPELINE_COLORS = {"original": "#888888", "nordic": "#1f77b4"}
 
 
-def collect(output_root: Path) -> pd.DataFrame:
-    """Concat all available pair_correlations.tsv files into one DataFrame."""
+def collect(output_root: Path, nat_confound_model: str = "none") -> pd.DataFrame:
+    """Concat all available pair_correlations.tsv files into one DataFrame.
+
+    The NAT file may carry a `confound_model` column (multiple models per row);
+    to keep the unified summary well-defined we select a single model
+    (`nat_confound_model`, default "none") before concatenating.
+    """
     frames = []
     # TB: one file per (subject, pipeline)
     for sub in SUBJECTS:
@@ -43,10 +48,20 @@ def collect(output_root: Path) -> pd.DataFrame:
                 frames.append(pd.read_csv(p, sep="\t"))
             else:
                 print(f"  missing TB: {p}")
-    # NAT: single aggregate file
+    # NAT: single aggregate file (may contain multiple confound models)
     nat_p = output_root / "nat" / "pair_correlations.tsv"
     if nat_p.exists():
-        frames.append(pd.read_csv(nat_p, sep="\t"))
+        nat_df = pd.read_csv(nat_p, sep="\t")
+        if "confound_model" in nat_df.columns:
+            avail = sorted(nat_df["confound_model"].unique())
+            if nat_confound_model not in avail:
+                raise ValueError(
+                    f"NAT confound model {nat_confound_model!r} not in {avail}; "
+                    "pass --nat-confound-model")
+            nat_df = nat_df[nat_df["confound_model"] == nat_confound_model].drop(
+                columns=["confound_model"])
+            print(f"  NAT: using confound_model={nat_confound_model!r} (available: {avail})")
+        frames.append(nat_df)
     else:
         print(f"  missing NAT: {nat_p}")
 
@@ -174,10 +189,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--output-root", type=Path, default=BENCHMARK_OUT)
+    ap.add_argument("--nat-confound-model", default="none",
+                    help="Which NAT confound model to include in the unified "
+                         "summary when the NAT file has multiple (default: none).")
     args = ap.parse_args()
 
     print("Collecting pair_correlations.tsv inputs...")
-    df = collect(args.output_root)
+    df = collect(args.output_root, nat_confound_model=args.nat_confound_model)
     print(f"  {len(df)} rows total")
     print(f"  streams:    {sorted(df['stream'].unique())}")
     print(f"  pipelines:  {sorted(df['pipeline'].unique())}")

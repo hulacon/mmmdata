@@ -70,6 +70,13 @@ def events_path(sub: str, ses: str, run: int, task: str) -> Path:
     return base / f"{sub}_{ses}_task-{task}_run-{run:02d}_events.tsv"
 
 
+def confounds_path(sub: str, ses: str, run: int, task: str, pipeline: str) -> Path:
+    """Path to fMRIPrep per-volume confounds TSV (pipeline-specific)."""
+    base = PIPELINES[pipeline] / sub / ses / "func"
+    stem = f"{sub}_{ses}_task-{task}_run-{run:02d}"
+    return base / f"{stem}_desc-confounds_timeseries.tsv"
+
+
 # ── TB events reader ─────────────────────────────────────────────────────
 
 @dataclass(frozen=True)

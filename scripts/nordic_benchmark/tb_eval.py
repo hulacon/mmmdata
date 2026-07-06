@@ -6,7 +6,7 @@ output (`derivatives/glmsingle{,_nordic}/<sub>/glmsingle_outputs/TYPED_*.npy`)
 plus its sibling `trial_info.csv`, and computes per-ROI per-session
 within/between cross-run trial-pair correlations.
 
-Pair selection per the locked design (docs/nordic-benchmark-plan.md):
+Pair selection per the locked design (mmmdata-agents docs/nordic-and-isc-benchmarks.md §3):
   - within-stim pair: same mmm_id, **different runs**, same session
   - between-stim pair: different mmm_id, **different runs**, same session
   - same-run pairs (within or between stim): excluded
