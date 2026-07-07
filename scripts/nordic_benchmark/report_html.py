@@ -19,8 +19,14 @@ Inputs (under --output-root, default derivatives/nordic/benchmark/):
   figures/within_between_scatter.png
   figures/within_between_bars.png
 
-Output:
-  benchmark_report.html
+Outputs (both written by default; see --mode):
+  benchmark_report.html          linked  — references figures/*.png (lightweight)
+  benchmark_report.bundled.html  bundled — figures base64-embedded, fully
+                                 self-contained for sharing (email, upload, etc.)
+
+Both are otherwise identical. The linked version is smaller and convenient for
+local viewing next to figures/; the bundled version has no external references
+and can travel as a single file.
 """
 
 from __future__ import annotations
@@ -338,7 +344,18 @@ CSS = """
 """
 
 
-def build_html(root: Path) -> str:
+FIG_NAMES = ("discriminability_per_roi", "nordic_effect_paired",
+             "within_between_scatter", "within_between_bars")
+
+
+def figure_srcs(root: Path, embed: bool) -> dict[str, str]:
+    """Map figure name -> img src. Bundled = base64 data URI; linked = rel path."""
+    if embed:
+        return {n: embed_png(root / "figures" / f"{n}.png") for n in FIG_NAMES}
+    return {n: f"figures/{n}.png" for n in FIG_NAMES}
+
+
+def build_html(root: Path, embed: bool = True) -> str:
     summ, nat = load_inputs(root)
     hl = headline(summ)
     tb_w = wilcoxon_stats(summ, "TB")
@@ -353,9 +370,7 @@ def build_html(root: Path) -> str:
     tb_won = sum(1 for r in tb_disc if r["delta"] > 0)
     nat_won = sum(1 for r in nat_disc if r["delta"] > 0)
 
-    figs = {name: embed_png(root / "figures" / f"{name}.png") for name in (
-        "discriminability_per_roi", "nordic_effect_paired",
-        "within_between_scatter", "within_between_bars")}
+    figs = figure_srcs(root, embed)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -604,7 +619,7 @@ def build_html(root: Path) -> str:
         <li><strong>TB eval</strong> &mdash; <code>tb_eval.py --sub &lt;sub&gt; --pipeline &lt;original|nordic&gt;</code> &rarr; <code>tb/&lt;sub&gt;/&lt;pipeline&gt;/pair_correlations.tsv</code></li>
         <li><strong>NAT eval</strong> &mdash; <code>sbatch nat_eval.sbatch</code> (both pipelines &times; both confound models) &rarr; <code>nat/pair_correlations.tsv</code>, <code>nat/confound_comparison.tsv</code></li>
         <li><strong>Aggregate + figures</strong> &mdash; <code>report.py [--nat-confound-model none|model-08]</code> &rarr; <code>benchmark_summary.tsv</code>, <code>within_between_by_roi.tsv</code>, <code>figures/*.png</code></li>
-        <li><strong>This document</strong> &mdash; <code>report_html.py</code> &rarr; <code>benchmark_report.html</code> (all numbers computed from the TSVs; figures embedded from <code>figures/</code>)</li>
+        <li><strong>This document</strong> &mdash; <code>report_html.py</code> &rarr; <code>benchmark_report.html</code> (linked, references <code>figures/</code>) and <code>benchmark_report.bundled.html</code> (figures base64-embedded, self-contained for sharing). All numbers computed from the TSVs.</li>
       </ul>
       <p class="fnote">Data provenance: numbers and figures were generated from the 2026-07-06 NAT re-run (SLURM job 45097451) and the subsequent <code>report.py</code> aggregation. Statistics computed from <code>benchmark_summary.tsv</code> with <code>scipy.stats.wilcoxon</code>.</p>
     </section>
@@ -627,12 +642,24 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--output-root", type=Path, default=BENCHMARK_OUT)
+    ap.add_argument("--mode", choices=["linked", "bundled", "both"], default="both",
+                    help="linked = benchmark_report.html referencing figures/*.png; "
+                         "bundled = benchmark_report.bundled.html with base64-embedded "
+                         "figures (self-contained); both (default) writes each.")
     args = ap.parse_args()
 
-    html = build_html(args.output_root)
-    out = args.output_root / "benchmark_report.html"
-    out.write_text(html)
-    print(f"Wrote {out} ({len(html)/1024:.0f} KB)")
+    targets = []
+    if args.mode in ("linked", "both"):
+        targets.append(("benchmark_report.html", False))
+    if args.mode in ("bundled", "both"):
+        targets.append(("benchmark_report.bundled.html", True))
+
+    for fname, embed in targets:
+        html = build_html(args.output_root, embed=embed)
+        out = args.output_root / fname
+        out.write_text(html)
+        kind = "bundled" if embed else "linked"
+        print(f"Wrote {out} ({len(html)/1024:.0f} KB, {kind})")
 
 
 if __name__ == "__main__":
