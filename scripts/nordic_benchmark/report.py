@@ -8,9 +8,11 @@ Inputs (anything missing is skipped with a warning):
 
 Outputs:
   derivatives/nordic/benchmark/benchmark_summary.tsv
+  derivatives/nordic/benchmark/within_between_by_roi.tsv
   derivatives/nordic/benchmark/figures/discriminability_per_roi.png
   derivatives/nordic/benchmark/figures/nordic_effect_paired.png
   derivatives/nordic/benchmark/figures/within_between_scatter.png
+  derivatives/nordic/benchmark/figures/within_between_bars.png
 """
 
 from __future__ import annotations
@@ -76,6 +78,28 @@ def write_summary(df: pd.DataFrame, output_root: Path) -> Path:
     out = output_root / "benchmark_summary.tsv"
     df[SUMMARY_COLS].to_csv(out, sep="\t", index=False)
     print(f"Wrote {out} ({len(df)} rows)")
+    return out
+
+
+def within_between_by_roi(df: pd.DataFrame) -> pd.DataFrame:
+    """Mean within_r / between_r / discriminability per stream × ROI × pipeline.
+
+    This is the component breakdown behind the discriminability metric: the
+    'same-item' (within) and 'different-item' (between) correlations that get
+    subtracted. Rows are ordered by (stream, ROI_ORDER, pipeline).
+    """
+    g = (df.groupby(["stream", "roi", "pipeline"], observed=True)
+           [["within_r", "between_r", "discriminability"]]
+           .mean().round(5).reset_index())
+    g["roi"] = pd.Categorical(g["roi"], categories=ROI_ORDER, ordered=True)
+    return g.sort_values(["stream", "roi", "pipeline"]).reset_index(drop=True)
+
+
+def write_within_between_table(df: pd.DataFrame, output_root: Path) -> Path:
+    tbl = within_between_by_roi(df)
+    out = output_root / "within_between_by_roi.tsv"
+    tbl.to_csv(out, sep="\t", index=False)
+    print(f"Wrote {out} ({len(tbl)} rows)")
     return out
 
 
@@ -185,6 +209,64 @@ def figure_within_between_scatter(df: pd.DataFrame, output_root: Path) -> Path:
     return out
 
 
+def figure_within_between_bars(df: pd.DataFrame, output_root: Path) -> Path:
+    """Per-ROI grouped bars of the within_r and between_r components.
+
+    For each ROI, four bars: {original, NORDIC} × {between, within}. Within is
+    drawn solid and between hatched/lighter, so the visible gap between the two
+    bars of a cluster IS the discriminability. Makes explicit that TB has a
+    small gap between two large correlations while NAT has a large within over a
+    near-zero between floor.
+    """
+    streams = sorted(df["stream"].unique())
+    if not streams:
+        return None
+    tbl = within_between_by_roi(df)
+    fig, axes = plt.subplots(1, len(streams), figsize=(9 * len(streams), 5.2),
+                             squeeze=False)
+    x = np.arange(len(ROI_ORDER))
+    w = 0.2
+    # cluster offsets: original-between, original-within, nordic-between, nordic-within
+    specs = [
+        ("original", "between_r", -1.5 * w, PIPELINE_COLORS["original"], True),
+        ("original", "within_r",  -0.5 * w, PIPELINE_COLORS["original"], False),
+        ("nordic",   "between_r",  0.5 * w, PIPELINE_COLORS["nordic"],   True),
+        ("nordic",   "within_r",   1.5 * w, PIPELINE_COLORS["nordic"],   False),
+    ]
+    for ax, stream in zip(axes[0], streams):
+        sub = tbl[tbl["stream"] == stream]
+        for pipe, metric, off, color, is_between in specs:
+            vals = (sub[sub["pipeline"] == pipe]
+                    .set_index("roi")[metric].reindex(ROI_ORDER).values)
+            ax.bar(x + off, vals, w, color=color,
+                   alpha=0.45 if is_between else 1.0,
+                   hatch="///" if is_between else None,
+                   edgecolor=color, linewidth=0.6)
+        ax.axhline(0, color="black", lw=0.5)
+        ax.set_xticks(x)
+        ax.set_xticklabels(ROI_ORDER, rotation=45, ha="right")
+        ax.set_title(f"{stream}: within vs between r by ROI")
+        ax.set_ylabel("r")
+    # shared legend describing the 2×2 encoding
+    from matplotlib.patches import Patch
+    handles = [
+        Patch(facecolor=PIPELINE_COLORS["original"], label="original — within"),
+        Patch(facecolor=PIPELINE_COLORS["original"], alpha=0.45, hatch="///",
+              edgecolor=PIPELINE_COLORS["original"], label="original — between"),
+        Patch(facecolor=PIPELINE_COLORS["nordic"], label="NORDIC — within"),
+        Patch(facecolor=PIPELINE_COLORS["nordic"], alpha=0.45, hatch="///",
+              edgecolor=PIPELINE_COLORS["nordic"], label="NORDIC — between"),
+    ]
+    axes[0][0].legend(handles=handles, loc="best", fontsize=8, ncol=2)
+    fig.tight_layout()
+    out = output_root / "figures" / "within_between_bars.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote {out}")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -202,11 +284,13 @@ def main():
     print(f"  subjects:   {sorted(df['subject'].unique())}")
 
     write_summary(df, args.output_root)
+    write_within_between_table(df, args.output_root)
 
     print("\nFigures:")
     figure_per_roi(df, args.output_root)
     figure_paired_delta(df, args.output_root)
     figure_within_between_scatter(df, args.output_root)
+    figure_within_between_bars(df, args.output_root)
 
     print("\nDone.")
 
