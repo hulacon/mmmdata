@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from . import qc
+from . import qc, qc_guidance
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -601,6 +601,12 @@ def _render_html(
             '</section>'
         )
 
+    # Guidance covers the table columns plus the motion columns the
+    # dashboard derives from fMRIPrep confounds.
+    guidance_keys = list(key_metrics)
+    if modality == "bold" and any(r["motion"] for r in runs):
+        guidance_keys += ["mean_fd", "pct_high_motion"]
+
     table_html = _render_table(runs, key_metrics, modality, mriqc_dir)
     chart_html = _render_iqm_charts(runs, outlier_result, key_metrics, modality, subject)
     motion_html = ""
@@ -632,6 +638,13 @@ def _render_html(
   </div>
 </header>
 
+<section id="how-to-review">
+  <h2>How to Review</h2>
+  <p class="section-intro">Read this before making a call. It states what the
+  dashboard decides on its own and what it is asking you to judge.</p>
+  {qc_guidance.render_process_section()}
+</section>
+
 {processing_html}
 
 {subject_summary_html}
@@ -650,10 +663,39 @@ def _render_html(
 
 {f'<section id="outlier-detail"><h2>Outlier Detail</h2>{outlier_detail_html}</section>' if n_outliers > 0 else ''}
 
+<section id="measure-guidance">
+  <h2>Measure Guidance</h2>
+  <p class="section-intro">One entry per column above: why it is measured,
+  what to check by eye, what is flagged without you, and the source of the
+  guidance.</p>
+  {qc_guidance.render_guidance_section(guidance_keys)}
+</section>
+
 {_TABLE_SORT_JS}
 
 </body>
 </html>"""
+
+
+def _render_header_cells(headers: Sequence[str]) -> str:
+    """Render ``<th>`` cells, attaching guidance to any documented measure.
+
+    A documented column gets the guidance summary as a hover tooltip and a
+    superscript marker linking to its glossary entry, so the reason a column
+    exists is never more than one click from the number itself.
+    """
+    cells = []
+    for h in headers:
+        g = qc_guidance.get_guidance(h)
+        if g is None:
+            cells.append(f'<th data-col="{h}">{h}</th>')
+            continue
+        cells.append(
+            f'<th data-col="{h}" class="th-documented" title="{_escape(g.tooltip())}">'
+            f'{h}<a class="g-marker" href="#guidance-{h}" '
+            f'aria-label="Guidance for {h}">&#9432;</a></th>'
+        )
+    return "".join(cells)
 
 
 def _render_table(
@@ -672,8 +714,7 @@ def _render_table(
         headers += ["mean_fd", "pct_high_motion"]
     headers.append("Report")
 
-    th_cells = "".join(f'<th data-col="{h}">{h}</th>' for h in headers)
-    thead = f"<thead><tr>{th_cells}</tr></thead>"
+    thead = f"<thead><tr>{_render_header_cells(headers)}</tr></thead>"
 
     # Rows
     tbody_rows = []
@@ -893,8 +934,16 @@ def _render_outlier_detail(runs: list[dict], mriqc_dir: Path) -> str:
             val = info.get("value", "?")
             direction = info.get("direction", "?")
             threshold = info.get("threshold", "?")
+            g = qc_guidance.get_guidance(m)
+            hint = ""
+            if g is not None:
+                hint = (
+                    f'<div class="flag-hint"><em>Check:</em> {_escape(g.look_for)} '
+                    f'<a href="#guidance-{m}">guidance</a></div>'
+                )
             metric_items.append(
-                f"<li><strong>{m}</strong>: {val} ({direction}, threshold: {threshold})</li>"
+                f"<li><strong>{m}</strong>: {val} ({direction}, threshold: {threshold})"
+                f"{hint}</li>"
             )
         metrics_list = "<ul>" + "".join(metric_items) + "</ul>" if metric_items else "<p>No details.</p>"
 
@@ -982,6 +1031,44 @@ details ul { margin: 0.5rem 0 0 1.5rem; }
 details li { margin: 0.25rem 0; font-size: 0.85rem; }
 
 section { margin-bottom: 2rem; }
+.section-intro { color: #475569; font-size: 0.85rem; margin-bottom: 0.75rem; max-width: 70ch; }
+
+/* Guidance: documented column headers */
+.th-documented { border-bottom: 2px solid var(--blue); }
+.g-marker { font-size: 0.7rem; margin-left: 0.2rem; opacity: 0.55; }
+.g-marker:hover { opacity: 1; }
+
+/* Guidance cards */
+.guidance-card { border: 1px solid #e2e8f0; background: #fff; margin: 0.35rem 0; }
+.guidance-card summary { font-size: 0.9rem; padding: 0.15rem 0; }
+.guidance-card summary code { background: #f1f5f9; padding: 0.05rem 0.3rem;
+                              border-radius: 3px; font-size: 0.85rem; }
+.process-card { background: #f8fafc; }
+.guidance-body { margin-top: 0.6rem; padding-left: 0.25rem; }
+.g-units { color: #64748b; font-weight: 400; font-size: 0.8rem; }
+.g-dir { float: right; font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+         letter-spacing: 0.04em; padding: 0.1rem 0.45rem; border-radius: 9999px;
+         background: #f1f5f9; color: #475569; }
+.g-dir-lower_better { background: #e0f2fe; color: #075985; }
+.g-dir-higher_better { background: #dcfce7; color: #166534; }
+.g-dir-target_range { background: #fef3c7; color: #92400e; }
+.g-dir-context { background: #f1f5f9; color: #475569; }
+.g-row { display: flex; gap: 0.75rem; margin: 0.4rem 0; font-size: 0.85rem;
+         align-items: baseline; }
+.g-label { flex: 0 0 11rem; font-weight: 600; color: #334155; font-size: 0.75rem;
+           text-transform: uppercase; letter-spacing: 0.03em; }
+.g-text { flex: 1; max-width: 80ch; }
+
+/* References */
+.ref-list { margin: 0.75rem 0 0.25rem 1.1rem; padding: 0; }
+.ref { font-size: 0.8rem; margin: 0.25rem 0; }
+.ref-detail { color: #64748b; }
+.ref-note { color: #475569; font-style: italic; }
+.ref-docs a { color: #7c3aed; }
+.ref-forum a { color: #ea580c; }
+
+/* Outlier detail hints */
+.flag-hint { font-size: 0.8rem; color: #475569; margin: 0.25rem 0 0.5rem 0; max-width: 80ch; }
 </style>"""
 
 

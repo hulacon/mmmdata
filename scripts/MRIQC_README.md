@@ -212,6 +212,11 @@ print(df[['subject_id', 'session_id', 'task_id', 'fd_mean', 'tsnr']])
 
 ## Documentation
 
+- **Interpreting these metrics**: `docs/doc/qc-guidance.md` — why each measure
+  is on the QC dashboard, what to check by eye, what gets flagged
+  automatically, and the source of each piece of guidance. Generated from
+  `src/python/neuroimaging/qc_guidance.py`; regenerate with
+  `python scripts/generate_qc_guidance_doc.py`.
 - MRIQC Documentation: https://mriqc.readthedocs.io/
 - MRIQC GitHub: https://github.com/nipreps/mriqc
 - Output Metrics: https://mriqc.readthedocs.io/en/latest/measures.html
