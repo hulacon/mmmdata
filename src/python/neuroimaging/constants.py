@@ -72,6 +72,20 @@ DVARS_COLUMN: str = "std_dvars"
 
 
 # ---------------------------------------------------------------------------
+# QC threshold defaults
+# ---------------------------------------------------------------------------
+# Fallbacks used only when config/base.toml cannot be read. The live values
+# come from the ``[qc]`` section there — see ``neuroimaging.qc.qc_settings``.
+# Rationale and citations for each: docs/doc/qc-guidance.md.
+
+DEFAULT_QC_SETTINGS: dict[str, float] = {
+    "fd_threshold": 0.5,
+    "investigate_threshold": 0.5,
+    "iqr_multiplier": 1.5,
+}
+
+
+# ---------------------------------------------------------------------------
 # Task-to-stream mapping
 # ---------------------------------------------------------------------------
 

@@ -21,7 +21,32 @@ from neuroimaging.io import _resolve_bids_root
 EXCLUDE = "exclude"
 KEEP = "keep"
 INVESTIGATE = "investigate"
-VALID_DECISIONS = {KEEP, EXCLUDE, INVESTIGATE}
+PENDING = "pending"
+VALID_DECISIONS = {KEEP, EXCLUDE, INVESTIGATE, PENDING}
+
+#: Decisions that represent a human call rather than a placeholder.
+SIGNED_OFF_DECISIONS = {KEEP, EXCLUDE, INVESTIGATE}
+
+#: Reviewer identifiers belonging to automation. Mirrors
+#: ``neuroimaging.qc_dashboard.AUTOMATED_REVIEWERS`` so that records
+#: written before the ``automated`` flag existed are still recognised.
+AUTOMATED_REVIEWERS = {"auto-stub", "auto", "automated", ""}
+
+
+def is_signed_off(record: Optional[dict]) -> bool:
+    """Return True when *record* is a decision an identifiable human made.
+
+    Mirrors ``neuroimaging.qc_dashboard.is_signed_off``; kept here so the
+    pipeline layer does not import the dashboard.
+    """
+    if not record:
+        return False
+    if record.get("automated"):
+        return False
+    if record.get("decision") not in SIGNED_OFF_DECISIONS:
+        return False
+    reviewer = (record.get("reviewer") or "").strip().lower()
+    return bool(reviewer) and reviewer not in AUTOMATED_REVIEWERS
 
 
 def _decisions_dir(bids_root: Path, subject: str) -> Path:
@@ -55,8 +80,9 @@ def get_included_runs(
     session: str,
     bids_root: Optional[Path] = None,
     treat_investigate_as: str = "exclude",
+    treat_pending_as: str = "exclude",
 ) -> list[Path]:
-    """Return sorted BOLD paths whose latest decision is not ``exclude``.
+    """Return sorted BOLD paths cleared to flow into Layer 2.
 
     Parameters
     ----------
@@ -67,6 +93,13 @@ def get_included_runs(
         How to treat ``investigate`` decisions. Default ``'exclude'``
         (conservative — a run under review is held out of downstream
         streams until explicitly marked ``keep``).
+    treat_pending_as : {'exclude', 'keep'}
+        How to treat runs no human has signed off on — those recorded as
+        ``pending``, and any record attributable to automation rather than
+        a person. Default ``'exclude'``: data nobody has reviewed does not
+        enter an analysis. Pass ``'keep'`` to admit unreviewed runs, which
+        restores the behaviour that applied when the auto-stub generator
+        wrote ``keep`` directly.
 
     Returns
     -------
@@ -79,11 +112,14 @@ def get_included_runs(
         If any expected decision JSON is missing. Streams should not run
         on sessions where the QC gate hasn't been fully populated.
     """
-    if treat_investigate_as not in {KEEP, EXCLUDE}:
-        raise ValueError(
-            f"treat_investigate_as must be 'keep' or 'exclude', got "
-            f"{treat_investigate_as!r}"
-        )
+    for name, value in (
+        ("treat_investigate_as", treat_investigate_as),
+        ("treat_pending_as", treat_pending_as),
+    ):
+        if value not in {KEEP, EXCLUDE}:
+            raise ValueError(
+                f"{name} must be 'keep' or 'exclude', got {value!r}"
+            )
 
     bids_root = _resolve_bids_root(bids_root)
     func_dir = bids_root / f"sub-{subject}" / f"ses-{session}" / "func"
@@ -100,14 +136,20 @@ def get_included_runs(
             missing.append(run_key)
             continue
         decision = latest.get("decision")
-        if decision == EXCLUDE:
-            continue
-        if decision == INVESTIGATE and treat_investigate_as == EXCLUDE:
-            continue
         if decision not in VALID_DECISIONS:
             raise ValueError(
                 f"Invalid decision {decision!r} for sub-{subject} {run_key}"
             )
+        if not is_signed_off(latest):
+            # No human has signed this off, whatever value it carries.
+            if treat_pending_as == EXCLUDE:
+                continue
+            included.append(bold)
+            continue
+        if decision == EXCLUDE:
+            continue
+        if decision == INVESTIGATE and treat_investigate_as == EXCLUDE:
+            continue
         included.append(bold)
 
     if missing:
@@ -124,13 +166,22 @@ def summarize(
     bids_root: Optional[Path] = None,
     subjects: Optional[list[str]] = None,
 ) -> dict[str, int]:
-    """Count decisions by value across recorded JSONs. Useful for QA."""
+    """Count decisions by value across recorded JSONs. Useful for QA.
+
+    ``signed_off`` counts records attributable to a named human;
+    ``awaiting_signoff`` counts everything else, including automated
+    stubs that carry a non-pending value.
+    """
     bids_root = _resolve_bids_root(bids_root)
+    empty = {
+        KEEP: 0, EXCLUDE: 0, INVESTIGATE: 0, PENDING: 0,
+        "signed_off": 0, "awaiting_signoff": 0, "total": 0,
+    }
     root = bids_root / DERIVATIVES_DIRS["preprocessing_qc"]
     if not root.exists():
-        return {KEEP: 0, EXCLUDE: 0, INVESTIGATE: 0, "total": 0}
+        return empty
 
-    counts = {KEEP: 0, EXCLUDE: 0, INVESTIGATE: 0, "total": 0}
+    counts = dict(empty)
     pattern = "sub-*" if subjects is None else None
     sub_dirs = (
         [root / f"sub-{s}" for s in subjects]
@@ -148,8 +199,13 @@ def summarize(
             history = data.get("decisions", [])
             if not history:
                 continue
-            latest = history[-1].get("decision")
-            if latest in counts:
-                counts[latest] += 1
+            latest = history[-1]
+            value = latest.get("decision")
+            if value in counts:
+                counts[value] += 1
+            if is_signed_off(latest):
+                counts["signed_off"] += 1
+            else:
+                counts["awaiting_signoff"] += 1
             counts["total"] += 1
     return counts

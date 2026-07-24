@@ -1540,30 +1540,34 @@ PROCESS_GUIDANCE: tuple[ProcessNote, ...] = (
     ),
     ProcessNote(
         key="decision_vocabulary",
-        title="What keep / investigate / exclude mean downstream",
+        title="What keep / investigate / exclude / pending mean downstream",
         body=(
             "Decisions are consumed by the pipeline gate, so the word you pick "
             "changes what gets analysed. 'keep' admits the run. 'exclude' "
             "removes it. 'investigate' is treated as 'exclude' by default, so "
-            "it is a safe holding state but not a neutral one — a run left on "
-            "'investigate' silently drops out of Layer 2 streams. Every "
-            "decision is appended to a per-run JSON history with your "
-            "identifier and a timestamp; nothing is overwritten, so recording "
-            "a reason is what makes an exclusion defensible later."
+            "it is a safe holding state but not a neutral one. 'pending' means "
+            "nobody has signed off yet, and is also held out by default. Only "
+            "the first three can be recorded by a person; 'pending' is what "
+            "automation writes. Every decision is appended to a per-run JSON "
+            "history with your identifier and a UTC timestamp, and nothing is "
+            "overwritten — recording a reason is what makes an exclusion "
+            "defensible later."
         ),
     ),
     ProcessNote(
         key="auto_stub_provenance",
         title="Decisions you did not make",
         body=(
-            "Every run is pre-populated with an auto-generated decision so the "
-            "pipeline gate is never blocked by a missing file. These carry the "
-            "reviewer identifier 'auto-stub' and a reason string recording the "
-            "motion numbers behind them: 'keep', or 'investigate' when mean FD "
-            "exceeds the stub threshold. An 'auto-stub' decision means nobody "
-            "has looked at that run yet. Treat it as pending, not as a "
-            "colleague's judgement, and note that the stub only ever saw mean "
-            "FD — it inspected no IQM and no image."
+            "Every run is pre-populated with a stub so the pipeline gate is "
+            "never blocked by a missing file. Stubs are recorded as 'pending' "
+            "under the reviewer identifier 'auto-stub', and the tooling is not "
+            "permitted to write keep, exclude or investigate at all. What the "
+            "stub thinks is stored separately as a recommendation and shown "
+            "next to the PENDING badge as an advisory note — it gates nothing. "
+            "Bear in mind the stub only ever saw mean FD: it inspected no IQM "
+            "and no image. The dashboard's 'Signed Off' count therefore means "
+            "what it says, and a run shows as reviewed only once a named "
+            "person has recorded a call on it."
         ),
     ),
 )

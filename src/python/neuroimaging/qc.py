@@ -15,8 +15,75 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 from pathlib import Path
 from typing import Any, Sequence
+
+from .constants import DEFAULT_QC_SETTINGS
+
+# ---------------------------------------------------------------------------
+# QC settings resolution
+# ---------------------------------------------------------------------------
+
+def _load_config_module():
+    """Import ``core.config`` without executing the ``core`` package init.
+
+    ``core/__init__.py`` pulls in pybids-dependent helpers, so a plain
+    ``from core.config import load_config`` raises ImportError anywhere
+    pybids is absent. Loading the module from its path keeps the QC
+    thresholds readable regardless of which optional dependencies are
+    installed.
+    """
+    import importlib.util
+
+    config_py = Path(__file__).resolve().parents[1] / "core" / "config.py"
+    spec = importlib.util.spec_from_file_location(
+        "_mmmdata_core_config", config_py
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load config module from {config_py}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def qc_settings() -> dict[str, float]:
+    """Return QC thresholds from ``config/base.toml``'s ``[qc]`` section.
+
+    Falls back to :data:`neuroimaging.constants.DEFAULT_QC_SETTINGS` for any
+    key the config does not define. If the config cannot be read at all, the
+    fallbacks are used and a warning is emitted rather than failing silently
+    — a QC threshold that is quietly not the one you configured is worse
+    than a noisy one.
+
+    Returns
+    -------
+    dict
+        Keys ``fd_threshold``, ``investigate_threshold``, ``iqr_multiplier``.
+    """
+    settings = dict(DEFAULT_QC_SETTINGS)
+    try:
+        qc_section = _load_config_module().load_config().get("qc", {})
+    except Exception as exc:
+        warnings.warn(
+            f"Could not read [qc] settings from config ({exc}); "
+            f"falling back to {settings}.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return settings
+
+    for key in settings:
+        if key in qc_section:
+            settings[key] = float(qc_section[key])
+    return settings
+
+
+def _setting(name: str, override: float | None) -> float:
+    """Return *override* if given, else the configured value for *name*."""
+    if override is not None:
+        return override
+    return qc_settings()[name]
 
 # ---------------------------------------------------------------------------
 # Constants — key IQMs by modality
@@ -373,7 +440,7 @@ def detect_outliers(
     scope: str = "global",
     subject: str | None = None,
     metrics: Sequence[str] | None = None,
-    iqr_multiplier: float = 1.5,
+    iqr_multiplier: float | None = None,
 ) -> dict[str, Any]:
     """Flag runs whose IQMs fall outside the IQR-based fence.
 
@@ -390,8 +457,9 @@ def detect_outliers(
         Restrict analysis to one subject.
     metrics : sequence of str, optional
         IQMs to check.  Default: key metrics for the modality.
-    iqr_multiplier : float
+    iqr_multiplier : float, optional
         IQR multiplier for the fence.  1.5 = standard, 3.0 = extreme only.
+        Defaults to ``[qc].iqr_multiplier`` from ``config/base.toml``.
 
     Returns
     -------
@@ -400,6 +468,8 @@ def detect_outliers(
         and ``summary_by_subject``.
     """
     import pandas as pd
+
+    iqr_multiplier = _setting("iqr_multiplier", iqr_multiplier)
 
     rows = get_iqm_table(mriqc_dir, modality, subject=subject, metrics=metrics)
     if not rows:
@@ -531,7 +601,7 @@ def summarize_motion(
     subject: str | None = None,
     session: str | None = None,
     task: str | None = None,
-    fd_threshold: float = 0.5,
+    fd_threshold: float | None = None,
 ) -> dict[str, Any]:
     """Summarize fMRIPrep motion confounds across BOLD runs.
 
@@ -541,8 +611,9 @@ def summarize_motion(
         fMRIPrep derivatives directory.
     subject, session, task : str, optional
         Filters (without prefixes).
-    fd_threshold : float
-        FD threshold in mm for counting high-motion volumes.
+    fd_threshold : float, optional
+        FD threshold in mm for counting high-motion volumes. Defaults to
+        ``[qc].fd_threshold`` from ``config/base.toml``.
 
     Returns
     -------
@@ -550,6 +621,8 @@ def summarize_motion(
         ``{"n_runs", "fd_threshold_mm", "runs": [...], "summary_by_subject": {...}}``
     """
     import pandas as pd
+
+    fd_threshold = _setting("fd_threshold", fd_threshold)
 
     fmriprep_dir = Path(fmriprep_dir)
     sub_part = f"sub-{subject}" if subject else "sub-*"

@@ -23,6 +23,25 @@ inventory_dir = "/projects/hulacon/shared/mmmdata/inventory"
 # Working directory for pipeline intermediate files (must be outside bids_project_dir)
 work_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/work"
 
+[qc]
+# Quality-control thresholds. See docs/doc/qc-guidance.md for what each
+# measure means and what the literature does (and does not) support.
+
+# Framewise displacement (mm) above which a volume counts as high-motion.
+# Note: this is a run-summary convenience threshold, not a published
+# exclusion criterion. Power et al. (2012) used 0.5 mm for censoring
+# individual frames; the citable run-level rule is Parkes et al. (2018)
+# (mean FD > 0.25 mm, or >20% of frames above 0.2 mm).
+fd_threshold = 0.5
+
+# Mean FD (mm) above which the auto-stub generator recommends 'investigate'
+# rather than 'keep'. A recommendation only — it is never a sign-off.
+investigate_threshold = 0.5
+
+# Multiplier for the Tukey IQR fence used to flag outlier runs.
+# 1.5 is the standard fence; 3.0 flags only extreme values.
+iqr_multiplier = 1.5
+
 [slurm]
 # Default SLURM configuration
 partition = "medium"

@@ -29,7 +29,18 @@ from . import qc, qc_guidance
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_DECISIONS = {"keep", "exclude", "investigate"}
+#: Decisions that may be recorded. ``pending`` is the state of a run that
+#: no human has signed off on yet — it is what the auto-stub generator
+#: writes, so an automated recommendation is never mistaken for a judgement.
+VALID_DECISIONS = {"keep", "exclude", "investigate", "pending"}
+
+#: Decisions that represent an actual human call.
+SIGNED_OFF_DECISIONS = {"keep", "exclude", "investigate"}
+
+#: Reviewer identifiers belonging to automation rather than a person.
+#: Used to classify legacy records written before decisions carried an
+#: explicit ``automated`` flag, so no migration of on-disk JSON is needed.
+AUTOMATED_REVIEWERS = {"auto-stub", "auto", "automated", ""}
 
 # Subset of key IQMs to display in the dashboard table (keep it scannable)
 _DASHBOARD_BOLD_COLS = ["fd_mean", "fd_perc", "tsnr", "dvars_std", "efc", "fber"]
@@ -75,12 +86,19 @@ def save_decision(
     reason: str,
     reviewer: str,
     suffix: str = "bold",
+    automated: bool = False,
+    recommendation: str | None = None,
 ) -> dict[str, Any]:
     """Save a QC decision for a specific run.
 
     Decisions are stored as individual JSON files under
     ``decisions_dir/sub-{subject}/``. Each file maintains a full
     decision history (list of entries) for audit trail.
+
+    A record counts as a human sign-off only when ``automated`` is False
+    and *reviewer* names an identifiable person. Automated writers must
+    pass ``automated=True`` and should record ``'pending'``, carrying any
+    suggestion in *recommendation* rather than in *decision*.
 
     Parameters
     ----------
@@ -91,22 +109,55 @@ def save_decision(
     run : str or None
         Run number or None.
     decision : str
-        One of ``'keep'``, ``'exclude'``, ``'investigate'``.
+        One of ``'keep'``, ``'exclude'``, ``'investigate'``, ``'pending'``.
+        Automated writers may only record ``'pending'``.
     reason : str
         Free-text explanation.
     reviewer : str
-        Reviewer identifier.
+        Reviewer identifier. Must name a person for a human sign-off;
+        automated writers should use a name in :data:`AUTOMATED_REVIEWERS`.
     suffix : str
         Modality suffix (default ``'bold'``).
+    automated : bool
+        True when written by tooling rather than a person.
+    recommendation : str, optional
+        For automated records, the decision the automation would suggest.
+        Advisory only — it never gates anything.
 
     Returns
     -------
     dict
         The saved decision record.
+
+    Raises
+    ------
+    ValueError
+        If *decision* is not valid, if a human sign-off is recorded
+        without an identifiable reviewer, or if an automated record
+        claims a decision only a human may make.
     """
     if decision not in VALID_DECISIONS:
         raise ValueError(
             f"Invalid decision {decision!r}; expected one of {sorted(VALID_DECISIONS)}"
+        )
+
+    reviewer_id = (reviewer or "").strip()
+    if automated:
+        if decision in SIGNED_OFF_DECISIONS:
+            raise ValueError(
+                f"Automated writers may only record 'pending', not {decision!r}. "
+                f"Pass the suggestion as recommendation= instead."
+            )
+    else:
+        if not reviewer_id or reviewer_id.lower() in AUTOMATED_REVIEWERS:
+            raise ValueError(
+                "A human sign-off requires an identifiable reviewer; got "
+                f"{reviewer!r}. Pass automated=True for tooling-written records."
+            )
+    if recommendation is not None and recommendation not in VALID_DECISIONS:
+        raise ValueError(
+            f"Invalid recommendation {recommendation!r}; expected one of "
+            f"{sorted(VALID_DECISIONS)}"
         )
 
     decisions_dir = Path(decisions_dir)
@@ -127,14 +178,36 @@ def save_decision(
         "decision": decision,
         "reason": reason,
         "reviewer": reviewer,
+        "automated": bool(automated),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    if recommendation is not None:
+        record["recommendation"] = recommendation
     data["decisions"].append(record)
 
     with open(json_path, "w") as f:
         json.dump(data, f, indent=2)
 
     return record
+
+
+def is_signed_off(record: dict[str, Any] | None) -> bool:
+    """Return True when *record* is a decision an identifiable human made.
+
+    Three things must hold: the record exists, its decision is an actual
+    call rather than ``'pending'``, and it is attributable to a named
+    person. Records predating the ``automated`` flag are classified by
+    reviewer name, so legacy auto-stub entries are correctly treated as
+    unreviewed without rewriting anything on disk.
+    """
+    if not record:
+        return False
+    if record.get("automated"):
+        return False
+    if record.get("decision") not in SIGNED_OFF_DECISIONS:
+        return False
+    reviewer = (record.get("reviewer") or "").strip().lower()
+    return bool(reviewer) and reviewer not in AUTOMATED_REVIEWERS
 
 
 def load_decisions(
@@ -185,8 +258,8 @@ def generate_dashboard(
     subject: str | None = None,
     modality: str = "bold",
     save_path: str | Path | None = None,
-    iqr_multiplier: float = 1.5,
-    fd_threshold: float = 0.5,
+    iqr_multiplier: float | None = None,
+    fd_threshold: float | None = None,
     bids_root: str | Path | None = None,
 ) -> str:
     """Generate a self-contained interactive QC dashboard as HTML.
@@ -205,10 +278,12 @@ def generate_dashboard(
         ``'bold'``, ``'T1w'``, ``'T2w'``, or ``'dwi'``.
     save_path : path, optional
         Where to write the HTML. Required (no sensible default).
-    iqr_multiplier : float
-        IQR multiplier for outlier detection.
-    fd_threshold : float
-        FD threshold for motion summary (bold only).
+    iqr_multiplier : float, optional
+        IQR multiplier for outlier detection. Defaults to
+        ``[qc].iqr_multiplier`` from ``config/base.toml``.
+    fd_threshold : float, optional
+        FD threshold for motion summary (bold only). Defaults to
+        ``[qc].fd_threshold`` from ``config/base.toml``.
     bids_root : path, optional
         BIDS dataset root. If provided, adds a processing status section
         showing MRIQC/fMRIPrep completion per subject.
@@ -219,6 +294,8 @@ def generate_dashboard(
         Absolute path to the generated HTML file.
     """
     mriqc_dir = Path(mriqc_dir)
+    iqr_multiplier = qc._setting("iqr_multiplier", iqr_multiplier)
+    fd_threshold = qc._setting("fd_threshold", fd_threshold)
 
     # 1. Gather data
     iqm_rows = qc.get_iqm_table(mriqc_dir, modality, subject=subject)
@@ -338,15 +415,23 @@ def _build_subject_summary(
                 motion_by_sub[s]["hm_pcts"].append(r["pct_high_motion"])
 
     # Count decisions per subject (parse subject from run_key prefix)
+    # Only human sign-offs count as reviewed; automated records do not.
     decision_counts: dict[str, dict[str, int]] = {}
     if decisions:
         for rk, dec_info in decisions.items():
             parts = rk.split("_")
             sub = parts[0].replace("sub-", "") if parts else ""
             if sub not in decision_counts:
-                decision_counts[sub] = {"reviewed": 0, "keep": 0, "exclude": 0, "investigate": 0}
+                decision_counts[sub] = {
+                    "reviewed": 0, "auto": 0,
+                    "keep": 0, "exclude": 0, "investigate": 0,
+                }
+            latest = dec_info.get("latest", {})
+            if not is_signed_off(latest):
+                decision_counts[sub]["auto"] += 1
+                continue
             decision_counts[sub]["reviewed"] += 1
-            d = dec_info.get("latest", {}).get("decision", "")
+            d = latest.get("decision", "")
             if d in decision_counts[sub]:
                 decision_counts[sub][d] += 1
 
@@ -379,6 +464,7 @@ def _build_subject_summary(
             "mean_high_motion_pct": round(sum(hm_pcts) / len(hm_pcts), 1) if hm_pcts else None,
             "n_reviewed": n_reviewed,
             "n_pending": n_runs - n_reviewed,
+            "n_auto": dc.get("auto", 0),
             "n_exclude": dc.get("exclude", 0),
         })
 
@@ -435,6 +521,9 @@ def _merge_run_data(
             "flagged_metrics": outlier_lookup.get(rk, {}).get("flagged_metrics", {}),
             "motion": motion_lookup.get(rk),
             "decision": (decisions or {}).get(rk, {}).get("latest"),
+            "signed_off": is_signed_off(
+                (decisions or {}).get(rk, {}).get("latest")
+            ),
             "report_filename": report_map.get(rk),
             "report_path": str(mriqc_dir / report_map[rk]) if rk in report_map else None,
         }
@@ -523,7 +612,7 @@ def _render_subject_summary(
     headers = ["Subject", "Runs", "Outliers", "% Outlier"]
     if has_motion:
         headers += ["Mean FD", "Mean % High Motion"]
-    headers += ["Reviewed", "Pending", "Excluded"]
+    headers += ["Signed Off", "Pending", "Auto-stubbed", "Excluded"]
 
     th = "".join(f'<th data-col="{h}">{h}</th>' for h in headers)
 
@@ -547,6 +636,7 @@ def _render_subject_summary(
         cells += [
             f'<td>{row["n_reviewed"]}</td>',
             f'<td>{row["n_pending"]}</td>',
+            f'<td class="cell-muted">{row.get("n_auto", 0)}</td>',
             f'<td class="{"cell-flagged" if row["n_exclude"] > 0 else ""}">{row["n_exclude"]}</td>',
         ]
 
@@ -579,7 +669,7 @@ def _render_html(
 
     n_total = len(runs)
     n_outliers = sum(1 for r in runs if r["is_outlier"])
-    n_reviewed = sum(1 for r in runs if r["decision"] is not None)
+    n_reviewed = sum(1 for r in runs if r.get("signed_off"))
     n_pending = n_total - n_reviewed
 
     # New overview sections
@@ -633,9 +723,12 @@ def _render_html(
   <div class="cards">
     <div class="card">{n_total}<span>Total Runs</span></div>
     <div class="card card-warn">{n_outliers}<span>Outliers</span></div>
-    <div class="card card-ok">{n_reviewed}<span>Reviewed</span></div>
+    <div class="card card-ok">{n_reviewed}<span>Signed Off</span></div>
     <div class="card">{n_pending}<span>Pending</span></div>
   </div>
+  <p class="meta signoff-note">&quot;Signed off&quot; counts only decisions
+  recorded by a named person. Auto-generated records show as pending no
+  matter what value they carry.</p>
 </header>
 
 <section id="how-to-review">
@@ -720,14 +813,31 @@ def _render_table(
     tbody_rows = []
     for r in runs:
         decision = r.get("decision")
-        dec_label = decision["decision"] if decision else "pending"
+        signed_off = r.get("signed_off", False)
+        # Only a human sign-off may display as a decision. Anything else —
+        # no record, an explicit 'pending', or an automated write — reads
+        # as PENDING regardless of what value is stored.
+        dec_label = decision["decision"] if (decision and signed_off) else "pending"
         dec_class = {
             "keep": "badge-keep", "exclude": "badge-exclude",
             "investigate": "badge-warn", "pending": "badge-pending",
         }.get(dec_label, "badge-pending")
+
         dec_title = ""
-        if decision:
-            dec_title = f'{decision.get("reviewer", "")} — {decision.get("reason", "")}'
+        suggestion = ""
+        if signed_off:
+            dec_title = (
+                f'{decision.get("reviewer", "")} — {decision.get("reason", "")} '
+                f'({decision.get("timestamp", "")})'
+            )
+        elif decision:
+            rec = decision.get("recommendation") or decision.get("decision")
+            dec_title = (
+                f'Not signed off. Written by {decision.get("reviewer") or "unknown"}'
+                f' — {decision.get("reason", "")}'
+            )
+            if rec and rec != "pending":
+                suggestion = f'<span class="auto-suggest">auto: {_escape(rec)}</span>'
 
         row_class = "row-outlier" if r["is_outlier"] else ""
         border_class = f"border-{dec_label}"
@@ -737,7 +847,8 @@ def _render_table(
             f'<td>{r["session"] or ""}</td>',
             f'<td>{r["task"] or ""}</td>',
             f'<td>{r["run"] or ""}</td>',
-            f'<td><span class="badge {dec_class}" title="{_escape(dec_title)}">{dec_label.upper()}</span></td>',
+            f'<td><span class="badge {dec_class}" title="{_escape(dec_title)}">'
+            f'{dec_label.upper()}</span>{suggestion}</td>',
             f'<td>{"YES" if r["is_outlier"] else ""}</td>',
         ]
 
@@ -1011,6 +1122,10 @@ h2 { font-size: 1.2rem; margin: 1.5rem 0 0.75rem; border-bottom: 1px solid #e2e8
 
 /* Cell flagged */
 .cell-flagged { background: #fee2e2; font-weight: 600; }
+.cell-muted { color: #94a3b8; }
+.signoff-note { margin-top: 0.6rem; font-size: 0.78rem; }
+.auto-suggest { margin-left: 0.4rem; font-size: 0.65rem; color: #94a3b8;
+                font-style: italic; white-space: nowrap; }
 
 /* Badges */
 .badge { padding: 0.15rem 0.5rem; border-radius: 9999px; font-size: 0.65rem;
