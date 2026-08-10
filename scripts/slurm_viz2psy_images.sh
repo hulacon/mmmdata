@@ -13,7 +13,8 @@
 
 set -euo pipefail
 
-VENV=/home/bhutch/.local/envs/viz2psy
+VENV=/projects/hulacon/shared/envs/stimfeat
+source ${VENV}/etc/conda/activate.d/stimfeat-env.sh  # PYTHONNOUSERSITE=1 + shared model caches
 STIMULI=/gpfs/projects/hulacon/shared/mmmdata/stimuli
 INPUT="${STIMULI}/shared1000/images/*.png"
 OUTPUT="${STIMULI}/shared1000/viz2psy_scores.csv"

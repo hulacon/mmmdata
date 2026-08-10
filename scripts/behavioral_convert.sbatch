@@ -13,7 +13,9 @@
 # Runs all 7 converter types (no --dry-run).
 # Expected: ~45 min (73 EDFs ~29 min, 232 PhysioLogs ~6 min, rest fast).
 
-PYTHON=/home/bhutch/.local/envs/viz2psy/bin/python3
+ENV=/projects/hulacon/shared/envs/stimfeat
+source ${ENV}/etc/conda/activate.d/stimfeat-env.sh  # PYTHONNOUSERSITE=1 + shared model caches
+PYTHON=${ENV}/bin/python3
 CONVERTER_DIR=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/raw2bids_converters
 
 echo "Job started: $(date)"

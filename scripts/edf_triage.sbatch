@@ -12,7 +12,9 @@
 # EDF triage: scan-window quality audit for all 87 EDF files
 # Expected: ~10 min, <200 MB RAM
 
-PYTHON=/home/bhutch/.local/envs/viz2psy/bin/python3
+ENV=/projects/hulacon/shared/envs/stimfeat
+source ${ENV}/etc/conda/activate.d/stimfeat-env.sh  # PYTHONNOUSERSITE=1 + shared model caches
+PYTHON=${ENV}/bin/python3
 SCRIPT_DIR=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata-agents/scripts
 SCRIPT="$SCRIPT_DIR/edf_triage.py"
 

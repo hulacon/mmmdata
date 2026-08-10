@@ -19,7 +19,8 @@ set -euo pipefail
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-VENV=/home/bhutch/.local/envs/viz2psy
+VENV=/projects/hulacon/shared/envs/stimfeat
+source ${VENV}/etc/conda/activate.d/stimfeat-env.sh  # PYTHONNOUSERSITE=1 + shared model caches
 STIMULI=/gpfs/projects/hulacon/shared/mmmdata/stimuli
 MOVIES_DIR="${STIMULI}/movies/movie_files"
 SCORES_DIR="${STIMULI}/movies/viz2psy_scores"

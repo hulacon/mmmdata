@@ -13,7 +13,9 @@
 # Runs all 7 converter types against file_inventory.csv in dry-run mode.
 # Expected: ~15 min (mostly physio_dcm DICOM parsing), <500 MB RAM.
 
-PYTHON=/home/bhutch/.local/envs/viz2psy/bin/python3
+ENV=/projects/hulacon/shared/envs/stimfeat
+source ${ENV}/etc/conda/activate.d/stimfeat-env.sh  # PYTHONNOUSERSITE=1 + shared model caches
+PYTHON=${ENV}/bin/python3
 CONVERTER_DIR=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/raw2bids_converters
 
 echo "Job started: $(date)"

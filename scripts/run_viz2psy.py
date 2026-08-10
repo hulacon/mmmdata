@@ -10,7 +10,8 @@ Usage:
     python scripts/run_viz2psy.py cues   [--models resmem clip ...] [--dry-run]
 
 Requires viz2psy to be installed in the active Python environment,
-or uses the viz2psy venv at VIZ2PSY_VENV (default: ~/.local/envs/viz2psy).
+or uses the env at VIZ2PSY_VENV (default: the shared stimfeat conda env,
+/projects/hulacon/shared/envs/stimfeat — see psytwill/scripts/setup_env.sh).
 """
 
 import argparse
@@ -24,10 +25,13 @@ from pathlib import Path
 BIDS_ROOT = Path("/gpfs/projects/hulacon/shared/mmmdata")
 STIMULI = BIDS_ROOT / "stimuli"
 
-# viz2psy venv (override with VIZ2PSY_VENV env var)
+# viz2psy env (override with VIZ2PSY_VENV env var); the default is the
+# shared stimfeat conda env. It is a conda prefix, not a venv: without
+# PYTHONNOUSERSITE, ~/.local site-packages would shadow the env's own.
 VIZ2PSY_VENV = Path(
-    os.environ.get("VIZ2PSY_VENV", Path.home() / ".local" / "envs" / "viz2psy")
+    os.environ.get("VIZ2PSY_VENV", "/projects/hulacon/shared/envs/stimfeat")
 )
+os.environ.setdefault("PYTHONNOUSERSITE", "1")
 VIZ2PSY_BIN = VIZ2PSY_VENV / "bin" / "viz2psy"
 VIZ2PSY_VIZ_BIN = VIZ2PSY_VENV / "bin" / "viz2psy-viz"
 

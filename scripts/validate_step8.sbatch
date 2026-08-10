@@ -12,7 +12,9 @@
 # Step 8: Validate behavioral pipeline output against reference
 # Compares new BIDS files in sub-*/ses-*/ against derivatives/bids_validation/eventfiles/
 
-PYTHON=/home/bhutch/.local/envs/viz2psy/bin/python3
+ENV=/projects/hulacon/shared/envs/stimfeat
+source ${ENV}/etc/conda/activate.d/stimfeat-env.sh  # PYTHONNOUSERSITE=1 + shared model caches
+PYTHON=${ENV}/bin/python3
 SCRIPT_DIR=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata-agents/scripts
 
 echo "Job started: $(date)"
