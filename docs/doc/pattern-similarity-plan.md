@@ -1,6 +1,6 @@
 # Pattern-Similarity Analysis: Preprocessing × Timeseries × Paradigm Comparison
 
-Status: **Phases 0–1 complete** (2026-08-10). Pick up from Phase 2 (NAT GLMsingle producer), with Phases 3–4 runnable in parallel. Done so far: `scripts/pattern_similarity/{shared.py, verify_inputs.py}`; all 37 Task-0 checks pass; outputs at `derivatives/pattern_similarity/qc/{task0_verification.tsv, shared_items.tsv}`.
+Status: **Phases 0–1 complete; Phase 2 fits submitted** (2026-08-10, SLURM array **46044299**, 6 tasks, compute partition 8 CPU/220 G/24 h — note compute caps at 24 h, not the planned 36 h; TB precedent ran 18.3 h full-grid so masked-2D should fit comfortably). Done so far: `scripts/pattern_similarity/{shared.py, verify_inputs.py}` (all 37 Task-0 checks pass; qc outputs written), `scripts/glmsingle_natencoding.py` + `.sbatch` (all 6 dry-runs verified: 60 movies, ~3,275 chunk conditions, 115 repeated × 10; GLMsingle 2D+sessionindicator path smoke-tested). **Next**: when 46044299 finishes, run the Phase 2 verification checks below, then Phases 3–5.
 
 ## Context
 
