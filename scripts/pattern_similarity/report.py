@@ -180,6 +180,56 @@ def fig_cells(df: pd.DataFrame, paradigm: str) -> Path:
     return p
 
 
+def fig_zscored_delta(df: pd.DataFrame) -> Path:
+    """Z-scored same - diff (mean/SD of paired unit-item deltas), per ROI.
+
+    One panel per ROI; x = the 4 paradigm x timeseries streams; bars =
+    within/across subject x original/nordic pipeline.
+    """
+    streams = [("TB", "rawtr"), ("TB", "glmsingle"),
+               ("NAT", "rawtr"), ("NAT", "glmsingle")]
+    level_colors = {"within": CELL_COLORS["within_same"],
+                    "across": CELL_COLORS["across_same"]}
+    fig, axes = plt.subplots(3, 2, figsize=(11, 11), sharex=True)
+    for i, roi in enumerate(PATTERN_ROI_NAMES):
+        ax = axes.flat[i]
+        for si, (par, ts) in enumerate(streams):
+            for li, level in enumerate(["within", "across"]):
+                for pi, pipe in enumerate(PIPELINES):
+                    g = df[(df.roi == roi) & (df.paradigm == par) &
+                           (df.timeseries == ts) & (df.pipeline == pipe)]
+                    same = (g[g.cell == f"{level}_same"]
+                            .set_index(["unit", "item"])["r"])
+                    diff = (g[g.cell == f"{level}_diff"]
+                            .set_index(["unit", "item"])["r"])
+                    delta = (same - diff).dropna()
+                    sd = delta.std(ddof=1)
+                    z = delta.mean() / sd if len(delta) > 1 and sd > 0 else np.nan
+                    x = si + (li * 2 + pi - 1.5) * 0.19
+                    label = (f"{level} / {pipe}"
+                             if (i, si) == (0, 0) else None)
+                    ax.bar(x, z, width=0.17, color=level_colors[level],
+                           alpha=1.0 if pipe == "original" else 0.55,
+                           edgecolor="black", linewidth=0.4, label=label)
+        ax.axhline(0, color="gray", linewidth=0.6)
+        ax.set_xticks(range(len(streams)))
+        ax.set_xticklabels([f"{p} {'raw' if t == 'rawtr' else 'glm'}"
+                            for p, t in streams], fontsize=8)
+        ax.tick_params(labelsize=8)
+        ax.set_title(roi, fontsize=10)
+        if i % 2 == 0:
+            ax.set_ylabel("z = mean Δ / SD Δ", fontsize=9)
+    axes.flat[0].legend(fontsize=8, loc="upper left")
+    fig.suptitle("Standardized same − different discrimination "
+                 "(paired unit-item deltas; z across units)", fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    p = FIGURES_DIR / "zscored_delta.png"
+    fig.savefig(p, dpi=150)
+    plt.close(fig)
+    return p
+
+
 def fig_pipeline_delta(stats: pd.DataFrame) -> Path:
     """Nordic - original delta per cell, panel per paradigm x timeseries."""
     fig, axes = plt.subplots(len(PARADIGMS), len(TIMESERIES),
@@ -270,6 +320,13 @@ def build_html(df, cells_means, contrasts, pipe_stats, ctx, figs) -> str:
     for par in PARADIGMS:
         parts.append(f"<h3>{par}</h3><img src='{figs[f'cells_{par}']}' "
                      f"alt='{par} cells figure'>")
+    parts.append("<h2>Standardized same − different discrimination</h2>")
+    parts.append("<p class='note'>Paired same − different deltas per "
+                 "unit-item row, z-scored (mean/SD) within each ROI × stream "
+                 "× subject-level × pipeline; puts rawTR and GLMsingle "
+                 "streams on a common scale.</p>")
+    parts.append(f"<img src='{figs['zscored_delta']}' "
+                 f"alt='z-scored delta figure'>")
     parts.append("<h2>Pipeline effect (NORDIC − original)</h2>")
     parts.append(f"<img src='{figs['pipeline_delta']}' alt='delta figure'>")
     parts.append(_table_html(
@@ -306,6 +363,7 @@ def main():
           f"{len(pipe_stats)} pipeline rows")
 
     figs = {f"cells_{par}": _embed(fig_cells(df, par)) for par in PARADIGMS}
+    figs["zscored_delta"] = _embed(fig_zscored_delta(df))
     figs["pipeline_delta"] = _embed(fig_pipeline_delta(pipe_stats))
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
