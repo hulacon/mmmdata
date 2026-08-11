@@ -390,16 +390,26 @@ def nat_maps(data: dict):
 
 
 def nat_draw_windows(rng, cols_map, run_movies, ses, run, exclude_movie, L):
-    """N_DIFF_DRAWS contiguous length-L column windows from other movies in
-    (ses, run). Returns list of global-column arrays."""
-    cands = [cols_map[(ses, mv)] for mv in run_movies[(ses, run)]
-             if mv != exclude_movie and len(cols_map[(ses, mv)]) >= L]
-    assert cands, f"{ses} run-{run}: no surrogate movie with >= {L} columns"
+    """N_DIFF_DRAWS contiguous column windows from other movies in (ses, run).
+
+    Windows are length L when the drawn movie allows it. When the repeated
+    movie is the longest in its run (e.g. "From Dad To Son", 192 TRs), no
+    full-length surrogate exists — then all other movies are eligible and
+    windows are their full length (< L). The metric is a mean of per-column
+    spatial r, so fewer matched columns changes precision, not meaning.
+    Returns list of global-column arrays.
+    """
+    others = [cols_map[(ses, mv)] for mv in run_movies[(ses, run)]
+              if mv != exclude_movie]
+    assert others, f"{ses} run-{run}: no surrogate movie"
+    full = [c for c in others if len(c) >= L]
+    cands = full if full else others
     wins = []
     for _ in range(N_DIFF_DRAWS):
         c = cands[rng.integers(len(cands))]
-        s = rng.integers(0, len(c) - L + 1)
-        wins.append(c[s:s + L])
+        w = min(L, len(c))
+        s = rng.integers(0, len(c) - w + 1)
+        wins.append(c[s:s + w])
     return wins
 
 
@@ -424,7 +434,7 @@ def _nat_pair_cells(da, db, cma, cmb, run_of_b, run_movies_b, ses_pairs, rng):
             acc[roi]["n_same"].append(n.mean())
             r_d, n_d = [], []
             for w in wins:
-                rw, nw = matched_corr(A, db["patterns"][roi][:, w])
+                rw, nw = matched_corr(A[:, :len(w)], db["patterns"][roi][:, w])
                 r_d.append(np.nanmean(rw))
                 n_d.append(nw.mean())
             acc[roi]["r_diff"].append(np.mean(r_d))
