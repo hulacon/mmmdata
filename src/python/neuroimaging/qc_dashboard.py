@@ -73,6 +73,120 @@ def _build_run_key(
 
 
 # ---------------------------------------------------------------------------
+# QC review layout (derivatives/qc_review/)
+# ---------------------------------------------------------------------------
+#
+# Canonical on-disk layout for the interactive QC review workflow:
+#
+#   {bids_root}/derivatives/qc_review/
+#       dashboards/   generated HTML dashboards (timestamped filenames)
+#       decisions/    per-run decision JSON (see save_decision/load_decisions)
+
+def qc_review_dir(bids_root: str | Path) -> Path:
+    """Return the QC review root: ``{bids_root}/derivatives/qc_review``."""
+    return Path(bids_root) / "derivatives" / "qc_review"
+
+
+def dashboards_dir(bids_root: str | Path) -> Path:
+    """Return the dashboards directory under the QC review root.
+
+    Purely a path computation — the directory is created on demand by
+    :func:`generate_dashboard` when a dashboard is written into it.
+    """
+    return qc_review_dir(bids_root) / "dashboards"
+
+
+def decisions_dir(bids_root: str | Path) -> Path:
+    """Return the decisions directory under the QC review root.
+
+    Purely a path computation — per-subject subdirectories are created
+    on demand by :func:`save_decision`.
+    """
+    return qc_review_dir(bids_root) / "decisions"
+
+
+def default_dashboard_filename(
+    subject: str | None = None,
+    modality: str = "bold",
+    timestamp: str | None = None,
+) -> str:
+    """Return the conventional dashboard filename.
+
+    Pattern: ``qc_dashboard_{sub-XX|all}_{modality}_{YYYYmmdd_HHMMSS}.html``.
+
+    Parameters
+    ----------
+    subject : str, optional
+        Subject ID without ``sub-`` prefix; None means all subjects.
+    modality : str
+        Modality tag embedded in the filename.
+    timestamp : str, optional
+        Timestamp string; defaults to the current local time formatted
+        as ``%Y%m%d_%H%M%S``.
+    """
+    subject_tag = f"sub-{subject}" if subject else "all"
+    ts = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"qc_dashboard_{subject_tag}_{modality}_{ts}.html"
+
+
+def generate_review_dashboard(
+    bids_root: str | Path,
+    mriqc_dir: str | Path,
+    fmriprep_dir: str | Path | None = None,
+    subject: str | None = None,
+    modality: str = "bold",
+    iqr_multiplier: float | None = None,
+    fd_threshold: float | None = None,
+) -> str:
+    """Generate a dashboard into the standard ``qc_review`` layout.
+
+    Convenience wrapper around :func:`generate_dashboard` that applies
+    the conventions of the QC review workflow:
+
+    - output path: :func:`dashboards_dir` + :func:`default_dashboard_filename`
+    - decisions read from :func:`decisions_dir` when it exists
+    - fMRIPrep motion data only included for ``modality='bold'``
+
+    Parameters
+    ----------
+    bids_root : path
+        BIDS dataset root (also passed through for the processing
+        status section).
+    mriqc_dir : path
+        MRIQC derivatives directory.
+    fmriprep_dir : path, optional
+        fMRIPrep derivatives directory; ignored unless *modality* is
+        ``'bold'``.
+    subject : str, optional
+        Subject ID without ``sub-`` prefix; None means all subjects.
+    modality : str
+        ``'bold'``, ``'T1w'``, ``'T2w'``, or ``'dwi'``.
+    iqr_multiplier, fd_threshold : float, optional
+        Passed through to :func:`generate_dashboard`.
+
+    Returns
+    -------
+    str
+        Absolute path to the generated HTML file.
+    """
+    save_path = dashboards_dir(bids_root) / default_dashboard_filename(
+        subject, modality
+    )
+    dec_dir = decisions_dir(bids_root)
+    return generate_dashboard(
+        mriqc_dir=mriqc_dir,
+        fmriprep_dir=fmriprep_dir if modality == "bold" else None,
+        decisions_dir=dec_dir if dec_dir.exists() else None,
+        subject=subject,
+        modality=modality,
+        save_path=str(save_path),
+        iqr_multiplier=iqr_multiplier,
+        fd_threshold=fd_threshold,
+        bids_root=bids_root,
+    )
+
+
+# ---------------------------------------------------------------------------
 # QC decision tracking
 # ---------------------------------------------------------------------------
 
