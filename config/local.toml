@@ -1,11 +1,29 @@
-# This file can be used to override default configuration settings from base.toml
+# Local overrides for base.toml. Deep-merged over base by
+# core.config.load_config(), so only the keys listed here change.
 #
-# Example: Override paths for your local environment
-# [paths]
-# bids_project_dir = "/path/to/your/bids/dataset"
-# singularity_dir = "/path/to/your/singularity/images"
-# venv_dir = "/path/to/your/venv"
+# Why this file has content now: base.toml spells four paths with the bare
+# `/projects/hulacon/...` prefix. That path is NOT visible from inside a
+# Claude Science sandbox on a Talapas OnDemand desktop — only the fully
+# resolved `/gpfs/projects/hulacon/...` form is. Tools reading these keys
+# (list_subjects, get_session_summary, anything via ProjectPaths) raise
+# FileNotFoundError until they are overridden.
 #
-# Example: Set your email for SLURM notifications
+# The `/gpfs`-prefixed form is correct everywhere — login nodes, compute
+# nodes, and inside the sandbox. base.toml already uses it for code_root,
+# singularity_dir, venv_dir, and work_dir; these four keys were missed.
+#
+# Note: this file IS tracked in git (mmmdata's .gitignore does not exclude
+# it, unlike mmmdata-agents'), so committing it makes the fix apply for
+# every operator. Verify that is intended before committing.
+#
+# Added 2026-08-14.
+
+[paths]
+bids_project_dir = "/gpfs/projects/hulacon/shared/mmmdata"
+source_dir = "/gpfs/projects/hulacon/shared/mmmsourcedata"
+output_dir = "/gpfs/projects/hulacon/shared/mmmdata/derivatives"
+inventory_dir = "/gpfs/projects/hulacon/shared/mmmdata/inventory"
+
+# Example: set your email for SLURM notifications
 # [slurm]
 # email = "your.email@domain.com"
