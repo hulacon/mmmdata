@@ -90,7 +90,7 @@ class TestSignOffRules:
             decisions_dir, "01", "01", "encoding", "01",
             "exclude", "Ringing on mosaic", "bhutch",
         )
-        path = decisions_dir / "sub-01" / "sub-01_ses-01_task-encoding_run-01_bold_decision.json"
+        path = decisions_dir / "sub-01_ses-01_task-encoding_run-01_bold_decision.json"
         history = json.loads(path.read_text())["decisions"]
         assert len(history) == 2
         assert not is_signed_off(history[0])

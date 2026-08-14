@@ -80,7 +80,14 @@ def _build_run_key(
 #
 #   {bids_root}/derivatives/qc_review/
 #       dashboards/   generated HTML dashboards (timestamped filenames)
-#       decisions/    per-run decision JSON (see save_decision/load_decisions)
+#
+# Decisions live where duckbrain owns them (2026-08-14: duckbrain owns the
+# QC review process and the decision artifact; the Contract A catalog
+# ingests it — see mmmdata-agents docs/constellation-contracts.md §3):
+#
+#   {bids_root}/derivatives/duckbrain/qc/decisions/   current, written here
+#   {bids_root}/derivatives/preprocessing_qc/         legacy, read-only
+#   {bids_root}/derivatives/qc_review/decisions/      legacy, read-only
 
 def qc_review_dir(bids_root: str | Path) -> Path:
     """Return the QC review root: ``{bids_root}/derivatives/qc_review``."""
@@ -96,13 +103,36 @@ def dashboards_dir(bids_root: str | Path) -> Path:
     return qc_review_dir(bids_root) / "dashboards"
 
 
-def decisions_dir(bids_root: str | Path) -> Path:
-    """Return the decisions directory under the QC review root.
+#: Root-relative directories decisions were written to historically. Read,
+#: never written, never moved — a record is never rewritten because that
+#: would restamp a decision with a provenance it does not have.
+LEGACY_DECISION_DIRS = (
+    Path("derivatives") / "preprocessing_qc",
+    Path("derivatives") / "qc_review" / "decisions",
+)
 
-    Purely a path computation — per-subject subdirectories are created
-    on demand by :func:`save_decision`.
+
+def decisions_dir(bids_root: str | Path) -> Path:
+    """Where a decision is written: duckbrain's current location.
+
+    Mirrors duckbrain ``core/qc.py`` (``derivatives/duckbrain/qc/decisions``
+    for a default-configured project) — one place, always the current one,
+    shared by both tools so a run reviewed in either reads the same in both.
+    Purely a path computation; created on demand by :func:`save_decision`.
     """
-    return qc_review_dir(bids_root) / "decisions"
+    return Path(bids_root) / "derivatives" / "duckbrain" / "qc" / "decisions"
+
+
+def decision_search_dirs(bids_root: str | Path) -> list[Path]:
+    """Everywhere decisions may be read from, oldest location first.
+
+    Order matters: :func:`load_decisions` appends each root's entries after
+    the previous root's, so the current location's entries land last and a
+    run reviewed in both places reads with its newest verdict current.
+    """
+    root = Path(bids_root)
+    return [*(root / rel for rel in LEGACY_DECISION_DIRS),
+            decisions_dir(bids_root)]
 
 
 def default_dashboard_filename(
@@ -144,7 +174,7 @@ def generate_review_dashboard(
     the conventions of the QC review workflow:
 
     - output path: :func:`dashboards_dir` + :func:`default_dashboard_filename`
-    - decisions read from :func:`decisions_dir` when it exists
+    - decisions read from every :func:`decision_search_dirs` location
     - fMRIPrep motion data only included for ``modality='bold'``
 
     Parameters
@@ -172,11 +202,11 @@ def generate_review_dashboard(
     save_path = dashboards_dir(bids_root) / default_dashboard_filename(
         subject, modality
     )
-    dec_dir = decisions_dir(bids_root)
+    dec_dirs = [d for d in decision_search_dirs(bids_root) if d.is_dir()]
     return generate_dashboard(
         mriqc_dir=mriqc_dir,
         fmriprep_dir=fmriprep_dir if modality == "bold" else None,
-        decisions_dir=dec_dir if dec_dir.exists() else None,
+        decisions_dir=dec_dirs or None,
         subject=subject,
         modality=modality,
         save_path=str(save_path),
@@ -205,9 +235,11 @@ def save_decision(
 ) -> dict[str, Any]:
     """Save a QC decision for a specific run.
 
-    Decisions are stored as individual JSON files under
-    ``decisions_dir/sub-{subject}/``. Each file maintains a full
-    decision history (list of entries) for audit trail.
+    Decisions are stored as individual JSON files directly under
+    *decisions_dir* (duckbrain's flat layout, so both tools append to the
+    same file for the same run). Each file maintains a full decision
+    history (list of entries) for audit trail. Legacy per-subject
+    nesting is still read by :func:`load_decisions`, never written.
 
     A record counts as a human sign-off only when ``automated`` is False
     and *reviewer* names an identifiable person. Automated writers must
@@ -276,10 +308,9 @@ def save_decision(
 
     decisions_dir = Path(decisions_dir)
     run_key = _build_run_key(subject, session, task, run, suffix)
-    sub_dir = decisions_dir / f"sub-{subject}"
-    sub_dir.mkdir(parents=True, exist_ok=True)
+    decisions_dir.mkdir(parents=True, exist_ok=True)
 
-    json_path = sub_dir / f"{run_key}_decision.json"
+    json_path = decisions_dir / f"{run_key}_decision.json"
 
     # Load existing history or start fresh
     if json_path.exists():
@@ -325,15 +356,21 @@ def is_signed_off(record: dict[str, Any] | None) -> bool:
 
 
 def load_decisions(
-    decisions_dir: str | Path,
+    decisions_dir: str | Path | Sequence[str | Path],
     subject: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Load all QC decisions, optionally filtered by subject.
 
+    Searched recursively, so duckbrain's flat layout and the legacy
+    per-subject nesting are both found.
+
     Parameters
     ----------
-    decisions_dir : path
-        Root directory for QC decisions.
+    decisions_dir : path or sequence of paths
+        One directory, or several to merge — see
+        :func:`decision_search_dirs`. When a run has entries under more
+        than one root, histories are concatenated in the order the roots
+        are given, so the last root's entries read as most recent.
     subject : str, optional
         Filter to one subject.
 
@@ -343,22 +380,27 @@ def load_decisions(
         Keyed by run_key. Each value has ``latest`` (most recent entry)
         and ``history`` (full list).
     """
-    decisions_dir = Path(decisions_dir)
-    if not decisions_dir.exists():
-        return {}
+    if isinstance(decisions_dir, (str, Path)):
+        roots = [Path(decisions_dir)]
+    else:
+        roots = [Path(d) for d in decisions_dir]
 
-    sub_pattern = f"sub-{subject}" if subject else "sub-*"
-    result: dict[str, dict[str, Any]] = {}
+    prefix = f"sub-{subject}_" if subject else ""
+    merged: dict[str, list[dict[str, Any]]] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for json_path in sorted(root.rglob("*_decision.json")):
+            with open(json_path) as f:
+                data = json.load(f)
+            run_key = data.get(
+                "run_key", json_path.stem.replace("_decision", ""))
+            if prefix and not run_key.startswith(prefix):
+                continue
+            merged.setdefault(run_key, []).extend(data.get("decisions", []))
 
-    for json_path in sorted(decisions_dir.glob(f"{sub_pattern}/*_decision.json")):
-        with open(json_path) as f:
-            data = json.load(f)
-        run_key = data.get("run_key", json_path.stem.replace("_decision", ""))
-        history = data.get("decisions", [])
-        if history:
-            result[run_key] = {"latest": history[-1], "history": history}
-
-    return result
+    return {run_key: {"latest": history[-1], "history": history}
+            for run_key, history in merged.items() if history}
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +410,7 @@ def load_decisions(
 def generate_dashboard(
     mriqc_dir: str | Path,
     fmriprep_dir: str | Path | None = None,
-    decisions_dir: str | Path | None = None,
+    decisions_dir: str | Path | Sequence[str | Path] | None = None,
     subject: str | None = None,
     modality: str = "bold",
     save_path: str | Path | None = None,
@@ -427,9 +469,7 @@ def generate_dashboard(
 
     decisions = None
     if decisions_dir is not None:
-        decisions_dir_path = Path(decisions_dir)
-        if decisions_dir_path.exists():
-            decisions = load_decisions(decisions_dir_path, subject=subject)
+        decisions = load_decisions(decisions_dir, subject=subject) or None
 
     report_result = qc.list_reports(mriqc_dir=mriqc_dir)
     report_map = {}

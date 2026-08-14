@@ -62,7 +62,7 @@ class TestSaveDecision:
         assert "timestamp" in record
 
         # File exists
-        expected = decisions_dir / "sub-01" / "sub-01_ses-01_task-encoding_run-01_bold_decision.json"
+        expected = decisions_dir / "sub-01_ses-01_task-encoding_run-01_bold_decision.json"
         assert expected.exists()
 
         data = json.loads(expected.read_text())
@@ -76,7 +76,7 @@ class TestSaveDecision:
         save_decision(decisions_dir, "01", "01", "encoding", "01",
                       "keep", "Reviewed, ok", "bhutch")
 
-        path = decisions_dir / "sub-01" / "sub-01_ses-01_task-encoding_run-01_bold_decision.json"
+        path = decisions_dir / "sub-01_ses-01_task-encoding_run-01_bold_decision.json"
         data = json.loads(path.read_text())
         assert len(data["decisions"]) == 2
         assert data["decisions"][0]["decision"] == "investigate"
@@ -88,24 +88,27 @@ class TestSaveDecision:
             save_decision(decisions_dir, "01", "01", "encoding", "01",
                           "bad_value", "reason", "tester")
 
-    def test_creates_subject_directory(self, decisions_dir):
+    def test_creates_decisions_dir(self, decisions_dir):
+        # flat duckbrain layout: files land directly in decisions_dir,
+        # which is created on demand; no per-subject nesting is written
         from neuroimaging.qc_dashboard import save_decision
-        save_decision(decisions_dir, "99", "01", "rest", None,
+        target = decisions_dir / "nested" / "not-yet-created"
+        save_decision(target, "99", "01", "rest", None,
                       "exclude", "Bad data", "tester")
-        assert (decisions_dir / "sub-99").is_dir()
+        assert (target / "sub-99_ses-01_task-rest_bold_decision.json").exists()
 
     def test_no_run_entity(self, decisions_dir):
         from neuroimaging.qc_dashboard import save_decision
         save_decision(decisions_dir, "01", "01", "rest", None,
                       "keep", "Fine", "tester")
-        path = decisions_dir / "sub-01" / "sub-01_ses-01_task-rest_bold_decision.json"
+        path = decisions_dir / "sub-01_ses-01_task-rest_bold_decision.json"
         assert path.exists()
 
     def test_t1w_suffix(self, decisions_dir):
         from neuroimaging.qc_dashboard import save_decision
         save_decision(decisions_dir, "01", "01", "encoding", "01",
                       "keep", "ok", "tester", suffix="T1w")
-        path = decisions_dir / "sub-01" / "sub-01_ses-01_task-encoding_run-01_T1w_decision.json"
+        path = decisions_dir / "sub-01_ses-01_task-encoding_run-01_T1w_decision.json"
         assert path.exists()
 
 
