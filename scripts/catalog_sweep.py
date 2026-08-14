@@ -40,6 +40,39 @@ def dataset_slug(root: pathlib.Path, dataset: pathlib.Path) -> str:
     return "raw" if str(rel) == "." else str(rel).replace("/", "__")
 
 
+def read_provenance(root: pathlib.Path, dataset: pathlib.Path) -> dict:
+    """Provenance from dataset_description.json: pipeline, version, sources.
+
+    Sources (SourceDatasets URLs, written tree-relative) are resolved to
+    root-relative paths; the raw dataset resolves to "raw"."""
+    dd = dataset / "dataset_description.json"
+    if not dd.exists():
+        return {}
+    try:
+        meta = json.loads(dd.read_text())
+    except Exception as exc:
+        return {"provenance_error": f"{type(exc).__name__}: {exc}"}
+    generated_by = (meta.get("GeneratedBy") or [{}])[0]
+    sources = []
+    for src in meta.get("SourceDatasets") or []:
+        url = src.get("URL", "")
+        if "://" in url or url.startswith("doi:"):
+            sources.append(url)  # DOI/remote URL: keep verbatim
+            continue
+        try:
+            resolved = (dataset / url).resolve().relative_to(root)
+            sources.append("raw" if str(resolved) == "." else str(resolved))
+        except (ValueError, OSError):
+            sources.append(url)  # unresolvable: keep verbatim
+    return {
+        "ds_name": meta.get("Name"),
+        "dataset_type": meta.get("DatasetType"),
+        "pipeline": generated_by.get("Name"),
+        "pipeline_version": generated_by.get("Version"),
+        "sources": ";".join(sources) or None,
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", required=True, type=pathlib.Path)
@@ -54,6 +87,8 @@ def main() -> int:
     root = args.root.resolve()
     parquet_dir = args.out_dir / "catalog_parquet"
     parquet_dir.mkdir(parents=True, exist_ok=True)
+    for stale in parquet_dir.glob("*.parquet"):
+        stale.unlink()  # datasets can vanish between sweeps; never union stale files
 
     report: dict = {
         "root": str(root),
@@ -72,6 +107,7 @@ def main() -> int:
             "dataset": rel,
             "has_dataset_description":
                 (dataset / "dataset_description.json").exists(),
+            **read_provenance(root, dataset),
         }
         if any(rel == ex or rel.startswith(ex.rstrip("/") + "/")
                for ex in args.exclude):
@@ -110,6 +146,19 @@ def main() -> int:
         [str(parquet_dir / "*.parquet")],
     )
     n_files = con.execute("SELECT count(*) FROM files").fetchone()[0]
+    con.execute(
+        "CREATE OR REPLACE TABLE datasets ("
+        " relpath VARCHAR, name VARCHAR, dataset_type VARCHAR,"
+        " pipeline VARCHAR, pipeline_version VARCHAR, sources VARCHAR,"
+        " has_dataset_description BOOLEAN, skipped VARCHAR, error VARCHAR,"
+        " n_rows BIGINT, index_seconds DOUBLE)")
+    con.executemany(
+        "INSERT INTO datasets VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        [[d["dataset"], d.get("ds_name"), d.get("dataset_type"),
+          d.get("pipeline"), d.get("pipeline_version"), d.get("sources"),
+          d["has_dataset_description"], d.get("skipped"), d.get("error"),
+          d.get("rows"), d.get("seconds")]
+         for d in report["datasets"]])
     con.execute("CREATE OR REPLACE TABLE sweep_meta AS "
                 "SELECT ? AS key, ? AS value", ["report", json.dumps(report)])
     con.close()
