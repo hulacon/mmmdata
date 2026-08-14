@@ -40,6 +40,26 @@ def dataset_slug(root: pathlib.Path, dataset: pathlib.Path) -> str:
     return "raw" if str(rel) == "." else str(rel).replace("/", "__")
 
 
+#: Path components that mark a discovered dataset as pipeline-internal
+#: (scratch, logs, caches, staging inputs) rather than a canonical data
+#: product. Rule-driven, not curated: nested trees like hippunfold/work,
+#: hippunfold/logs, nordic/bids_input, pattern_similarity/cache come and go
+#: with pipeline runs (decided 2026-08-14, contract-a-catalog log).
+INTERNAL_COMPONENTS = frozenset(
+    {"work", "logs", "log", "cache", ".cache", "tmp", "scratch",
+     "bids_input"})
+
+
+def dataset_kind(rel: str) -> str:
+    """'internal' when any path component names pipeline scratch, else
+    'canonical'. A release cut is a filter over canonical datasets — scope
+    is a query, not an indexer decision."""
+    if rel == ".":
+        return "canonical"
+    parts = set(rel.split("/"))
+    return "internal" if parts & INTERNAL_COMPONENTS else "canonical"
+
+
 def read_provenance(root: pathlib.Path, dataset: pathlib.Path) -> dict:
     """Provenance from dataset_description.json: pipeline, version, sources.
 
@@ -105,6 +125,7 @@ def main() -> int:
         rel = str(dataset.relative_to(root)) if dataset != root else "."
         entry = {
             "dataset": rel,
+            "kind": dataset_kind(rel),
             "has_dataset_description":
                 (dataset / "dataset_description.json").exists(),
             **read_provenance(root, dataset),
@@ -148,13 +169,13 @@ def main() -> int:
     n_files = con.execute("SELECT count(*) FROM files").fetchone()[0]
     con.execute(
         "CREATE OR REPLACE TABLE datasets ("
-        " relpath VARCHAR, name VARCHAR, dataset_type VARCHAR,"
+        " relpath VARCHAR, kind VARCHAR, name VARCHAR, dataset_type VARCHAR,"
         " pipeline VARCHAR, pipeline_version VARCHAR, sources VARCHAR,"
         " has_dataset_description BOOLEAN, skipped VARCHAR, error VARCHAR,"
         " n_rows BIGINT, index_seconds DOUBLE)")
     con.executemany(
-        "INSERT INTO datasets VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        [[d["dataset"], d.get("ds_name"), d.get("dataset_type"),
+        "INSERT INTO datasets VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        [[d["dataset"], d["kind"], d.get("ds_name"), d.get("dataset_type"),
           d.get("pipeline"), d.get("pipeline_version"), d.get("sources"),
           d["has_dataset_description"], d.get("skipped"), d.get("error"),
           d.get("rows"), d.get("seconds")]
