@@ -44,10 +44,12 @@ def expand_units(decl: dict) -> list[dict]:
     session_types = decl["session_types"]
     rows: list[dict] = []
 
-    def add(dataset, sub, ses, datatype, task, suffix, desc, lo, hi):
+    def add(dataset, sub, ses, datatype, task, suffix, desc, lo, hi,
+            recording=None):
         rows.append(dict(dataset_relpath=dataset, sub=sub, ses=ses,
                          datatype=datatype, task=task, suffix=suffix,
-                         des=desc, runs_min=lo, runs_max=hi))
+                         des=desc, runs_min=lo, runs_max=hi,
+                         recording=recording))
 
     for unit in decl["units"]:
         subjects = [unit["subject"]] if "subject" in unit else active
@@ -66,6 +68,15 @@ def expand_units(decl: dict) -> list[dict]:
                         add(".", sub, ses, "func", task, "sbref", None, lo, hi)
                     if unit.get("events", False):
                         add(".", sub, ses, "func", task, "events", None, lo, hi)
+                    # physio expected for every bold run (protocol intent);
+                    # eyetracking only where a unit opts in. Both share
+                    # suffix "physio", split by the recording dimension.
+                    if unit.get("physio", True):
+                        add(".", sub, ses, "func", task, "physio", None,
+                            lo, hi, recording="physio")
+                    if unit.get("eyetracking", False):
+                        add(".", sub, ses, "func", task, "physio", None,
+                            lo, hi, recording="eye")
                     for deriv in decl["derivatives"]["complete_for_bold"]:
                         add(deriv, sub, ses, "func", task, "bold",
                             "preproc", lo, hi)
@@ -75,13 +86,15 @@ def expand_units(decl: dict) -> list[dict]:
 def expand_exceptions(decl: dict) -> list[dict]:
     rows = []
     for exc in decl.get("exceptions", []):
-        # Status rule: only exceptions naming task/datatype/suffix may flip a
-        # unit to "excepted"; session-level notes are annotation-only.
-        eligible = any(k in exc for k in ("task", "datatype", "suffix"))
+        # Status rule: only exceptions naming task/datatype/suffix/recording
+        # may flip a unit to "excepted"; session-level notes are annotation-only.
+        eligible = any(k in exc for k in ("task", "datatype", "suffix",
+                                          "recording"))
         for ses in exc["sessions"]:
             rows.append(dict(
                 sub=exc["subject"], ses=ses, task=exc.get("task"),
                 datatype=exc.get("datatype"), suffix=exc.get("suffix"),
+                recording=exc.get("recording"),
                 category=exc["category"], disposition=exc["disposition"],
                 status_eligible=eligible, description=exc["description"]))
     return rows
@@ -140,22 +153,24 @@ def main() -> int:
         CREATE OR REPLACE TABLE expected_units (
             dataset_relpath VARCHAR, sub VARCHAR, ses VARCHAR,
             datatype VARCHAR, task VARCHAR, suffix VARCHAR, des VARCHAR,
-            runs_min INTEGER, runs_max INTEGER)""")
+            recording VARCHAR, runs_min INTEGER, runs_max INTEGER)""")
     con.executemany(
-        "INSERT INTO expected_units VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO expected_units VALUES (?,?,?,?,?,?,?,?,?,?)",
         [[u["dataset_relpath"], u["sub"], u["ses"], u["datatype"], u["task"],
-          u["suffix"], u["des"], u["runs_min"], u["runs_max"]] for u in units])
+          u["suffix"], u["des"], u["recording"], u["runs_min"], u["runs_max"]]
+         for u in units])
 
     con.execute("""
         CREATE OR REPLACE TABLE expectation_exceptions (
             sub VARCHAR, ses VARCHAR, task VARCHAR, datatype VARCHAR,
-            suffix VARCHAR, category VARCHAR, disposition VARCHAR,
-            status_eligible BOOLEAN, description VARCHAR)""")
+            suffix VARCHAR, recording VARCHAR, category VARCHAR,
+            disposition VARCHAR, status_eligible BOOLEAN,
+            description VARCHAR)""")
     con.executemany(
-        "INSERT INTO expectation_exceptions VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO expectation_exceptions VALUES (?,?,?,?,?,?,?,?,?,?)",
         [[e["sub"], e["ses"], e["task"], e["datatype"], e["suffix"],
-          e["category"], e["disposition"], e["status_eligible"],
-          e["description"]] for e in exceptions])
+          e["recording"], e["category"], e["disposition"],
+          e["status_eligible"], e["description"]] for e in exceptions])
 
     identity = ", ".join(
         f"coalesce(CAST({e} AS VARCHAR), '')" for e in IDENTITY_ENTITIES)
@@ -163,6 +178,9 @@ def main() -> int:
         CREATE OR REPLACE VIEW observed_units AS
         SELECT dataset_relpath, sub, ses, datatype, task, suffix,
                "desc" AS des,
+               CASE WHEN suffix = 'physio' THEN
+                    CASE WHEN recording = 'eye' THEN 'eye' ELSE 'physio' END
+               END AS recording_class,
                count(DISTINCT concat_ws('|', {identity})) AS observed_n
         FROM files
         WHERE {scope_predicate(decl["scope"])}
@@ -181,6 +199,7 @@ def main() -> int:
                 coalesce(e.task, o.task) AS task,
                 coalesce(e.suffix, o.suffix) AS suffix,
                 coalesce(e.des, o.des) AS des,
+                coalesce(e.recording, o.recording_class) AS recording,
                 e.runs_min, e.runs_max,
                 coalesce(o.observed_n, 0) AS observed_n,
                 e.dataset_relpath IS NOT NULL AS declared
@@ -191,6 +210,7 @@ def main() -> int:
              AND coalesce(e.task, '') = coalesce(o.task, '')
              AND e.datatype = o.datatype AND e.suffix = o.suffix
              AND coalesce(e.des, '') = coalesce(o.des, '')
+             AND coalesce(e.recording, '') = coalesce(o.recording_class, '')
         ),
         annotated AS (
             SELECT j.*,
@@ -210,10 +230,11 @@ def main() -> int:
              AND (x.task IS NULL OR x.task = j.task)
              AND (x.datatype IS NULL OR x.datatype = j.datatype)
              AND (x.suffix IS NULL OR x.suffix = j.suffix)
+             AND (x.recording IS NULL OR x.recording = j.recording)
             GROUP BY ALL
         )
         SELECT dataset_relpath, sub, ses, datatype, task, suffix, des,
-               runs_min, runs_max, observed_n,
+               recording, runs_min, runs_max, observed_n,
                CASE
                    WHEN NOT declared THEN 'surplus'
                    WHEN observed_n BETWEEN runs_min AND runs_max THEN 'present'
