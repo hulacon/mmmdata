@@ -1,4 +1,12 @@
 """
+RETIRED 2026-08-17 (Contract A consumer port): nothing imports this
+module anymore. Validation is now a query over the catalog's
+resolution view — see validation/orchestrate.py and core/catalog.py.
+These checks judged against manifest.db, frozen since 2026-04. The
+deep-content checks (volume_count, events_*) are out of scope of
+expectations schema_version 1.0 and return only when the catalog
+grows a content tier; consult this file for their logic then.
+
 Validation checks that compare the manifest (reality) against the
 expectations schema (intent).
 

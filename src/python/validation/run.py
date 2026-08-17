@@ -1,390 +1,113 @@
 #!/usr/bin/env python3
 """
-Run MMMData manifest validation.
+Report MMMData expectation resolution from the Contract A catalog.
 
-Compares the manifest database (reality) against the expectations schema
-(intent), produces structured results, and optionally writes them to the
-validation_results table and a TSV report.
+Catalog-backed since 2026-08-17: prints the four-state resolution
+(present / missing / excepted / surplus) of declared expectations,
+judged inside catalog.duckdb. The declaration is
+``<bids_root>/expectations/dataset.toml``; rebuild the judgment with
+``scripts/catalog_expectations.py`` after editing it.
 
 Usage:
-    python -m validation.run                          # full run
-    python -m validation.run --checks file_presence   # specific checks
-    python -m validation.run --subjects sub-03        # specific subject
-    python -m validation.run --sessions ses-01 ses-02 # specific sessions
-    python -m validation.run --tsv report.tsv         # export TSV
+    python -m validation                              # issues only
+    python -m validation --subjects sub-03            # one subject
+    python -m validation --sessions ses-01 ses-02     # some sessions
+    python -m validation --status missing surplus     # explicit states
+    python -m validation --all                        # every row
+    python -m validation --tsv report.tsv             # export TSV
 """
 
 import argparse
 import csv
-import datetime
-import fnmatch
-import sqlite3
 import sys
-import tomllib
 from pathlib import Path
 
-from .checks import ALL_CHECKS
+# Make core/ importable when run as a module from anywhere
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# ---------------------------------------------------------------------------
-# Path setup
-# ---------------------------------------------------------------------------
-_SCRIPT_DIR = Path(__file__).resolve().parent
-_REPO_ROOT = _SCRIPT_DIR.parent.parent.parent  # mmmdata repo root
-
-sys.path.insert(0, str(_REPO_ROOT / "src" / "python"))
-try:
-    from core.config import load_config
-    _config = load_config(config_dir=_REPO_ROOT / "config")
-    BIDS_ROOT = Path(_config["paths"]["bids_project_dir"])
-except Exception:
-    BIDS_ROOT = Path("/gpfs/projects/hulacon/shared/mmmdata")
-
-DEFAULT_DB = BIDS_ROOT / "inventory" / "manifest.db"
-DEFAULT_SCHEMA = (
-    BIDS_ROOT / "code" / "mmmdata-docs" / "dataset_expectations.toml"
-)
-
-# Fallback: check the submodule paths used by mmmdata and mmmdata-agents
-_ALT_SCHEMA_PATHS = [
-    _REPO_ROOT / "docs" / "doc" / "shared" / "dataset_expectations.toml",
-    BIDS_ROOT / "code" / "mmmdata" / "docs" / "doc" / "shared" / "dataset_expectations.toml",
-]
+from . import orchestrate  # noqa: E402
 
 
-def find_schema_path() -> Path:
-    if DEFAULT_SCHEMA.exists():
-        return DEFAULT_SCHEMA
-    for p in _ALT_SCHEMA_PATHS:
-        if p.exists():
-            return p
-    raise FileNotFoundError(
-        f"Cannot find dataset_expectations.toml. Tried:\n"
-        f"  {DEFAULT_SCHEMA}\n" +
-        "\n".join(f"  {p}" for p in _ALT_SCHEMA_PATHS)
-    )
+def print_report(report: dict) -> None:
+    print("Resolution summary (filtered subjects/sessions, all statuses):")
+    for key in sorted(report["summary"]):
+        print(f"  {key:20s} {report['summary'][key]}")
+    print()
 
-
-# ---------------------------------------------------------------------------
-# Exception matching
-# ---------------------------------------------------------------------------
-
-def load_exceptions(schema: dict) -> list[dict]:
-    """Extract the [[exceptions]] array from the schema."""
-    return schema.get("exceptions", [])
-
-
-def match_exception(result: dict, exceptions: list[dict]) -> dict | None:
-    """
-    Check if a validation result matches a known exception.
-
-    Matching rules:
-    - subject: exact match or "*" (wildcard)
-    - session: exact match or "*" (wildcard)
-    - task: exact match (if present in exception) or not checked
-    - category: matched against check_name prefix or exception category
-
-    Returns the matching exception dict, or None.
-    """
-    for exc in exceptions:
-        exc_sub = exc.get("subject", "*")
-        exc_ses = exc.get("session", "*")
-        exc_task = exc.get("task")
-        exc_category = exc.get("category", "")
-
-        # Subject match
-        if exc_sub != "*" and exc_sub != result.get("subject"):
-            continue
-
-        # Session match — support applies_to_sessions list
-        applies_to = exc.get("applies_to_sessions")
-        if applies_to:
-            if result.get("session") not in applies_to and exc_ses != result.get("session"):
-                continue
-        elif exc_ses != "*" and exc_ses != result.get("session"):
-            continue
-
-        # Task match (if exception specifies a task)
-        if exc_task and result.get("task") and exc_task != result.get("task"):
-            continue
-
-        # Category / check_name affinity
-        check = result.get("check_name", "")
-        if not _category_matches_check(exc_category, check, result):
-            continue
-
-        return exc
-
-    return None
-
-
-def _category_matches_check(category: str, check_name: str, result: dict) -> bool:
-    """Determine if an exception category is relevant to a check result."""
-    # Direct mappings
-    mapping = {
-        "dcm2bids": ["file_presence"],
-        "behavioral": ["file_presence", "events_row_count", "events_columns"],
-        "events": ["events_row_count", "events_columns", "events_timing"],
-        "events_conversion": ["file_presence", "events_presence", "events_row_count", "events_columns"],
-        "physio": ["physio_presence"],
-        "physio_collection": ["physio_presence"],
-        "eyetracking": ["eyetracking_presence"],
-        "run_count": ["file_presence", "total_runs"],
-        "volume_count": ["volume_count"],
-    }
-
-    valid_checks = mapping.get(category, [])
-    if valid_checks:
-        return check_name in valid_checks
-
-    # If no mapping, match any check (generic exception)
-    return True
-
-
-def apply_exceptions(results: list[dict], exceptions: list[dict]) -> list[dict]:
-    """
-    Apply known exceptions to validation results.
-
-    Matching exceptions annotate the message with the reason but never
-    change the status — all deviations remain visible as fail/warn.
-    The ``[KNOWN]`` prefix distinguishes explained deviations from
-    unexpected ones.
-
-    Modifies results in place and returns them.
-    """
-    for r in results:
-        if r["status"] in ("fail", "warn"):
-            exc = match_exception(r, exceptions)
-            if exc:
-                desc = exc.get("description", "known exception")
-                r["message"] = f"[KNOWN] {desc}" + (
-                    f" | {r['message']}" if r["message"] else ""
-                )
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Result storage
-# ---------------------------------------------------------------------------
-
-def store_results(conn: sqlite3.Connection, results: list[dict]):
-    """Write validation results to the validation_results table."""
-    cur = conn.cursor()
-    cur.execute("DELETE FROM validation_results")
-    now = datetime.datetime.now().isoformat()
-
-    for r in results:
-        cur.execute(
-            """INSERT INTO validation_results
-               (check_name, subject, session, task, run, status,
-                expected, actual, message, checked_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (r["check_name"], r["subject"], r["session"],
-             r["task"], r["run"], r["status"],
-             r["expected"], r["actual"], r["message"], now)
-        )
-
-    conn.commit()
-
-
-# ---------------------------------------------------------------------------
-# Reporting
-# ---------------------------------------------------------------------------
-
-def print_summary(results: list[dict]):
-    """Print a summary table to the terminal."""
-    counts = {"pass": 0, "fail": 0, "warn": 0}
-    for r in results:
-        counts[r["status"]] = counts.get(r["status"], 0) + 1
-
-    # Split issues into explained (matched an exception) vs unexplained
-    issues = [r for r in results if r["status"] in ("fail", "warn")]
-    explained = [r for r in issues
-                 if r["message"] and r["message"].startswith("[KNOWN]")]
-    unexplained = [r for r in issues
-                   if not (r["message"] and r["message"].startswith("[KNOWN]"))]
-
-    total = len(results)
-    print(f"\n{'='*60}")
-    print(f"  Validation Summary: {total} checks")
-    print(f"{'='*60}")
-    print(f"  PASS:        {counts['pass']}")
-    print(f"  FAIL:        {counts['fail']}  ({len([r for r in unexplained if r['status']=='fail'])} unexplained, "
-          f"{len([r for r in explained if r['status']=='fail'])} known)")
-    print(f"  WARN:        {counts['warn']}  ({len([r for r in unexplained if r['status']=='warn'])} unexplained, "
-          f"{len([r for r in explained if r['status']=='warn'])} known)")
-    print(f"{'='*60}")
-
-    if not issues:
-        print("\n  No failures or warnings.\n")
+    rows = report["rows"]
+    if not rows:
+        print("No rows match the status filter — nothing to report.")
         return
 
-    # --- Unexplained issues first ---
-    if unexplained:
-        print(f"\n  Unexplained issues ({len(unexplained)}):\n")
-
-        by_check = {}
-        for r in unexplained:
-            by_check.setdefault(r["check_name"], []).append(r)
-
-        for check, items in sorted(by_check.items()):
-            print(f"  [{check}] ({len(items)} issues)")
-            for r in items[:10]:
-                run_str = f" run-{r['run']}" if r["run"] else ""
-                task_str = f" {r['task']}" if r["task"] else ""
-                print(f"    {r['status'].upper()}: {r['subject']} {r['session']}"
-                      f"{task_str}{run_str}")
-                if r["message"]:
-                    print(f"           {r['message']}")
-            if len(items) > 10:
-                print(f"    ... and {len(items) - 10} more")
-            print()
-
-    # --- Known/explained issues ---
-    if explained:
-        print(f"\n  Known deviations ({len(explained)}):\n")
-
-        by_check = {}
-        for r in explained:
-            by_check.setdefault(r["check_name"], []).append(r)
-
-        for check, items in sorted(by_check.items()):
-            # Group by description to reduce repetition
-            by_desc = {}
-            for r in items:
-                desc = r["message"].replace("[KNOWN] ", "").split(" | ")[0]
-                by_desc.setdefault(desc, []).append(r)
-
-            print(f"  [{check}] ({len(items)} items)")
-            for desc, group in by_desc.items():
-                sessions = sorted({f"{r['subject']}/{r['session']}" for r in group})
-                if len(sessions) <= 5:
-                    print(f"    {desc}")
-                    print(f"      Sessions: {', '.join(sessions)}")
-                else:
-                    print(f"    {desc}")
-                    print(f"      {len(sessions)} subject/session pairs affected")
-            print()
+    print(f"{len(rows)} reported unit(s):")
+    header = ("status", "sub", "ses", "task", "suffix", "dataset",
+              "observed", "declared", "notes")
+    print("  " + "  ".join(f"{h:>9s}" if h in ("observed", "declared")
+                           else h for h in header))
+    for r in rows:
+        declared = (f"{r['runs_min']}" if r["runs_min"] == r["runs_max"]
+                    else f"{r['runs_min']}-{r['runs_max']}")
+        status = r["status"]
+        if r.get("disposition"):
+            status = f"{status}({r['disposition']})"
+        notes = (r.get("exception_notes") or "")[:60]
+        print(f"  {status:18s} {r['sub'] or '-':3s} {r['ses'] or '-':3s} "
+              f"{(r['task'] or '-'):14s} {(r['suffix'] or '-'):8s} "
+              f"{r['dataset_relpath']:28s} "
+              f"{str(r['observed_n']):>3s} {declared:>7s}  {notes}")
 
 
-def export_tsv(results: list[dict], out_path: Path):
-    """Export results to a TSV file."""
-    cols = ["check_name", "subject", "session", "task", "run",
-            "status", "expected", "actual", "message"]
-    with open(out_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=cols, delimiter="\t",
+def write_tsv(report: dict, path: Path) -> None:
+    rows = report["rows"]
+    fields = ["status", "disposition", "sub", "ses", "datatype", "task",
+              "suffix", "recording", "dataset_relpath", "observed_n",
+              "runs_min", "runs_max", "exception_notes"]
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields, delimiter="\t",
                                 extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(results)
-    print(f"Results exported to: {out_path}")
+        writer.writerows(rows)
+    print(f"Wrote {len(rows)} rows to {path}")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run MMMData manifest validation checks."
+        description="Report MMMData expectation resolution from the catalog."
     )
-    parser.add_argument(
-        "--db", type=Path, default=DEFAULT_DB,
-        help=f"Manifest database path (default: {DEFAULT_DB})"
-    )
-    parser.add_argument(
-        "--schema", type=Path, default=None,
-        help="Path to dataset_expectations.toml"
-    )
-    parser.add_argument(
-        "--checks", nargs="*", default=None,
-        help=f"Checks to run (default: all). Available: {', '.join(ALL_CHECKS)}"
-    )
-    parser.add_argument(
-        "--subjects", nargs="*", default=None,
-        help="Subjects to validate (default: all active)"
-    )
-    parser.add_argument(
-        "--sessions", nargs="*", default=None,
-        help="Sessions to validate (default: all)"
-    )
-    parser.add_argument(
-        "--tsv", type=Path, default=None,
-        help="Export results to a TSV file"
-    )
-    parser.add_argument(
-        "--no-store", action="store_true",
-        help="Skip writing results to validation_results table"
-    )
-    parser.add_argument(
-        "--no-exceptions", action="store_true",
-        help="Skip exception matching (report raw pass/fail/warn)"
-    )
+    parser.add_argument("--db", type=Path, default=None,
+                        help="Path to catalog.duckdb (default: from config)")
+    parser.add_argument("--subjects", nargs="+", default=None,
+                        help="Subjects to report (e.g. sub-03 or 03)")
+    parser.add_argument("--sessions", nargs="+", default=None,
+                        help="Sessions to report (e.g. ses-01 or 01)")
+    parser.add_argument("--status", nargs="+", default=None,
+                        choices=orchestrate.available_statuses(),
+                        help="Statuses to report (default: issues only)")
+    parser.add_argument("--all", action="store_true",
+                        help="Report every row, including present")
+    parser.add_argument("--tsv", type=Path, default=None,
+                        help="Also write the rows to a TSV file")
     args = parser.parse_args()
 
-    # Load schema
-    schema_path = args.schema or find_schema_path()
-    print(f"Schema: {schema_path}")
-    with open(schema_path, "rb") as f:
-        schema = tomllib.load(f)
+    db = args.db or orchestrate.default_catalog()
+    report = orchestrate.run_validation(
+        db,
+        subjects=args.subjects,
+        sessions=args.sessions,
+        statuses=args.status,
+        include_all=args.all,
+    )
 
-    # Connect to manifest
-    if not args.db.exists():
-        print(f"ERROR: Database not found: {args.db}", file=sys.stderr)
-        sys.exit(1)
-    print(f"Database: {args.db}")
-
-    conn = sqlite3.connect(str(args.db))
-
-    # Determine subjects
-    subjects = args.subjects or schema.get("subjects", {}).get("active", [])
-    sessions = args.sessions or []
-    print(f"Subjects: {subjects}")
-    if sessions:
-        print(f"Sessions: {sessions}")
-
-    # Determine which checks to run
-    check_names = args.checks or list(ALL_CHECKS.keys())
-    invalid = set(check_names) - set(ALL_CHECKS.keys())
-    if invalid:
-        print(f"ERROR: Unknown checks: {invalid}", file=sys.stderr)
-        print(f"Available: {', '.join(ALL_CHECKS)}", file=sys.stderr)
-        sys.exit(1)
-
-    # Run checks
-    all_results = []
-    for name in check_names:
-        print(f"  Running: {name}...", end=" ", flush=True)
-        check_fn = ALL_CHECKS[name]
-        results = check_fn(conn, schema, subjects, sessions)
-        n_pass = sum(1 for r in results if r["status"] == "pass")
-        n_fail = sum(1 for r in results if r["status"] == "fail")
-        n_warn = sum(1 for r in results if r["status"] == "warn")
-        print(f"{len(results)} results (pass={n_pass} fail={n_fail} warn={n_warn})")
-        all_results.extend(results)
-
-    # Apply exception matching
-    if not args.no_exceptions:
-        exceptions = load_exceptions(schema)
-        print(f"\nApplying {len(exceptions)} known exceptions...")
-        apply_exceptions(all_results, exceptions)
-
-    # Report
-    print_summary(all_results)
-
-    # Store
-    if not args.no_store:
-        store_results(conn, all_results)
-        print(f"Results stored in validation_results table ({len(all_results)} rows)")
-
-    # Export TSV
+    print_report(report)
     if args.tsv:
-        export_tsv(all_results, args.tsv)
+        write_tsv(report, args.tsv)
 
-    conn.close()
-
-    # Exit with error code if unresolved failures exist
-    n_fail = sum(1 for r in all_results if r["status"] == "fail")
-    sys.exit(1 if n_fail > 0 else 0)
+    # Exit nonzero when unexplained problems exist (missing/surplus),
+    # so the CLI is usable as a gate.
+    hard = sum(v for k, v in report["summary"].items()
+               if k in ("missing", "surplus"))
+    return 1 if hard else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -1,5 +1,11 @@
 """Read-only query helpers for the MMMData manifest database.
 
+RETIRED 2026-08-17 (Contract A consumer port): manifest.db is frozen
+(last built 2026-04) and no runtime consumer reads it anymore — the
+catalog (core/catalog.py, inventory/catalog.duckdb) answers "what
+exists" now. This module stays importable for archaeology against the
+frozen file only.
+
 The manifest database (built by ``scripts/build_manifest.py``) is a
 SQLite inventory of the BIDS dataset with tables: files, nifti_meta,
 events_meta, physio_meta, sourcedata, derivatives, session_metadata,
