@@ -5,8 +5,9 @@ Report MMMData expectation resolution from the Contract A catalog.
 Catalog-backed since 2026-08-17: prints the four-state resolution
 (present / missing / excepted / surplus) of declared expectations,
 judged inside catalog.duckdb. The declaration is
-``<bids_root>/expectations/dataset.toml``; rebuild the judgment with
-``scripts/catalog_expectations.py`` after editing it.
+``<bids_root>/expectations/dataset.toml``; after editing it, rebuild
+the judgment with ``python -m duckbrain.catalog expectations`` (duckbrain
+shared env).
 
 Usage:
     python -m validation                              # issues only

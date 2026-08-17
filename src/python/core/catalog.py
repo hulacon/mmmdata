@@ -1,7 +1,7 @@
 """Read-only query helpers for the Contract A catalog (catalog.duckdb).
 
-The catalog (built by ``scripts/catalog_sweep.py`` and its sibling
-ingesters) is the answer to "what data exists, how was it processed, and
+The catalog (built by the duckbrain engine, ``duckbrain.catalog`` —
+migrated there 2026-08-17 per contracts §3.2) is the answer to "what data exists, how was it processed, and
 what did QC decide" — the successor to the frozen manifest.db. It lives
 inside the BIDS tree at ``<bids_root>/inventory/catalog.duckdb`` and is
 readable by any consumer (contracts §3.1).
@@ -63,10 +63,10 @@ def connect_readonly(db_path: Path | str) -> duckdb.DuckDBPyConnection:
     if not db.exists():
         raise FileNotFoundError(
             f"Catalog database not found: {db}. "
-            "Build it with mmmdata/scripts/catalog_sweep.py (sbatch on "
-            "Talapas), then catalog_expectations.py / "
-            "catalog_qc_decisions.py / catalog_supplemental.py, using "
-            "the /gpfs/projects/hulacon/shared/envs/catalog interpreter."
+            "Build it with the duckbrain engine: "
+            "/gpfs/projects/hulacon/shared/envs/duckbrain/bin/python "
+            "-m duckbrain.catalog rebuild --root <bids_root> "
+            "(or sbatch mmmdata/scripts/catalog_rebuild.sbatch)."
         )
     return duckdb.connect(str(db), read_only=True)
 

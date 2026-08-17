@@ -4,8 +4,8 @@ Catalog-backed since 2026-08-17 (Contract A consumer port): validation
 is a query over the catalog's four-state ``resolution`` view
 (present / missing / excepted / surplus), not a check engine run
 against the frozen manifest.db. The declaration lives in
-``<bids_root>/expectations/dataset.toml`` and is ingested by
-``scripts/catalog_expectations.py``; judgment is a SQL join inside
+``<bids_root>/expectations/dataset.toml`` and is ingested by the
+duckbrain engine (``python -m duckbrain.catalog expectations``); judgment is a SQL join inside
 catalog.duckdb. All query logic lives in ``core.catalog``; this module
 is the thin validation-flavored face of it.
 

@@ -145,7 +145,9 @@ class TestRunSelect:
             catalog.run_select(mini_catalog, "DELETE FROM files")
 
     def test_missing_db_names_fix(self, tmp_path):
-        with pytest.raises(FileNotFoundError, match="catalog_sweep"):
+        # the engine migrated into duckbrain 2026-08-17; the fix the error
+        # names must point there, not at the retired mmmdata scripts
+        with pytest.raises(FileNotFoundError, match="duckbrain.catalog"):
             catalog.run_select(tmp_path / "nope.duckdb", "SELECT 1")
 
 
