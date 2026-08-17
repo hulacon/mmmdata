@@ -3,8 +3,9 @@
 
 Reads the dataset-owned declaration (<root>/expectations/dataset.toml),
 expands it into per-unit expected rows keyed like observed `files` rows,
-ingests the canonical sub-*_sessions.tsv files, loads disposition-tagged
-exceptions, and defines the four-state `resolution` view:
+ingests the canonical sub-*_sessions.tsv files and the root phenotype/
+instrument TSVs, loads disposition-tagged exceptions, and defines the
+four-state `resolution` view:
 
   present  — observed count within [runs_min, runs_max]
   missing  — below runs_min, no status-eligible exception
@@ -149,6 +150,16 @@ def main() -> int:
                       header=true, union_by_name=true, all_varchar=true,
                       filename=true)""")
 
+    # -- phenotype instruments (root phenotype/*.tsv; one wide row per
+    # participant x instrument, columns unioned across instruments; the JSON
+    # data dictionaries stay on disk, visible via files_supplemental) --
+    con.execute(f"""
+        CREATE OR REPLACE TABLE phenotype AS
+        SELECT regexp_extract(filename, '([^/]+)\\.tsv$', 1) AS instrument,
+               replace(participant_id, 'sub-', '') AS sub, *
+        FROM read_csv('{root}/phenotype/*.tsv', delim='\t', header=true,
+                      union_by_name=true, all_varchar=true, filename=true)""")
+
     con.execute("""
         CREATE OR REPLACE TABLE expected_units (
             dataset_relpath VARCHAR, sub VARCHAR, ses VARCHAR,
@@ -255,7 +266,9 @@ def main() -> int:
         FROM resolution GROUP BY 1, 2 ORDER BY 1, 2""").fetchall()
     print(f"{len(units)} expected units, {len(exceptions)} exception rows, "
           f"{con.execute('SELECT count(*) FROM sessions').fetchone()[0]} "
-          f"session rows -> {db_path}")
+          f"session rows, "
+          f"{con.execute('SELECT count(*) FROM phenotype').fetchone()[0]} "
+          f"phenotype rows -> {db_path}")
     for status, disposition, n in tally:
         print(f"  {status:9s} {disposition:9s} {n:5d}")
     not_ok = con.execute("""
