@@ -17,6 +17,7 @@ Arguments:
 """
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -75,14 +76,18 @@ def run_mriqc(
     if work_dir is None:
         work_dir = output_dir / 'work'
     else:
-        work_dir = Path(work_dir) / 'mriqc'
+        # Config may reference env vars (work_dir = "/tmp/$USER/...")
+        work_dir = Path(os.path.expandvars(str(work_dir))) / 'mriqc'
 
-    # Isolate work dir per-session to prevent race conditions when multiple
-    # session jobs run concurrently for the same subject
-    if session and subjects and len(subjects) == 1:
-        ses_id = session.replace('ses-', '')
+    # Isolate work dir per subject (and session when given) so concurrent
+    # jobs never collide — including jobs sharing a node-local /tmp
+    if subjects and len(subjects) == 1:
         subj_id = subjects[0].replace('sub-', '')
-        work_dir = work_dir / f'sub-{subj_id}_ses-{ses_id}'
+        if session:
+            ses_id = session.replace('ses-', '')
+            work_dir = work_dir / f'sub-{subj_id}_ses-{ses_id}'
+        else:
+            work_dir = work_dir / f'sub-{subj_id}'
 
     if singularity_dir is None:
         singularity_dir = bids_dir / 'singularity_images'

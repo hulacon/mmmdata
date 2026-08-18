@@ -119,4 +119,17 @@ if [ -d "${SINGULARITY_TMPDIR}" ]; then
     rm -rf ${SINGULARITY_TMPDIR}
 fi
 
+# Clean up this session's work dir on success (run_fmriprep.py isolates work
+# per sub/ses, so this touches nothing another job needs). On failure keep it
+# for debugging/resume — the nightly reaper deletes it after 7 idle days.
+SESSION_WORK="${WORK_DIR}/fmriprep/sub-${FMRIPREP_SUBJECT#sub-}_ses-${SESSION#ses-}"
+if [ ${EXIT_STATUS} -eq 0 ]; then
+    if [ -d "${SESSION_WORK}" ]; then
+        echo "Cleaning up work directory: ${SESSION_WORK}"
+        rm -rf "${SESSION_WORK}"
+    fi
+else
+    echo "fMRIPrep failed — work dir preserved at ${SESSION_WORK} (reaped after 7 idle days)"
+fi
+
 exit ${EXIT_STATUS}

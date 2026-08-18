@@ -51,7 +51,11 @@ source "${REPO_ROOT}/scripts/load_config.sh"
 # transforms from the original (non-NORDIC) run
 NORDIC_BIDS="${BIDS_DIR}/derivatives/nordic/bids_input"
 NORDIC_OUTPUT="${BIDS_DIR}/derivatives/fmriprep_nordic"
-NORDIC_WORK="${CODE_ROOT}/work_nordic"
+# fMRIPrep >= 25.2 refuses a work dir inside the BIDS root, which rules out
+# the old ${CODE_ROOT}/work_nordic. Kept separate from the default work tree
+# so nothing is ever reused from the non-NORDIC run; lives under
+# SHARED_WORK_ROOT so the nightly reaper caps it.
+NORDIC_WORK="${SHARED_WORK_ROOT}/${USER}/mmmdata_work_nordic"
 # Use anat-only trimmed derivatives so fMRIPrep does NOT reuse
 # functional HMC/coreg from the original (non-NORDIC) run
 FMRIPREP_DERIVATIVES="${BIDS_DIR}/derivatives/nordic/fmriprep_anat"
@@ -102,7 +106,8 @@ if [ ${EXIT_STATUS} -eq 0 ]; then
         rm -rf "${SESSION_WORK}"
     fi
 else
-    echo "fMRIPrep failed — preserving work directory for debugging."
+    SESSION_WORK="${NORDIC_WORK}/fmriprep/sub-${FPREP_SUBJECT#sub-}_ses-${FPREP_SESSION#ses-}"
+    echo "fMRIPrep failed — work dir preserved at ${SESSION_WORK} (reaped after 7 idle days)"
 fi
 
 exit ${EXIT_STATUS}

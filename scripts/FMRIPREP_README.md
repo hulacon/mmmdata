@@ -32,8 +32,13 @@ directory; `run_fmriprep.py --fmriprep-version 24.1.1` still finds it.)
 **fMRIPrep 25.2 requirements** (enforced by fMRIPrep, found 2026-08-17;
 details in mmmdata-agents `docs/workbench/fmriprep-25-migration/`):
 - The work dir must be **outside the BIDS root** — 25.2 refuses to start
-  otherwise. The configured `[paths] work_dir` (`code/work`) is inside it;
-  pass `--work-dir` explicitly until the config default is relocated.
+  otherwise. The configured `[paths] work_dir` is now
+  `/gpfs/projects/hulacon/shared/work/$USER/mmmdata_work` (decided
+  2026-08-18): satisfies the check, survives crashes (fMRIPrep can resume),
+  and disk growth is capped — the wrappers delete their run's work dir on
+  success, and a nightly scrontab job (`clean_shared_work.sh`) reaps any run
+  dir under `shared/work/` untouched for 7 days. Don't park anything you
+  want to keep under that root.
 - Session-filtered runs (`--session`) need
   `--extra-flags="--no-track-sessions"` (the sbatch wrappers already pass
   it); without it 25.2's session tracking conflicts with multi-session anat.
@@ -180,10 +185,10 @@ For 3 subjects with ~29 sessions each, expect the array job to complete in 24-48
    ./submit_fmriprep.sh array
    ```
 
-4. **Clean up work directory** after successful completion:
-   ```bash
-   rm -rf /projects/hulacon/shared/mmmdata/derivatives/fmriprep/work/
-   ```
+4. **Work directory cleanup** is automatic: the anat/func wrappers remove
+   their per-subject/per-session work dir on success, and leftovers from
+   failed runs (kept for debugging/resume) are reaped by the nightly
+   `clean_shared_work.sh` scrontab job after 7 idle days.
 
 ## Troubleshooting
 
@@ -197,7 +202,10 @@ Or edit the sbatch file to request more memory (`--mem=64G`).
 ### Disk Space
 fMRIPrep generates substantial temporary files. Ensure adequate space:
 - Output: ~100-120 GB per subject
-- Work directory: up to 50 GB per subject during processing
+- Work directory: up to 50 GB per subject during processing (~13 GB measured
+  for anat + 4 runs; ~25-30 GB for a 9-run session), under
+  `/gpfs/projects/hulacon/shared/work/$USER/`. Successful runs clean up after
+  themselves; the nightly reaper deletes anything idle for 7 days.
 
 ### Container Issues
 Verify Singularity/Apptainer is available:

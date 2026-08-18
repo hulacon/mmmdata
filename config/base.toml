@@ -20,8 +20,18 @@ venv_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/.venv"
 output_dir = "/projects/hulacon/shared/mmmdata/derivatives"
 inventory_dir = "/projects/hulacon/shared/mmmdata/inventory"
 
-# Working directory for pipeline intermediate files (must be outside bids_project_dir)
-work_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/work"
+# Shared scratch root for pipeline work trees. Everything under it is swept
+# nightly by scripts/clean_shared_work.sh (scrontab): any run dir with no file
+# modified for 7 days is deleted. Keep only disposable intermediates here.
+shared_work_root = "/gpfs/projects/hulacon/shared/work"
+
+# Working directory for pipeline intermediate files. fMRIPrep >= 25.2 refuses
+# to start if this is inside bids_project_dir. Environment variables are
+# expanded at load time; the $USER level keeps operators from clobbering each
+# other. Must stay under shared_work_root, or the nightly reaper cannot cap
+# its disk usage. Work dirs here survive crashes (fMRIPrep can resume), and
+# the fmriprep sbatch wrappers delete their run's work dir on success.
+work_dir = "/gpfs/projects/hulacon/shared/work/$USER/mmmdata_work"
 
 [qc]
 # Quality-control thresholds. See docs/doc/qc-guidance.md for what each

@@ -28,6 +28,7 @@ fi
 
 # Python script to extract config values from TOML
 read -r -d '' PYTHON_EXTRACT_CONFIG <<'EOF'
+import os
 import sys
 import tomllib
 from pathlib import Path
@@ -57,10 +58,12 @@ if local_path.exists():
         local_config = tomllib.load(f)
         config = deep_merge(config, local_config)
 
-# Print in shell-friendly format
+# Print in shell-friendly format. Path values may reference environment
+# variables (e.g. work_dir = "/tmp/$USER/..."); expand them here so shell
+# consumers get a concrete path.
 if 'paths' in config:
     for key, value in config['paths'].items():
-        print(f"{key.upper()}={value}")
+        print(f"{key.upper()}={os.path.expandvars(str(value))}")
 
 if 'slurm' in config:
     for key, value in config['slurm'].items():

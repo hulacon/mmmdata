@@ -10,7 +10,8 @@
 #
 # The `/gpfs`-prefixed form is correct everywhere — login nodes, compute
 # nodes, and inside the sandbox. base.toml already uses it for code_root,
-# singularity_dir, venv_dir, and work_dir; these four keys were missed.
+# singularity_dir, venv_dir, work_dir, and shared_work_root; these four keys
+# were missed.
 #
 # Note: this file IS tracked in git (mmmdata's .gitignore does not exclude
 # it, unlike mmmdata-agents'), so committing it makes the fix apply for
