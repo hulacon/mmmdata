@@ -19,6 +19,7 @@ Arguments:
 
 import argparse
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -29,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src' / 'python'))
 from core.config import load_config
 
 DEFAULT_OUTPUT_SPACES = ['MNI152NLin2009cAsym:res-2', 'fsaverage6', 'func']
-DEFAULT_FMRIPREP_VERSION = '24.1.1'
+DEFAULT_FMRIPREP_VERSION = '25.2.5'
 
 
 def find_fs_license(bids_dir):
@@ -61,6 +62,7 @@ def run_fmriprep(
     anat_only=False,
     session=None,
     derivatives=None,
+    extra_flags=None,
 ):
     """
     Run fMRIPrep using Singularity.
@@ -118,7 +120,10 @@ def run_fmriprep(
     else:
         singularity_dir = Path(singularity_dir)
 
-    fmriprep_image = singularity_dir / f'fmriprep-{fmriprep_version}.simg'
+    # Newer images are pulled as .sif, older ones as .simg; accept either
+    candidates = [singularity_dir / f'fmriprep-{fmriprep_version}{ext}'
+                  for ext in ('.sif', '.simg')]
+    fmriprep_image = next((p for p in candidates if p.exists()), candidates[0])
     if output_spaces is None:
         output_spaces = DEFAULT_OUTPUT_SPACES
 
@@ -217,6 +222,12 @@ def run_fmriprep(
     # Add FreeSurfer subjects dir if reusing
     if fs_subjects_dir:
         cmd.extend(['--fs-subjects-dir', str(fs_subjects_dir)])
+
+    # Extra fMRIPrep CLI flags, passed through verbatim. Version-specific
+    # flags belong here rather than in this script (e.g. 25.2's
+    # --no-track-sessions, which 24.1.1 would reject as unknown).
+    if extra_flags:
+        cmd.extend(shlex.split(extra_flags))
 
     # Print summary
     print("=" * 60)
@@ -339,6 +350,13 @@ def main():
     )
 
     parser.add_argument(
+        '--extra-flags',
+        help='Extra fMRIPrep CLI flags passed through verbatim, as one '
+             'quoted string. Use the = form, since the value starts with a '
+             'dash (e.g. --extra-flags="--no-track-sessions")'
+    )
+
+    parser.add_argument(
         '--bids-dir',
         help='Override BIDS directory from config'
     )
@@ -395,6 +413,7 @@ def main():
         anat_only=args.anat_only,
         session=args.session,
         derivatives=args.derivatives,
+        extra_flags=args.extra_flags,
     )
 
 

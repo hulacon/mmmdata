@@ -95,6 +95,7 @@ python run_fmriprep.py \
     --subjects ${FMRIPREP_SUBJECT} \
     --session ${SESSION} \
     --derivatives ${FMRIPREP_DERIVATIVES} \
+    --extra-flags="--no-track-sessions" \
     --nprocs ${SLURM_CPUS_PER_TASK} \
     --mem-gb $((${SLURM_MEM_PER_NODE} / 1024))
 

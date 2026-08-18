@@ -80,6 +80,7 @@ echo ""
 python run_fmriprep.py \
     --subjects ${SUBJECT} \
     --anat-only \
+    --extra-flags="--no-track-sessions" \
     --nprocs ${SLURM_CPUS_PER_TASK} \
     --mem-gb $((${SLURM_MEM_PER_NODE} / 1024))
 

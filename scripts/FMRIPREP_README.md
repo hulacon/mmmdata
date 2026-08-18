@@ -16,16 +16,27 @@ fMRIPrep is a robust preprocessing pipeline for fMRI data that produces analysis
 
 ### Container Image
 
-The fMRIPrep Singularity image should already be available at:
+The fMRIPrep Apptainer image should already be available at:
 ```
-/gpfs/projects/hulacon/shared/mmmdata/code/containers/fmriprep-24.1.1.simg
+/gpfs/projects/hulacon/shared/mmmdata/code/containers/fmriprep-25.2.5.sif
 ```
 
-If not, download it:
+If not, build it via the shared job (writes into the containers dir with a
+GPFS-side cache):
 ```bash
-singularity pull /gpfs/projects/hulacon/shared/mmmdata/code/containers/fmriprep-24.1.1.simg \
-    docker://nipreps/fmriprep:24.1.1
+sbatch build_container.sbatch docker://nipreps/fmriprep:25.2.5 fmriprep-25.2.5.sif
 ```
+(The 24.1.1 `.simg` used for the existing derivatives remains in the same
+directory; `run_fmriprep.py --fmriprep-version 24.1.1` still finds it.)
+
+**fMRIPrep 25.2 requirements** (enforced by fMRIPrep, found 2026-08-17;
+details in mmmdata-agents `docs/workbench/fmriprep-25-migration/`):
+- The work dir must be **outside the BIDS root** — 25.2 refuses to start
+  otherwise. The configured `[paths] work_dir` (`code/work`) is inside it;
+  pass `--work-dir` explicitly until the config default is relocated.
+- Session-filtered runs (`--session`) need
+  `--extra-flags="--no-track-sessions"` (the sbatch wrappers already pass
+  it); without it 25.2's session tracking conflicts with multi-session anat.
 
 ### FreeSurfer License
 
@@ -93,7 +104,7 @@ python run_fmriprep.py --help
 | `--output-spaces` | `MNI152NLin2009cAsym:res-2 fsaverage6` | fMRIPrep output spaces |
 | `--fs-license` | auto-detect | Path to FreeSurfer license |
 | `--fs-subjects-dir` | none | Reuse existing FreeSurfer recon-all output |
-| `--fmriprep-version` | 24.1.1 | fMRIPrep version for image lookup |
+| `--fmriprep-version` | 25.2.5 | fMRIPrep version for image lookup |
 | `--bids-dir` | from config | Override BIDS directory |
 | `--output-dir` | `derivatives/fmriprep` | Override output directory |
 
