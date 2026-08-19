@@ -27,7 +27,7 @@ else
 fi
 
 # Python script to extract config values from TOML
-read -r -d '' PYTHON_EXTRACT_CONFIG <<'EOF'
+read -r -d '' PYTHON_EXTRACT_CONFIG <<'EOF' || true  # read -d '' exits 1 at EOF; harmless, but fatal under set -e
 import os
 import sys
 import tomllib
