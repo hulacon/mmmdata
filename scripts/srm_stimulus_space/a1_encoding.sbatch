@@ -35,5 +35,9 @@ SCRIPT="${REPO_ROOT}/scripts/srm_stimulus_space/a1_encoding.py"
 "${PYTHON}" "${SCRIPT}" --dry-run
 "${PYTHON}" "${SCRIPT}" --lag-model hrf
 "${PYTHON}" "${SCRIPT}" --lag-model fixed
+# EVC diagnostic grid (workbench log 2026-08-19): NAT representation x variant
+"${PYTHON}" "${SCRIPT}" --nat-source glmsingle
+"${PYTHON}" "${SCRIPT}" --pipeline nordic
+"${PYTHON}" "${SCRIPT}" --nat-source glmsingle --pipeline nordic
 
 echo "Done, $(date)"

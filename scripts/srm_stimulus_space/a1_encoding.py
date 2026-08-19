@@ -76,8 +76,15 @@ RIDGE_ALPHAS = np.logspace(1, 6, 11)
 
 PIPELINE = "original"          # pre-registration amendment (a): non-NORDIC
 PS_CACHE = DERIV_ROOT / "pattern_similarity" / "cache"
-BETA_CACHE = PS_CACHE / "glmsingle" / PIPELINE
-RAWTR_CACHE = PS_CACHE / "rawtr" / PIPELINE
+NAT_CHUNK_S = 4.5              # NAT GLMsingle pseudo-trial duration
+
+
+def beta_cache(pipeline: str) -> Path:
+    return PS_CACHE / "glmsingle" / pipeline
+
+
+def rawtr_cache(pipeline: str) -> Path:
+    return PS_CACHE / "rawtr" / pipeline
 
 FEAT_ROOT = DERIV_ROOT / "stimuli_features"
 PSYTWILL_DIR = FEAT_ROOT / "psytwill"
@@ -172,14 +179,23 @@ def spm_hrf(dt: float = FEATURE_DT, duration: float = 32.0) -> np.ndarray:
 
 def movie_design(frames: np.ndarray, tr_index: np.ndarray,
                  lag_model: str) -> np.ndarray:
-    """Feature rows for one movie's cached TR columns.
+    """Feature rows for one movie's cached TR/chunk columns.
 
-    Cached column j samples the response at movie-time 4.5 + 1.5*j s.
+    rawTR cache column j samples the response at movie-time 4.5 + 1.5*j s.
     hrf: predict via convolution evaluated at that acquisition time.
     fixed: raw features at the stimulus time the cache aligns to (1.5*j).
+    chunkmean (NAT GLMsingle): betas are deconvolved per voxel (FITHRF),
+    so chunk j is predicted by the mean raw features over its stimulus
+    window [4.5*j, 4.5*(j+1)) — no HRF model, no shift.
     """
     n = frames.shape[0]
     grid = np.arange(n) * FEATURE_DT
+    if lag_model == "chunkmean":
+        rows = np.empty((len(tr_index), frames.shape[1]))
+        for i, j in enumerate(tr_index):
+            sel = (grid >= NAT_CHUNK_S * j) & (grid < NAT_CHUNK_S * (j + 1))
+            rows[i] = frames[sel if sel.any() else [-1]].mean(axis=0)
+        return rows
     if lag_model == "hrf":
         h = spm_hrf()
         conv = np.apply_along_axis(
@@ -198,55 +214,82 @@ def movie_design(frames: np.ndarray, tr_index: np.ndarray,
 
 # ── brain-side loading ────────────────────────────────────────────────────
 
-def load_tb_betas(sub: str) -> tuple[dict[str, np.ndarray], np.ndarray]:
-    """Per-ROI (V x 1000) session-z-scored, repeat-averaged beta matrices.
+def _session_zscore(pat: np.ndarray, session: np.ndarray) -> np.ndarray:
+    """z-score each voxel's values within session (GLMsingle convention)."""
+    z = np.full_like(pat, np.nan)
+    for ses in np.unique(session):
+        cols = session == ses
+        block = pat[:, cols]
+        mu = np.nanmean(block, axis=1, keepdims=True)
+        sd = np.nanstd(block, axis=1, keepdims=True)
+        sd[sd == 0] = np.nan
+        z[:, cols] = (block - mu) / sd
+    return z
 
-    GLMsingle-convention normalization: z-score each voxel's betas within
-    session, then average presentations of the same mmmId (implementation
-    detail logged in the workbench).
-    """
-    f = BETA_CACHE / sub / f"{sub}_task-TBencoding_desc-typed_roipatterns.npz"
+
+def load_tb_betas(sub: str, pipeline: str
+                  ) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """Per-ROI (V x 1000) session-z-scored, repeat-averaged beta matrices."""
+    f = (beta_cache(pipeline) / sub /
+         f"{sub}_task-TBencoding_desc-typed_roipatterns.npz")
     d = np.load(f, allow_pickle=True)
     mmm = d["mmmId"].astype(str)
     session = d["session"].astype(str)
     ids = np.unique(mmm)
     out = {}
     for roi in ROI_NAMES:
-        pat = d[f"patterns_{roi}"].astype(np.float64)  # (V, n_trials)
-        z = np.full_like(pat, np.nan)
-        for ses in np.unique(session):
-            cols = session == ses
-            block = pat[:, cols]
-            mu = np.nanmean(block, axis=1, keepdims=True)
-            sd = np.nanstd(block, axis=1, keepdims=True)
-            sd[sd == 0] = np.nan
-            z[:, cols] = (block - mu) / sd
-        avg = np.column_stack(
+        z = _session_zscore(d[f"patterns_{roi}"].astype(np.float64), session)
+        out[roi] = np.column_stack(
             [np.nanmean(z[:, mmm == i], axis=1) for i in ids])
-        out[roi] = avg
     return out, ids
 
 
-def load_nat_runs(sub: str) -> list[dict]:
-    """All NATencoding rawTR caches for a subject, as small dicts."""
-    files = sorted((RAWTR_CACHE / sub).glob(
-        f"{sub}_ses-*_task-NATencoding_run-*_desc-model8_roipatterns.npz"))
+def load_nat_runs(sub: str, pipeline: str, nat_source: str) -> list[dict]:
+    """NATencoding response segments as run-shaped dicts.
+
+    rawtr: one dict per run cache (Model-8 residualized, z-scored TRs).
+    glmsingle: the single NAT chunk-beta cache, session-z-scored, split
+    into per-(session, run) dicts with chunk_idx playing tr_index's role.
+    """
+    if nat_source == "rawtr":
+        files = sorted((rawtr_cache(pipeline) / sub).glob(
+            f"{sub}_ses-*_task-NATencoding_run-*_desc-model8_roipatterns.npz"))
+        runs = []
+        for f in files:
+            d = np.load(f, allow_pickle=True)
+            runs.append({
+                "file": f.name,
+                "movie_name": d["movie_name"].astype(str),
+                "tr_index": d["tr_index"].astype(int),
+                "patterns": {roi: d[f"patterns_{roi}"].astype(np.float64)
+                             for roi in ROI_NAMES},
+            })
+        return runs
+
+    f = (beta_cache(pipeline) / sub /
+         f"{sub}_task-NATencoding_desc-typed_roipatterns.npz")
+    d = np.load(f, allow_pickle=True)
+    session = d["session"].astype(str)
+    run = d["run"].astype(int)
+    z = {roi: _session_zscore(d[f"patterns_{roi}"].astype(np.float64), session)
+         for roi in ROI_NAMES}
     runs = []
-    for f in files:
-        d = np.load(f, allow_pickle=True)
-        runs.append({
-            "file": f.name,
-            "movie_name": d["movie_name"].astype(str),
-            "tr_index": d["tr_index"].astype(int),
-            "patterns": {roi: d[f"patterns_{roi}"].astype(np.float64)
-                         for roi in ROI_NAMES},
-        })
+    for ses in np.unique(session):
+        for r in np.unique(run[session == ses]):
+            cols = (session == ses) & (run == r)
+            runs.append({
+                "file": f"{f.name}[{ses},run-{r}]",
+                "movie_name": d["movie_name"].astype(str)[cols],
+                "tr_index": d["chunk_idx"].astype(int)[cols],
+                "patterns": {roi: z[roi][:, cols] for roi in ROI_NAMES},
+            })
     return runs
 
 
 # ── the analysis ─────────────────────────────────────────────────────────
 
-def fit_and_evaluate(sub: str, lag_model: str) -> pd.DataFrame:
+def fit_and_evaluate(sub: str, lag_model: str, nat_source: str = "rawtr",
+                     pipeline: str = PIPELINE) -> pd.DataFrame:
     from sklearn.linear_model import RidgeCV
 
     rng = np.random.default_rng(SEED)
@@ -255,7 +298,7 @@ def fit_and_evaluate(sub: str, lag_model: str) -> pd.DataFrame:
     id_map = mmmid_to_stimulus_id()
     name_map = movie_name_to_slug()
 
-    betas, mmm_ids = load_tb_betas(sub)
+    betas, mmm_ids = load_tb_betas(sub, pipeline)
     stim_ids = [id_map[i] for i in mmm_ids]
     X_img = img_wide.loc[stim_ids].to_numpy(dtype=np.float64)
     assert X_img.shape[0] == len(mmm_ids), "feature/beta row mismatch"
@@ -265,7 +308,7 @@ def fit_and_evaluate(sub: str, lag_model: str) -> pd.DataFrame:
     Xz = (X_img - X_img.mean(0)) / X_img.std(0)
 
     # NAT design + actual patterns, averaged over repeat presentations
-    runs = load_nat_runs(sub)
+    runs = load_nat_runs(sub, pipeline, nat_source)
     seg = {}   # slug -> {"X": rows, "Y": {roi: sum}, "n": count per column}
     for run in runs:
         names, tr_idx = run["movie_name"], run["tr_index"]
@@ -344,7 +387,8 @@ def fit_and_evaluate(sub: str, lag_model: str) -> pd.DataFrame:
 
         records.append({
             "subject": sub, "roi": roi, "lag_model": lag_model,
-            "feature_space": FEATURE_SPACE, "pipeline": PIPELINE,
+            "nat_source": nat_source,
+            "feature_space": FEATURE_SPACE, "pipeline": pipeline,
             "rank_accuracy": rank_acc, "p_perm": p_val,
             "median_voxel_r": median_r, "n_voxels": int(valid.sum()),
             "n_voxels_eval": int(ok.sum()), "n_movies": len(slugs),
@@ -374,17 +418,21 @@ def dry_run() -> int:
     print("registry:")
     for f in ("shared1000.tsv", "movies.tsv"):
         check(REGISTRY / f, (REGISTRY / f).exists())
-    print("brain caches (pipeline=original):")
-    for sub in SUBJECTS:
-        beta = BETA_CACHE / sub / f"{sub}_task-TBencoding_desc-typed_roipatterns.npz"
-        check(beta, beta.exists())
-        n = len(list((RAWTR_CACHE / sub).glob("*task-NATencoding*npz")))
-        check(f"{sub}: 20 NAT rawTR caches (found {n})", n == 20)
+    for pipeline in ("original", "nordic"):
+        print(f"brain caches (pipeline={pipeline}):")
+        for sub in SUBJECTS:
+            for task in ("TBencoding", "NATencoding"):
+                beta = (beta_cache(pipeline) / sub /
+                        f"{sub}_task-{task}_desc-typed_roipatterns.npz")
+                check(beta, beta.exists())
+            n = len(list((rawtr_cache(pipeline) / sub)
+                         .glob("*task-NATencoding*npz")))
+            check(f"{sub}: 20 NAT rawTR caches (found {n})", n == 20)
     print("movie-name mapping (rawTR names -> registry slugs):")
     name_map = movie_name_to_slug()
     unmapped = set()
     for sub in SUBJECTS:
-        for f in (RAWTR_CACHE / sub).glob("*task-NATencoding*npz"):
+        for f in (rawtr_cache("original") / sub).glob("*task-NATencoding*npz"):
             d = np.load(f, allow_pickle=True)
             for name in np.unique(d["movie_name"].astype(str)):
                 if name.strip().lower() not in name_map:
@@ -403,7 +451,15 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sub", choices=SUBJECTS, help="one subject (default: all)")
     ap.add_argument("--lag-model", choices=["hrf", "fixed"], default="hrf",
-                    help="hrf = pre-registered primary; fixed = sensitivity")
+                    help="hrf = pre-registered primary; fixed = sensitivity "
+                    "(rawtr only; glmsingle always uses chunkmean)")
+    ap.add_argument("--nat-source", choices=["rawtr", "glmsingle"],
+                    default="rawtr",
+                    help="NAT response representation: Model-8 rawTR "
+                    "(primary) or GLMsingle 4.5s chunk betas (diagnostic)")
+    ap.add_argument("--pipeline", choices=["original", "nordic"],
+                    default=PIPELINE,
+                    help="preprocessing variant, both arms (diagnostic)")
     ap.add_argument("--build-features", action="store_true",
                     help="only build the psytwill feature parquets")
     ap.add_argument("--dry-run", action="store_true",
@@ -436,17 +492,25 @@ def main():
             ],
         }, indent=2))
 
+    lag_model = ("chunkmean" if args.nat_source == "glmsingle"
+                 else args.lag_model)
     subs = [args.sub] if args.sub else SUBJECTS
     frames = []
     for sub in subs:
-        print(f"=== A1 encoding: {sub} (lag_model={args.lag_model}) ===")
+        print(f"=== A1 encoding: {sub} (nat={args.nat_source}, "
+              f"lag_model={lag_model}, pipeline={args.pipeline}) ===")
         t0 = time.time()
-        frames.append(fit_and_evaluate(sub, args.lag_model))
+        frames.append(fit_and_evaluate(
+            sub, lag_model, args.nat_source, args.pipeline))
         print(f"  ({time.time() - t0:.0f}s)")
     result = pd.concat(frames, ignore_index=True)
     result["created_at"] = datetime.now(timezone.utc).isoformat()
 
-    tag = "" if args.lag_model == "hrf" else f"_lag-{args.lag_model}"
+    tag = "" if lag_model == "hrf" else f"_lag-{lag_model}"
+    if args.nat_source != "rawtr":
+        tag += f"_nat-{args.nat_source}"
+    if args.pipeline != "original":
+        tag += f"_pipe-{args.pipeline}"
     out = A1_DIR / (f"a1_summary{tag}_{subs[0]}.tsv" if args.sub
                     else f"a1_summary{tag}.tsv")
     result.to_csv(out, sep="\t", index=False)
