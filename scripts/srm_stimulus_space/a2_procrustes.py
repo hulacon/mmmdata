@@ -176,7 +176,12 @@ def evaluate_pair(src: str, tgt: str, roi: str,
                   tb: dict[str, dict[str, np.ndarray]],
                   nat: dict[str, dict[str, dict[str, np.ndarray]]],
                   R_cache: dict, feats: np.ndarray,
-                  rng: np.random.Generator) -> list[dict]:
+                  rng: np.random.Generator,
+                  ranks: list[int] | None = None) -> list[dict]:
+    """One ordered pair, one ROI. With ranks=None runs the pre-registered
+    routes; with ranks=[k, ...] runs the low-rank Procrustes diagnostic
+    (anatomical + rank-k partial Procrustes R_k = U_k V_k^T from the SVD of
+    the TB cross-covariance; the full-rank route is k = V)."""
     from scipy.linalg import orthogonal_procrustes
     from sklearn.linear_model import RidgeCV
 
@@ -203,41 +208,58 @@ def evaluate_pair(src: str, tgt: str, roi: str,
     key = frozenset((src, tgt))
     if key not in R_cache:
         R_cache[key] = {}
-    if src not in R_cache[key]:
-        R, _ = orthogonal_procrustes(Xtr.T, Ytr.T)  # (Vv, Vv): x_row @ R ~ y_row
-        R_cache[key][src] = R
-        R_cache[key][tgt] = R.T
-    R = R_cache[key][src]
 
-    dec = RidgeCV(alphas=RIDGE_ALPHAS)
-    dec.fit(Xtr.T, feats)                          # source voxels -> EBind
-    enc = RidgeCV(alphas=RIDGE_ALPHAS)
-    enc.fit(feats, Ytr.T)                          # EBind -> target voxels
+    if ranks is not None:
+        # SVD of the TB cross-covariance M = Xtr Ytr^T once per unordered
+        # pair; the reverse direction swaps U and V (M_yx = M_xy^T).
+        if src not in R_cache[key]:
+            U, _, Vt = np.linalg.svd(Xtr @ Ytr.T, full_matrices=False)
+            R_cache[key][src] = (U, Vt)
+            R_cache[key][tgt] = (Vt.T, U.T)
+        U, Vt = R_cache[key][src]
+        mapped = {"anatomical": segx}
+        for k in ranks:
+            kk = min(k, U.shape[1])
+            Rk = U[:, :kk] @ Vt[:kk]
+            mapped[f"procrustes_k{k}"] = [Rk.T @ a for a in segx]
+        routes = tuple(mapped)
+    else:
+        if src not in R_cache[key]:
+            R, _ = orthogonal_procrustes(Xtr.T, Ytr.T)  # x_row @ R ~ y_row
+            R_cache[key][src] = R
+            R_cache[key][tgt] = R.T
+        R = R_cache[key][src]
 
-    mapped = {
-        "anatomical": segx,
-        "procrustes": [R.T @ a for a in segx],
-        "stimulus": [enc.predict(dec.predict(a.T)).T for a in segx],
-    }
+        dec = RidgeCV(alphas=RIDGE_ALPHAS)
+        dec.fit(Xtr.T, feats)                      # source voxels -> EBind
+        enc = RidgeCV(alphas=RIDGE_ALPHAS)
+        enc.fit(feats, Ytr.T)                      # EBind -> target voxels
+
+        mapped = {
+            "anatomical": segx,
+            "procrustes": [R.T @ a for a in segx],
+            "stimulus": [enc.predict(dec.predict(a.T)).T for a in segx],
+        }
+        routes = ROUTES
 
     tgt_n = _norm_rows_per_movie(segy)
     lag_meds = {route: _lag_medians(_norm_rows_per_movie(m), tgt_n)
                 for route, m in mapped.items()}
     obs = {route: np.array([lm[0] for lm in lag_meds[route]])
-           for route in ROUTES}
+           for route in routes}
 
     # circular time-shift null, offsets shared across routes (paired delta)
     lengths = np.array([a.shape[1] for a in segx])
     offsets = rng.integers(1, lengths, size=(N_PERMUTATIONS, len(lengths)))
     null = {route: np.stack(
         [lag_meds[route][i][offsets[:, i]] for i in range(len(lengths))],
-        axis=1).mean(axis=1) for route in ROUTES}
+        axis=1).mean(axis=1) for route in routes}
 
     # movie bootstrap on the paired per-movie difference vs anatomical
     boot_idx = rng.integers(0, N_MOVIES, size=(N_BOOTSTRAP, N_MOVIES))
 
     records = []
-    for route in ROUTES:
+    for route in routes:
         isc = float(obs[route].mean())
         p_perm = float(
             (1 + (null[route] >= isc).sum()) / (1 + N_PERMUTATIONS))
@@ -331,6 +353,10 @@ def main():
                     default=PIPELINE,
                     help="preprocessing variant, both arms (sensitivity)")
     ap.add_argument("--roi", choices=ROI_NAMES, help="one ROI (default: all)")
+    ap.add_argument("--ranks", type=lambda s: [int(k) for k in s.split(",")],
+                    help="low-rank Procrustes diagnostic: comma list of "
+                    "ranks k (clamped to V per ROI); replaces the "
+                    "pre-registered routes with anatomical + procrustes_k*")
     ap.add_argument("--dry-run", action="store_true",
                     help="resolve all inputs and report, compute nothing")
     args = ap.parse_args()
@@ -370,7 +396,7 @@ def main():
         for src, tgt in permutations(SUBJECTS, 2):
             t1 = time.time()
             records += evaluate_pair(src, tgt, roi, tb, nat, R_cache,
-                                     feats, rng)
+                                     feats, rng, ranks=args.ranks)
             print(f"  ({time.time() - t1:.0f}s)", flush=True)
 
     result = pd.DataFrame.from_records(records)
@@ -383,6 +409,8 @@ def main():
     tag = "" if args.tb_source == "betas" else f"_tb-{args.tb_source}"
     if args.pipeline != "original":
         tag += f"_pipe-{args.pipeline}"
+    if args.ranks:
+        tag += "_lowrank"
     if args.roi:
         tag += f"_roi-{args.roi}"
     out = A2_DIR / f"a2_summary{tag}.tsv"
