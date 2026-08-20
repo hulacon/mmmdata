@@ -44,18 +44,25 @@ echo "=== $(date '+%F %T') reaping ${ROOT} (idle > ${AGE_DAYS} days) ==="
 # Reap run dirs (depth 4) whose entire tree is idle. The inner find exits at
 # the first entry (file or dir) modified within the window, so live runs are
 # cheap to skip and never touched.
-find "${ROOT}" -mindepth 4 -maxdepth 4 -type d -print0 |
+# Process substitution rather than a pipe: a pipe runs the loop in a subshell
+# and the counter would not survive it.
+reaped=0
 while IFS= read -r -d '' dir; do
     if [ -z "$(find "${dir}" -newermt "-${AGE_DAYS} days" -print -quit)" ]; then
         size=$(du -sh "${dir}" 2>/dev/null | cut -f1)
         echo "reap: ${dir} (${size:-?})"
         rm -rf "${dir}" || echo "  (partial: some entries not removable)"
+        reaped=$((reaped + 1))
     fi
-done
+done < <(find "${ROOT}" -mindepth 4 -maxdepth 4 -type d -print0)
 
 # Stray idle files above the run-dir level, then prune idle empty dirs
 # (never the per-user level itself)
-find "${ROOT}" -mindepth 2 -maxdepth 3 -type f ! -newermt "-${AGE_DAYS} days" -print -delete
-find "${ROOT}" -mindepth 2 -maxdepth 3 -depth -type d -empty ! -newermt "-${AGE_DAYS} days" -print -delete
+strays=$(find "${ROOT}" -mindepth 2 -maxdepth 3 -type f ! -newermt "-${AGE_DAYS} days" -print -delete | wc -l)
+pruned=$(find "${ROOT}" -mindepth 2 -maxdepth 3 -depth -type d -empty ! -newermt "-${AGE_DAYS} days" -print -delete | wc -l)
 
+# Always say what happened, including when nothing did. Without this a night
+# that reaped nothing and a night that reaped everything look identical in
+# the log, so "the reaper ran" cannot be read as "the reaper did its job".
+echo "summary: ${reaped} run dir(s) reaped, ${strays} stray file(s) deleted, ${pruned} empty dir(s) pruned; ${ROOT} now $(du -sh "${ROOT}" 2>/dev/null | cut -f1)"
 echo "=== $(date '+%F %T') done ==="
