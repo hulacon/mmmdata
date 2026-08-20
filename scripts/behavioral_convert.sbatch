@@ -16,7 +16,7 @@
 ENV=/projects/hulacon/shared/envs/stimfeat
 source ${ENV}/etc/conda/activate.d/stimfeat-env.sh  # PYTHONNOUSERSITE=1 + shared model caches
 PYTHON=${ENV}/bin/python3
-CONVERTER_DIR=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/raw2bids_converters
+CONVERTER_DIR=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/src/python/raw2bids_converters
 
 echo "Job started: $(date)"
 echo "Node: $(hostname)"

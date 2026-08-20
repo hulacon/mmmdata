@@ -30,13 +30,12 @@ import os
 import pandas as pd
 
 from common import (
-    BIDS_ROOT, bids_sub, write_beh_tsv, write_json_sidecar,
+    BIDS_ROOT, SOURCE_DIR, bids_sub, write_beh_tsv, write_json_sidecar,
 )
 
-# Real post-migration sourcedata root (common.py's SOURCE_DIR predates the
-# migration and points at the dead <bids>/sourcedata path).
-MMMSOURCEDATA = "/gpfs/projects/hulacon/shared/mmmsourcedata"
-TRANSCRIPTS_ROOT = f"{MMMSOURCEDATA}/derivatives/recall_transcripts"
+# SOURCE_DIR resolves from config/base.toml to the post-migration
+# mmmsourcedata root (a sibling of the BIDS root, not <bids>/sourcedata).
+TRANSCRIPTS_ROOT = f"{SOURCE_DIR}/derivatives/recall_transcripts"
 
 FINAL_RECALL_SESSION = 29
 TASK = "FINrecall"

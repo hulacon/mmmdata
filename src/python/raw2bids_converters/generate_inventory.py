@@ -5,6 +5,10 @@ Walks sourcedata/{subject}/{session}/behavioral/ and eyetracking/ directories,
 classifies each file, and maps it to a BIDS destination with the correct
 prefixed task names (TBencoding, NATencoding, FINretrieval, etc.).
 
+If edf_triage.csv exists alongside this script, EDF files are cross-referenced
+against it: files with decision='exclude' are marked conversion_type='edf_excluded'
+and their description updated with the reason.
+
 Usage:
     python generate_inventory.py [--output file_inventory.csv]
 """
@@ -17,6 +21,9 @@ from pathlib import Path
 
 BIDS_ROOT = "/gpfs/projects/hulacon/shared/mmmdata"
 SOURCE_ROOT = os.path.join(BIDS_ROOT, "sourcedata")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+EDF_TRIAGE_CSV = os.path.join(SCRIPT_DIR, "edf_triage.csv")
+PHYSIO_TRIAGE_CSV = os.path.join(SCRIPT_DIR, "physio_triage.csv")
 
 SUBJECTS = [3, 4, 5]
 CR_SESSION_OFFSET = 3   # cued recall: source sess N -> BIDS ses-(N+3)
@@ -105,6 +112,14 @@ EDF_ANOMALIES = {
     "s4s4s1r_": (4, 4, 1, "m"),
     # sub-04/ses-24: "s4s6r1" missing phase letter; actually retrieval run 1
     "s4s6r1_2025": (4, 6, 1, "r"),
+    # sub-03/ses-24: all 3 files labeled 'r' (retrieval) but BOLD acq times
+    # and trigger counts prove the first two are encoding runs:
+    #   s3s6r1r_12_05 → 772 triggers ≈ 775 vols NATencoding run-01 (acq 12:06)
+    #   s3s6r2r_12_26 → 600 triggers ≈ 602 vols NATencoding run-02 (acq 12:27)
+    #   s3s6r1r_12_53 → 1048 triggers ≈ 1054 vols NATretrieval (acq 12:57)
+    "s3s6r1r_2025_05_01_12_05": (3, 6, 1, "m"),
+    "s3s6r2r_2025": (3, 6, 2, "m"),
+    "s3s6r1r_2025_05_01_12_53": (3, 6, 1, "r"),
 }
 
 # AOI files: TRIAL_{NNNN}_ROUTINE_{NN}.ias
@@ -534,6 +549,158 @@ def walk_subject(subj_num):
     return rows
 
 
+def load_edf_triage():
+    """Load edf_triage.csv into a dict keyed by source_file path.
+
+    Returns empty dict if the file doesn't exist.
+    """
+    if not os.path.isfile(EDF_TRIAGE_CSV):
+        return {}
+    triage = {}
+    with open(EDF_TRIAGE_CSV, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            triage[row["source_file"]] = row
+    return triage
+
+
+def apply_edf_triage(rows, triage):
+    """Apply EDF triage decisions to inventory rows.
+
+    - Excluded files: conversion_type -> 'edf_excluded', description updated
+    - Included pupil_only files: description notes gaze unavailable
+    """
+    if not triage:
+        return rows
+    for row in rows:
+        if row.get("conversion_type") != "edf_to_physio":
+            continue
+        src = row["source_file"]
+        tri = triage.get(src)
+        if tri is None:
+            continue
+        if tri["decision"] == "exclude":
+            gaze_pct = tri["gaze_valid_pct"]
+            pupil_pct = tri["pupil_valid_pct"]
+            row["conversion_type"] = "edf_excluded"
+            row["description"] += (
+                f" [EXCLUDED: gaze {gaze_pct}% pupil {pupil_pct}% valid in scan window]"
+            )
+        elif tri["channels"] == "pupil_only":
+            gaze_pct = tri["gaze_valid_pct"]
+            row["description"] += f" [pupil_only: gaze {gaze_pct}% valid]"
+    return rows
+
+
+# ──────────────────────────────────────────────────────────
+# PhysioLog (scanner physio) inventory from physio_triage.csv
+# ──────────────────────────────────────────────────────────
+
+# Series name (with Series_NN_ prefix and _PhysioLog suffix stripped)
+# -> (bids_task, run_number_or_None)
+RE_PHYSIO_SERIES = re.compile(
+    r"Series_\d+_(.+?)_PhysioLog$"
+)
+
+# Task patterns: order matters (most specific first)
+PHYSIO_TASK_MAP = [
+    (re.compile(r"cued_recall_encoding_run(\d+)$"), "TBencoding", True),
+    (re.compile(r"cued_recall_retrieval_run(\d+)$"), "TBretrieval", True),
+    (re.compile(r"cued_recall_math$"), "TBmath", False),
+    (re.compile(r"cued_recall_resting$"), "TBresting", False),
+    (re.compile(r"free_recall_encoding_run(\d+)$"), "NATencoding", True),
+    (re.compile(r"free_recall_retrieval_run(\d+)(_attempt\d+)?$"), "NATretrieval", True),
+    (re.compile(r"free_recall_math$"), "NATmath", False),
+    (re.compile(r"free_recall_resting$"), "NATresting", False),
+    (re.compile(r"final_cued_recall_run(\d+)$"), "FINretrieval", True),
+    (re.compile(r"Resting_baseline$"), "INITresting", False),
+    (re.compile(r"Resting$"), "FINresting", False),
+    (re.compile(r"fixation_calibration$"), "fixation", False),
+    (re.compile(r"localizer_prf_run(\d+)$"), "prf", True),
+    (re.compile(r"localizer_floc_run(\d+)$"), "floc", True),
+    (re.compile(r"localizer_tone(?:_run(\d+))?$"), "tone", True),
+    (re.compile(r"localizer_auditory(?:_run(\d+))?$"), "auditory", True),
+    (re.compile(r"localizer_motor_run(\d+)$"), "motor", True),
+]
+
+
+def _physio_series_to_bids(series_name):
+    """Map a PhysioLog series name to (bids_task, run_number_or_None).
+
+    Returns None if the series can't be mapped (e.g. fixation_calibration
+    which may be skipped).
+    """
+    m = RE_PHYSIO_SERIES.match(series_name)
+    if not m:
+        return None
+    task_part = m.group(1)
+
+    for pattern, bids_task, has_run in PHYSIO_TASK_MAP:
+        pm = pattern.match(task_part)
+        if pm:
+            run = None
+            if has_run and pm.lastindex and pm.group(1):
+                run = int(pm.group(1))
+            return bids_task, run
+    return None
+
+
+def load_physio_triage():
+    """Load physio_triage.csv and generate inventory rows for convertible files.
+
+    Only COMPLETE and PARTIAL files are included.
+
+    Returns
+    -------
+    list of dict
+        Inventory rows with source_file, description, bids_destination,
+        conversion_type='physio_dcm'.
+    """
+    if not os.path.isfile(PHYSIO_TRIAGE_CSV):
+        return []
+
+    rows = []
+    with open(PHYSIO_TRIAGE_CSV, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            status = row["status"]
+            if status not in ("COMPLETE", "PARTIAL"):
+                continue
+
+            sub = row["sub"]
+            ses = row["ses"]
+            series = row["series"]
+            source_path = row["source_path"]
+
+            mapping = _physio_series_to_bids(series)
+            if mapping is None:
+                continue
+
+            bids_task, run = mapping
+
+            # Build BIDS base path (without _recording-*_physio suffix)
+            if run is not None:
+                bids_base = (
+                    f"{sub}/{ses}/func/{sub}_{ses}_task-{bids_task}"
+                    f"_run-{run:02d}"
+                )
+            else:
+                bids_base = f"{sub}/{ses}/func/{sub}_{ses}_task-{bids_task}"
+
+            rows.append({
+                "source_file": source_path,
+                "description": (
+                    f"Scanner physio ({status.lower()}), {sub} {ses} "
+                    f"task-{bids_task}"
+                    + (f" run-{run:02d}" if run else "")
+                ),
+                "bids_destination": bids_base,
+                "conversion_type": "physio_dcm",
+            })
+
+    return rows
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate file_inventory.csv from sourcedata"
@@ -558,6 +725,24 @@ def main():
         all_rows.extend(rows)
         if args.verbose:
             print(f"  Found {len(rows)} files")
+
+    # Apply EDF triage decisions
+    triage = load_edf_triage()
+    if triage:
+        all_rows = apply_edf_triage(all_rows, triage)
+        n_excluded = sum(1 for r in all_rows if r["conversion_type"] == "edf_excluded")
+        n_edf = sum(1 for r in all_rows if r["conversion_type"] in ("edf_to_physio", "edf_excluded"))
+        print(f"EDF triage applied: {n_excluded}/{n_edf} files excluded")
+    else:
+        print(f"WARNING: {EDF_TRIAGE_CSV} not found, skipping EDF triage")
+
+    # Add scanner physio rows from physio_triage.csv
+    physio_rows = load_physio_triage()
+    if physio_rows:
+        all_rows.extend(physio_rows)
+        print(f"Scanner physio: {len(physio_rows)} convertible PhysioLog files added")
+    else:
+        print(f"WARNING: {PHYSIO_TRIAGE_CSV} not found or empty, skipping scanner physio")
 
     # Write CSV
     fieldnames = ["source_file", "description", "bids_destination", "conversion_type"]

@@ -155,7 +155,7 @@ PROCESSORS = {
 }
 
 # Types that don't produce output
-SKIP_TYPES = {"timing_input", "supplementary", "no_conversion"}
+SKIP_TYPES = {"timing_input", "supplementary", "no_conversion", "edf_excluded"}
 
 
 def main():
