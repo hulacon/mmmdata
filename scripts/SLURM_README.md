@@ -307,8 +307,7 @@ The first run downloads the MRIQC container. If this fails:
 1. Check network connectivity
 2. Manually download:
    ```bash
-   mkdir -p /projects/hulacon/shared/mmmdata/singularity_images
-   cd /projects/hulacon/shared/mmmdata/singularity_images
+   cd /gpfs/projects/hulacon/shared/containers
    singularity pull mriqc-24.0.0.simg docker://nipreps/mriqc:24.0.0
    ```
 

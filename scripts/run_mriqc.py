@@ -68,7 +68,7 @@ def run_mriqc(
         MRIQC version to use
     singularity_dir : str or Path, optional
         Directory containing Singularity images. If None, uses config value
-        or falls back to <bids_dir>/singularity_images/.
+        Required; comes from [paths] singularity_dir in base.toml.
     """
 
     bids_dir = Path(bids_dir)
@@ -90,9 +90,12 @@ def run_mriqc(
             work_dir = work_dir / f'sub-{subj_id}'
 
     if singularity_dir is None:
-        singularity_dir = bids_dir / 'singularity_images'
-    else:
-        singularity_dir = Path(singularity_dir)
+        raise ValueError(
+            "singularity_dir is not set. Define it under [paths] in "
+            "mmmdata/config/base.toml (or config/local.toml). The images live "
+            "at /gpfs/projects/hulacon/shared/containers."
+        )
+    singularity_dir = Path(singularity_dir)
     mriqc_image = singularity_dir / f'mriqc-{mriqc_version}.simg'
 
     # Create directories

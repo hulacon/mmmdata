@@ -121,9 +121,12 @@ def run_fmriprep(
             work_dir = work_dir / f'sub-{subj_id}'
 
     if singularity_dir is None:
-        singularity_dir = bids_dir / 'singularity_images'
-    else:
-        singularity_dir = Path(singularity_dir)
+        raise ValueError(
+            "singularity_dir is not set. Define it under [paths] in "
+            "mmmdata/config/base.toml (or config/local.toml). The images live "
+            "at /gpfs/projects/hulacon/shared/containers."
+        )
+    singularity_dir = Path(singularity_dir)
 
     # Newer images are pulled as .sif, older ones as .simg; accept either
     candidates = [singularity_dir / f'fmriprep-{fmriprep_version}{ext}'

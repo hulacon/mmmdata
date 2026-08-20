@@ -13,7 +13,7 @@ MRIQC extracts no-reference image quality metrics (IQMs) from structural (T1w, T
 
 MRIQC will be automatically downloaded as a Singularity image when you first run the script. The image will be stored in:
 ```
-/projects/hulacon/shared/mmmdata/singularity_images/mriqc-24.0.0.simg
+/gpfs/projects/hulacon/shared/containers/mriqc-24.0.0.simg
 ```
 
 **No manual installation required!** The script handles everything.
@@ -60,15 +60,21 @@ Available options:
 - `--bids-dir`: Override BIDS directory from config
 - `--output-dir`: Override output directory
 
-### Option 2: Bash Script
+### On the cluster
 
-A standalone bash script is also available:
+Submit through SLURM rather than running in a login shell:
 
 ```bash
-cd /gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/scripts
-./run_mriqc.sh participant  # Process all participants
-./run_mriqc.sh group        # Generate group reports
+sbatch scripts/mriqc_participant.sbatch   # one subject/session
+sbatch scripts/mriqc_array.sbatch         # array over many
 ```
+
+Both source `scripts/load_config.sh`, so they pick up `singularity_dir`,
+`work_dir` and the rest from `config/base.toml`.
+
+(There was a standalone `run_mriqc.sh` here. It was removed 2026-08-20: it
+hard-coded a containers path that never existed and a work directory that has
+since been deleted, and `run_mriqc.py` had long superseded it.)
 
 ## Output Location
 
