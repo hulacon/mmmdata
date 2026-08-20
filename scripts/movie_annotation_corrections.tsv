@@ -1,0 +1,22 @@
+# Hand-declared corrections to the human movie scene annotations.
+#
+# The .xlsx masters under stimuli/movies/movie_annotations/ are raw stimulus
+# assets and are never edited in place -- a silent repair inside a parser is
+# invisible provenance. Every fix lives here instead, is applied by
+# parse_movie_annotations.py, and is REFUSED if the source no longer holds
+# `old_mss` (which is what happens once a master is re-exported with the fix
+# baked in: the parser then tells you to delete the row).
+#
+# Lives in the repo rather than beside the data so that git carries who
+# changed which cell, when, and why.
+#
+# Times are m.ss, matching the source cells (2.35 = 2 min 35 s = 155 s).
+# status: verified (checked against neighbouring segments) | provisional (a
+# guess that reproduces the file's own timing convention; revisit).
+stimulus_id	level	seg_number	field	old_mss	new_mss	status	authority	note
+body-double	C	14	offset	3.35	2.35	verified	bhutch 2026-08-20	digit transposition; 2.35 gives C14 a 15 s duration, in line with its neighbours
+body-double	C	15	onset	3.35	2.35	verified	bhutch 2026-08-20	same cell pair as the C14 offset above
+chicken-or-egg	C	15	offset	2.38	1.38	verified	bhutch 2026-08-20	digit transposition; 1.38 gives C15 a 6 s duration, in line with its neighbours
+chicken-or-egg	C	16	onset	2.38	1.38	verified	bhutch 2026-08-20	same cell pair as the C15 offset above
+mrs-harris-goes-to-paris	C	27	offset	3.44	3.54	provisional	bhutch 2026-08-20	GUESS - preserves this file's offset -> next-onset+1s chain; revisit against the film
+mrs-harris-goes-to-paris	C	28	onset	3.45	3.55	provisional	bhutch 2026-08-20	GUESS - pairs with the C27 offset above

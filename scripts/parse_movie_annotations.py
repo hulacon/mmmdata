@@ -12,12 +12,18 @@ wrong by up to 40%, silently. This module owns the conversion so no
 analysis re-derives it -- and `--check` proves it against each movie's
 registry `duration_s`.
 
+Three cells in the masters are data-entry errors. They are corrected from
+`movie_annotation_corrections.tsv` rather than by editing the raw workbooks,
+so every fix stays attributable; a correction whose `old_mss` no longer
+matches the source is refused rather than applied silently.
+
 Output columns (long, one row per segment):
     stimulus_id, level (B|C), seg_number, onset, offset, duration,
-    description, annotator, source_file
+    description, annotator, source_file, corrected
 
 Usage:
     python parse_movie_annotations.py --check           # validate, write nothing
+    python parse_movie_annotations.py --check --raw     # ...without corrections
     python parse_movie_annotations.py -o annotations.tsv
 """
 
@@ -43,6 +49,7 @@ except Exception:  # noqa: BLE001 - config is a convenience, not a dependency
 
 ANNOT_DIR = BIDS_ROOT / "stimuli" / "movies" / "movie_annotations"
 REGISTRY = BIDS_ROOT / "stimuli" / "stimulus_registry" / "movies.tsv"
+CORRECTIONS = Path(__file__).resolve().parent / "movie_annotation_corrections.tsv"
 
 # Times whose fractional part implies >= 60 seconds are not m.ss at all.
 _MAX_SS = 59
@@ -100,6 +107,55 @@ def _col(df: pd.DataFrame, *candidates: str) -> str | None:
     return None
 
 
+def load_corrections(path: Path = CORRECTIONS) -> pd.DataFrame:
+    """The hand-declared cell corrections, or an empty frame if absent."""
+    if not path.exists():
+        return pd.DataFrame(
+            columns=["stimulus_id", "level", "seg_number", "field",
+                     "old_mss", "new_mss", "status", "authority", "note"])
+    return pd.read_csv(path, sep="\t", comment="#", dtype={"level": str})
+
+
+def apply_corrections(
+    df: pd.DataFrame, corrections: pd.DataFrame, stimulus_id: str
+) -> tuple[pd.DataFrame, list[str], list[str]]:
+    """Apply this movie's corrections. Returns (df, applied, refused).
+
+    A correction is refused -- never silently skipped -- when the source no
+    longer holds `old_mss`, because that means the master was fixed upstream
+    and the row is now stale.
+    """
+    mine = corrections[corrections["stimulus_id"] == stimulus_id]
+    applied: list[str] = []
+    refused: list[str] = []
+    if mine.empty or df.empty:
+        return df, applied, refused
+
+    df = df.copy()
+    if "corrected" not in df.columns:
+        df["corrected"] = False
+
+    for _, c in mine.iterrows():
+        hit = (df["level"] == c["level"]) & (df["seg_number"] == int(c["seg_number"]))
+        label = f"{c['level']}{int(c['seg_number'])}.{c['field']}"
+        if not hit.any():
+            refused.append(f"{label}: no such segment — remove the row or fix seg_number")
+            continue
+        want, new = parse_mss(c["old_mss"]), parse_mss(c["new_mss"])
+        have = float(df.loc[hit, c["field"]].iloc[0])
+        if have != want:
+            refused.append(
+                f"{label}: source holds {have:.0f}s, correction expects "
+                f"{want:.0f}s — master may already be fixed; delete this row")
+            continue
+        df.loc[hit, c["field"]] = new
+        df.loc[hit, "corrected"] = True
+        applied.append(f"{label} {want:.0f}s→{new:.0f}s ({c['status']})")
+
+    df["duration"] = df["offset"] - df["onset"]
+    return df, applied, refused
+
+
 def parse_file(path: Path, stimulus_id: str) -> pd.DataFrame:
     """One annotation workbook -> long rows for both levels."""
     raw = pd.read_excel(path)
@@ -135,6 +191,7 @@ def parse_file(path: Path, stimulus_id: str) -> pd.DataFrame:
                 "description": (str(r[d_col]).strip() if d_col and not pd.isna(r[d_col]) else ""),
                 "annotator": _annotator(path),
                 "source_file": path.name,
+                "corrected": False,
             })
     return pd.DataFrame(rows)
 
@@ -144,14 +201,17 @@ def main() -> int:
     ap.add_argument("--check", action="store_true",
                     help="validate against registry durations; write nothing")
     ap.add_argument("-o", "--out", type=Path, help="output TSV")
+    ap.add_argument("--raw", action="store_true",
+                    help="skip the declared corrections; show the source as-is")
     ap.add_argument("--tolerance", type=float, default=15.0,
                     help="seconds the last offset may exceed/undershoot duration_s")
     args = ap.parse_args()
 
     reg = pd.read_csv(REGISTRY, sep="\t")
     have = reg[reg["annotation_file"].notna()]
+    corrections = pd.DataFrame() if args.raw else load_corrections()
 
-    frames, problems = [], []
+    frames, problems, applied_all = [], [], []
     for _, row in have.iterrows():
         path = BIDS_ROOT / "stimuli" / "movies" / row["annotation_file"]
         if not path.exists():
@@ -165,6 +225,11 @@ def main() -> int:
         if df.empty:
             problems.append(f"{row['stimulus_id']}: parsed 0 segments")
             continue
+
+        if not corrections.empty:
+            df, applied, refused = apply_corrections(df, corrections, row["stimulus_id"])
+            applied_all += [f"{row['stimulus_id']} {a}" for a in applied]
+            problems += [f"{row['stimulus_id']}: REFUSED {r}" for r in refused]
 
         dur = float(row["duration_s"])
         last = df["offset"].max()
@@ -198,6 +263,13 @@ def main() -> int:
             )
             by["segs_per_movie"] = (by["segments"] / by["movies"]).round(1)
             print(by.to_string())
+
+    if applied_all:
+        print(f"\ncorrections applied ({len(applied_all)}), source files untouched:")
+        for a in applied_all:
+            print(f"  {a}")
+    elif args.raw:
+        print("\n--raw: corrections NOT applied")
 
     if problems:
         print(f"\nPROBLEMS ({len(problems)}):")
