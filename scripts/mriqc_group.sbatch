@@ -8,7 +8,6 @@
 #SBATCH --mem=16G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/mriqc_group_%j.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/mriqc_group_%j.err
-#SBATCH --mail-user=your-email@uoregon.edu
 
 #==============================================================================
 # MRIQC Group-Level Analysis
