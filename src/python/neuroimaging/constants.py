@@ -34,7 +34,10 @@ DERIVATIVES_DIRS: dict[str, str] = {
     "ready": "derivatives/ready",
 }
 
-# Events files — canonical validated copies live here
+# Events files — legacy transitional location, DELETED 2026-08-20. Kept only
+# so find_events_file() still prefers it if the tree is ever restored; in
+# practice every lookup now falls through to the main BIDS tree, which is the
+# decided target. Do not build new code against this.
 EVENTFILES_DIR: str = "derivatives/bids_validation/eventfiles"
 
 

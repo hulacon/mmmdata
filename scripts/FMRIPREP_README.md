@@ -18,7 +18,7 @@ fMRIPrep is a robust preprocessing pipeline for fMRI data that produces analysis
 
 The fMRIPrep Apptainer image should already be available at:
 ```
-/gpfs/projects/hulacon/shared/mmmdata/code/containers/fmriprep-25.2.5.sif
+/gpfs/projects/hulacon/shared/containers/fmriprep-25.2.5.sif
 ```
 
 If not, build it via the shared job (writes into the containers dir with a

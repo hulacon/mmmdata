@@ -37,24 +37,29 @@ TB2AFC_TEMPLATE = "sub-{sub}/ses-{ses}/beh/sub-{sub}_ses-{ses}_task-TB2AFC_run-0
 FIN2AFC_TEMPLATE = "sub-{sub}/ses-30/beh/sub-{sub}_ses-30_task-FIN2AFC_beh.tsv"
 FINTIMELINE_TEMPLATE = "sub-{sub}/ses-30/beh/sub-{sub}_ses-30_task-FINtimeline_beh.tsv"
 
-# Events files live in derivatives/bids_validation/eventfiles/
-EVENTFILES_PREFIX = "derivatives/bids_validation/eventfiles"
+# Events files live in the main BIDS tree. They used to be read from
+# derivatives/bids_validation/eventfiles/ — a transitional set with
+# subject/session/run column names instead of subj_num/ses_num/run_idx — but
+# that tree was deleted 2026-08-20 and the main tree is the decided target
+# (braintwill docs/mmmdata-cluster.md). These templates had no consumers at
+# the time of the switch.
+EVENTFILES_PREFIX = "sub-{sub}/ses-{ses}/func"
 TBENCODING_TEMPLATE = (
-    f"{EVENTFILES_PREFIX}/sub-{{sub}}/ses-{{ses}}/"
+    f"{EVENTFILES_PREFIX}/"
     "sub-{sub}_ses-{ses}_task-TBencoding_run-{run}_events.tsv"
 )
 TBRETRIEVAL_TEMPLATE = (
-    f"{EVENTFILES_PREFIX}/sub-{{sub}}/ses-{{ses}}/"
+    f"{EVENTFILES_PREFIX}/"
     "sub-{sub}_ses-{ses}_task-TBretrieval_run-{run}_events.tsv"
 )
 
 # Glob-friendly versions (run replaced with *)
 TBENCODING_GLOB = (
-    f"{EVENTFILES_PREFIX}/sub-{{sub}}/ses-{{ses}}/"
+    f"{EVENTFILES_PREFIX}/"
     "sub-{sub}_ses-{ses}_task-TBencoding_run-*_events.tsv"
 )
 TBRETRIEVAL_GLOB = (
-    f"{EVENTFILES_PREFIX}/sub-{{sub}}/ses-{{ses}}/"
+    f"{EVENTFILES_PREFIX}/"
     "sub-{sub}_ses-{ses}_task-TBretrieval_run-*_events.tsv"
 )
 

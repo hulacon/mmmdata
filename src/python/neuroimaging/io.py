@@ -92,7 +92,8 @@ class FmriprepRun:
     confounds_json : Path | None
         Sidecar JSON for confounds.
     events : Path | None
-        Events TSV (from derivatives/bids_validation/eventfiles or raw BIDS).
+        Events TSV. Resolved from the main BIDS tree; the legacy
+        derivatives/bids_validation/eventfiles tree was deleted 2026-08-20.
     surface_L, surface_R : Path | None
         fsaverage6 surface GIfTIs for each hemisphere.
     """
@@ -293,8 +294,11 @@ def find_events_file(
 ) -> Optional[Path]:
     """Find events TSV for a run.
 
-    Checks ``derivatives/bids_validation/eventfiles/`` first (canonical
-    validated events), then raw BIDS ``sub-*/ses-*/func/``.
+    Checks the legacy ``derivatives/bids_validation/eventfiles/`` tree first,
+    then raw BIDS ``sub-*/ses-*/func/``. That legacy tree was deleted
+    2026-08-20, so in practice every lookup resolves to the main tree — which
+    is the intended target. The first check is retained only so a restored
+    tree would still win.
 
     Returns None if no events file exists (expected for resting-state runs).
     """

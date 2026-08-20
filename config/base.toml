@@ -10,8 +10,11 @@ source_dir = "/projects/hulacon/shared/mmmsourcedata"
 # Code repository root (where this config file is located)
 code_root = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
 
-# Singularity/Apptainer images directory
-singularity_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/containers"
+# Singularity/Apptainer images directory. Lives outside the BIDS tree and
+# outside any one project: the images are shared infrastructure like
+# ../envs/, several projects run them, and they must not ship with the
+# dataset on public release. Moved here from code/containers 2026-08-20.
+singularity_dir = "/gpfs/projects/hulacon/shared/containers"
 
 # Python virtual environment directory
 venv_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/.venv"
