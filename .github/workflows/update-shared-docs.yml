@@ -7,6 +7,12 @@ on:
 permissions:
   contents: write
 
+# Serialize bumps so two docs pushes in quick succession cannot race each
+# other. Never cancel: every dispatch must land its pointer.
+concurrency:
+  group: update-shared-docs
+  cancel-in-progress: false
+
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -17,15 +23,33 @@ jobs:
           submodules: true
           token: ${{ secrets.DOCS_SYNC_TOKEN }}
 
+      # repository_dispatch pins the checkout to main's HEAD at dispatch time,
+      # so any human push landing between dispatch and push makes `git push`
+      # non-fast-forward (run 32400666360, 2026-08-20). Each attempt therefore
+      # re-syncs to the true remote head before rebuilding the bump.
       - name: Update submodule to latest
         run: |
-          git submodule update --remote docs/doc/shared
-          if git diff --quiet; then
-            echo "Submodule already up to date"
-            exit 0
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/doc/shared
-          git commit -m "Update shared docs submodule"
-          git push
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git reset --hard origin/main
+            git submodule update --init --remote docs/doc/shared
+            if git diff --quiet; then
+              echo "Submodule already up to date"
+              exit 0
+            fi
+            git add docs/doc/shared
+            git commit -m "Update shared docs submodule"
+            if git push origin HEAD:main; then
+              echo "Pushed submodule bump on attempt ${attempt}"
+              exit 0
+            fi
+            echo "main moved under us; re-syncing (attempt ${attempt}/5)"
+            sleep $((attempt * 5))
+          done
+          echo "::error::Could not push the submodule bump after 5 attempts. \
+          main is being pushed to faster than this job can rebase, or \
+          DOCS_SYNC_TOKEN lost contents:write. Re-run this workflow; if it \
+          fails again, bump docs/doc/shared by hand and open an issue."
+          exit 1
