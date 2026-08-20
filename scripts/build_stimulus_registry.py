@@ -137,6 +137,23 @@ def scan_nat_events() -> tuple[Counter, dict]:
     return counts, durations
 
 
+# The movie schedule was authored in Google Sheets, so its exported name
+# carries spaces. Accept the tool-safe spelling too, so de-spacing the file
+# (staleness-audit 2026-08 section 4) does not have to be atomic with this code.
+MOVIE_SCHEDULE_NAMES = ("MMM_movies_Sheet1.csv", "MMM movies - Sheet1.csv")
+
+
+def movie_schedule_path(mov: Path) -> Path:
+    """First existing movie-schedule CSV, tool-safe spelling preferred."""
+    for name in MOVIE_SCHEDULE_NAMES:
+        candidate = mov / name
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        f"No movie schedule in {mov}. Expected one of "
+        f"{', '.join(MOVIE_SCHEDULE_NAMES)}; export the Google Sheet there.")
+
+
 def build_movies() -> tuple[list[str], list[list[str]]]:
     mov = STIM_DIR / "movies"
     videos = {f.name: norm_tokens(f.stem.replace(VIDEO_AFFIX, ""))
@@ -147,7 +164,7 @@ def build_movies() -> tuple[list[str], list[list[str]]]:
               for f in (mov / "movie_annotations").glob("*.xlsx")}
 
     styles = {}
-    for row in read_csv_rows(mov / "MMM movies - Sheet1.csv"):
+    for row in read_csv_rows(movie_schedule_path(mov)):
         name, style = (row.get("Movie name") or "").strip(), (row.get("Movie style") or "").strip()
         if name and style:
             styles.setdefault(name.lower(), style)
