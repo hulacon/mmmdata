@@ -1,14 +1,19 @@
 #!/bin/bash
 #SBATCH --job-name=hsf
+#SBATCH --account=hulacon
 #SBATCH --partition=compute
-#SBATCH --time=03:00:00
+# 8 h, not 3: HSF spends ~2 h on model fetch + roiloc before the first
+# segmentation starts, then ~50 min PER HEMISPHERE. The original 3 h fitted one
+# side only, which is why every acq-SPC run and sub-04's oblcor run died mid
+# `side 2/2` with CANCELLED ... DUE TO TIME LIMIT and left no left-hemisphere
+# segmentation (jobs 42754212-42754214, 42754252, 2026-03-10).
+#SBATCH --time=08:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/hsf_%A_%a.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/hsf_%A_%a.err
-#SBATCH --mail-user=your-email@uoregon.edu
 
 #==============================================================================
 # HSF: Hippocampal Segmentation Factory (SLURM Job)
@@ -114,9 +119,24 @@ export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
 cd "${OUTPUT_DIR}"
 
+# NOTE on resume: HSF's own `overwrite: false` is unsafe here. filter_mris ->
+# _get_segmentations skips an MRI when it finds *any* *_hippocampus_seg.nii.gz
+# beside it (`len(...) == 0` at factory.py:177), so ONE hemisphere is enough to
+# mark a subject done. Every partially-timed-out run in this dataset would have
+# been silently skipped by a re-run. Now that segmentations are relocated to
+# derivatives/ that trap is dead — the raw dir is always empty, nothing is ever
+# skipped, and a re-run genuinely redoes both hemispheres. Do not "optimise"
+# this by re-adding a skip-if-output-exists check without handling the
+# one-of-two case.
+#
+# files.output_dir MUST be absolute. HSF resolves it as
+# `original_mri_path.parent / dir_name` (roiloc_wrapper.save_hippocampi), so the
+# default relative "hsf_outputs" lands inside the raw BIDS anat/ tree. An
+# absolute path wins the pathlib join and keeps the crops out of the raw tree.
 "${HSF_BIN}" \
     files.path="${INPUT_DIR}/" \
     files.pattern="${INPUT_PATTERN}" \
+    files.output_dir="${OUTPUT_DIR}/hsf_outputs" \
     roiloc="${ROILOC_CFG}" \
     segmentation=bagging_accurate \
     segmentation.ca_mode="1/2/3" \
@@ -126,14 +146,45 @@ cd "${OUTPUT_DIR}"
 
 EXIT_STATUS=$?
 
+# --- Relocate the native-space segmentation out of the raw BIDS tree ---
+# This one is NOT configurable. hsf/factory.py:137 does `output_path =
+# mri.parent / fname` against the ORIGINAL T2w, so the native-space
+# *_hippocampus_seg.nii.gz always lands in the raw anat/ dir no matter what
+# files.output_dir says. Moving it is the only fix. Scoped to this run's acq so
+# a concurrent run of the other acquisition is never touched.
+echo ""
+echo "Relocating native-space segmentations out of ${INPUT_DIR}..."
+shopt -s nullglob
+STRAYS=("${INPUT_DIR}"/${SUB}_ses-01_acq-${T2W_ACQ}_T2w_*_hippocampus_seg.nii.gz)
+shopt -u nullglob
+if [ ${#STRAYS[@]} -eq 0 ]; then
+    echo "  none found (expected 2: left + right)"
+else
+    # Overwrite deliberately. These files were produced by THIS job, for this
+    # subject and this acquisition (the glob guarantees both), so anything
+    # already at the destination is the same product from an older run. HSF uses
+    # 20x test-time augmentation, so a re-run's output differs slightly — and a
+    # left hemisphere from today paired with a right hemisphere from March is
+    # worse than replacing both. Refusing here would be the unsafe option: it
+    # strands this run's output in the raw BIDS tree, which is the exact leak
+    # this block exists to stop.
+    for f in "${STRAYS[@]}"; do
+        dest="${OUTPUT_DIR}/$(basename "${f}")"
+        [ -e "${dest}" ] && echo "  replacing older ${dest}"
+        mv -f -v "${f}" "${dest}"
+    done
+fi
+
 # --- List outputs ---
 echo ""
 echo "=========================================="
 echo "Output files:"
 echo "=========================================="
 find "${OUTPUT_DIR}" -name "*.nii*" -type f 2>/dev/null
-# HSF may also write next to the input
-find "${INPUT_DIR}" -name "*seg*" -o -name "*hsf*" -o -name "*uncertainty*" 2>/dev/null
+
+echo ""
+echo "Raw BIDS anat/ must be clean of HSF products — anything listed below is a leak:"
+find "${INPUT_DIR}" -maxdepth 1 \( -name "*hippocampus*" -o -name "*_seg*" -o -name "hsf_outputs" \) 2>/dev/null
 
 echo ""
 echo "=========================================="
