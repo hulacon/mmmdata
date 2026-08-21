@@ -138,6 +138,7 @@ class Source:
     units_fn: object            # () -> list[Unit]
     depends: str | None = None  # "set/source/model" that must exist first
     note: str | None = None
+    deferred: str | None = None  # why this source is out of the current wave
 
     def units(self) -> list[Unit]:
         return self.units_fn()
@@ -230,10 +231,12 @@ def build_sources() -> list[Source]:
         "twp1000", "word_audio", "aud2psy", "", True,
         "4,000 word x voice audio files (~1 s each)",
         _word_audio_units,
-        note="DECISION PENDING -- see the campaign log. 4,000 units x 16 runnable "
-             "models is the single largest cost in the matrix, and aud2psy has no "
-             "per-stimulus aggregate table, so each ~1 s word yields ~2 grid rows "
-             "rather than the one row per (word, voice) the analysis wants.",
+        deferred="DEFERRED 2026-08-20. 64,000 of the manifest's 66,484 cells -- "
+                 "96% of the campaign -- and aud2psy has no per-stimulus aggregate "
+                 "table, so each ~1 s word would yield ~2 grid rows rather than the "
+                 "one row per (word, voice) the analysis wants. Needs an aggregate "
+                 "design in aud2psy before it is worth the GPU time. Include with "
+                 "--include-deferred.",
     ))
 
     # -- movies -----------------------------------------------------------
@@ -326,6 +329,67 @@ def command_for(src: Source, unit: Unit, model: str) -> list[str]:
         return [PY, "-m", "word2psy.cli", model, *unit.inputs,
                 "-o", str(stem), *unit.extra]
     raise ValueError(f"unknown package {src.package}")
+
+
+# ---------------------------------------------------------------------------
+# Post-write §4.1 compliance
+# ---------------------------------------------------------------------------
+# The prefix pre-flight checks that the *declared* prefix namespace is
+# collision-free. It cannot see what a model actually writes -- word2psy's
+# `wordform` and `lexical_norms` emitted bare `length` / `valence` /
+# `zipf_frequency` through 0.3.1 while the pre-flight reported CLEAN, because
+# every extraction before 2026-08-20 used only embedding models, whose columns
+# are prefixed by construction. So every cell is checked against the consumer
+# that actually has to attribute the columns: psytwill's own resolver.
+
+def unattributed_features(stem: Path) -> dict[str, list[str]]:
+    """{table: [columns psytwill cannot attribute to any model]} for one cell.
+
+    Reserved (non-feature) columns are expected to be unattributed and are
+    not reported. Returns {} for a fully compliant family.
+    """
+    from psytwill.features import _resolve_models
+    try:
+        from psytwill.spaces import RESERVED_COLUMNS
+        reserved = set(RESERVED_COLUMNS)
+    except ImportError:  # older psytwill; §4.1 carries the canonical list
+        reserved = {
+            "stimulus_id", "filename", "filepath", "image_idx", "time",
+            "onset", "offset", "chunk_idx", "chunk_label", "n_words", "word",
+            "word_idx", "sentence_idx", "voice", "speaker", "turn_idx",
+        }
+    meta = stem.with_suffix(".meta.json")
+    if not meta.exists():
+        return {}
+    sidecar = json.loads(meta.read_text())
+    bad: dict[str, list[str]] = {}
+    for table in sorted(stem.parent.glob(f"{stem.stem}*.csv")):
+        with open(table) as f:
+            cols = next(csv.reader(f), [])
+        if not cols:
+            continue
+        _, un = _resolve_models(cols, sidecar)
+        # Columns the campaign itself adds as passthrough context (annotator,
+        # seg_number, ...) are not features either; they are whatever the
+        # input CSV carried. Only flag columns the sidecar claims as features.
+        declared = set()
+        for entry in sidecar.get("models", {}).values():
+            feats = entry.get("features", {})
+            declared.update(feats.get("columns", []) or [])
+        # Aggregate tables rename `x` to `x_mean` / `x_sd` / ... (§4.1), so a
+        # chunks-level column counts as declared if its base name is.
+        def is_declared(col: str) -> bool:
+            if col in declared:
+                return True
+            for suffix in ("_mean", "_sd", "_min", "_max"):
+                if col.endswith(suffix) and col[: -len(suffix)] in declared:
+                    return True
+            return False
+
+        offenders = [c for c in un if c not in reserved and is_declared(c)]
+        if offenders:
+            bad[table.name] = offenders
+    return bad
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +505,8 @@ def _filtered(args) -> list[tuple[Source, Unit, str]]:
             continue
         if args.source and src.source != args.source:
             continue
+        if src.deferred and not args.include_deferred:
+            continue
         try:
             units = src.units()
         except FileNotFoundError as e:
@@ -462,6 +528,10 @@ def cmd_plan(args) -> int:
         if args.set and src.set_ != args.set:
             continue
         if args.source and src.source != args.source:
+            continue
+        if src.deferred and not args.include_deferred:
+            rows.append(dict(key=src.key, package=src.package,
+                             deferred=src.deferred))
             continue
         try:
             units = src.units()
@@ -499,6 +569,10 @@ def cmd_plan(args) -> int:
         if "error" in r:
             print(f"{r['key']:<22} {r['package']:<9}  !! {r['error']}")
             continue
+        if "deferred" in r:
+            print(f"{r['key']:<22} {r['package']:<9}  -- deferred "
+                  f"(--include-deferred to plan it)")
+            continue
         if args.todo and r["todo"] == 0:
             continue
         print(f"{r['key']:<22} {r['package']:<9} {r['n_units']:>6} "
@@ -518,6 +592,9 @@ def cmd_plan(args) -> int:
     for r in rows:
         if r.get("note"):
             print(f"  NOTE     {r['key']}: {r['note']}")
+    for r in rows:
+        if r.get("deferred"):
+            print(f"  DEFERRED {r['key']}: {r['deferred']}")
     return 0
 
 
@@ -580,8 +657,20 @@ def cmd_run(args) -> int:
         r = subprocess.run(cmd)
         dt = time.time() - t0
         if r.returncode == 0 and is_done(stem):
-            print(f"      ok  {dt:.1f}s")
-            n_ok += 1
+            bad = {} if args.no_verify else unattributed_features(stem)
+            if bad:
+                for table, cols in bad.items():
+                    print(f"      §4.1 VIOLATION {table}: {len(cols)} feature "
+                          f"column(s) psytwill cannot attribute: {cols[:6]}")
+                print(f"      Fix: prefix them with the model's registry name "
+                      f"in {src.package}, then re-run this cell.")
+                n_fail += 1
+                failures.append(f"{label} (unprefixed columns)")
+                if args.fail_fast:
+                    break
+            else:
+                print(f"      ok  {dt:.1f}s")
+                n_ok += 1
         else:
             print(f"      FAIL rc={r.returncode} after {dt:.1f}s")
             n_fail += 1
@@ -600,6 +689,23 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_verify(args) -> int:
+    """Re-check every already-written cell, without re-extracting anything."""
+    cells = [(s_, u, m) for s_, u, m in _filtered(args)
+             if is_done(stem_for(s_, u, m))]
+    n_bad = 0
+    for src, unit, model in cells:
+        bad = unattributed_features(stem_for(src, unit, model))
+        if bad:
+            n_bad += 1
+            for table, cols in bad.items():
+                print(f"  §4.1 {src.key}/{model}[{unit.id}] {table}: "
+                      f"{len(cols)} unattributable: {cols[:6]}")
+    print(f"\n{len(cells)} families checked, {n_bad} with unattributable "
+          f"feature columns")
+    return 1 if n_bad else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -612,6 +718,8 @@ def main() -> int:
                        help="image | frames | audio | word | caption | humancap | annot | cue")
         p.add_argument("--model", metavar="NAME", help="one registry model name")
         p.add_argument("--unit", metavar="ID", help="one unit id (e.g. a movie stimulus_id)")
+        p.add_argument("--include-deferred", action="store_true",
+                       help="include sources deferred out of the current wave")
 
     p = sub.add_parser("plan", help="print the campaign manifest")
     add_filters(p)
@@ -628,7 +736,13 @@ def main() -> int:
     p.add_argument("--dry-run", action="store_true",
                    help="print the commands instead of running them")
     p.add_argument("--fail-fast", action="store_true")
+    p.add_argument("--no-verify", action="store_true",
+                   help="skip the post-write §4.1 attribution check")
     p.set_defaults(fn=cmd_run)
+
+    p = sub.add_parser("verify", help="§4.1-check every family already in the store")
+    add_filters(p)
+    p.set_defaults(fn=cmd_verify)
 
     args = ap.parse_args()
     return args.fn(args)
