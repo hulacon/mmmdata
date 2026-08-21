@@ -1,7 +1,28 @@
-# Slurm scrontab for the nightly shared-work reaper (clean_shared_work.sh).
+# Slurm scrontab for this account's nightly jobs. Two entries:
+#   03:00  rebuild_catalog.sh    — Contract A catalog rebuild (~1 min)
+#   03:30  clean_shared_work.sh  — shared work-root reaper
+# The catalog rebuild is first and finishes long before the reaper starts; the
+# two touch different trees, so the ordering is for tidiness, not correctness.
+#
 # Install/replace with:  scrontab work_reaper.scrontab
 # NOTE: scrontab replaces the user's ENTIRE scrontab — if other entries exist
 # (`scrontab -l`), merge them into this file instead of clobbering them.
+#
+# Every #SCRON block below repeats every option it needs rather than inheriting
+# from the block above it. Slurm's docs do not promise whether options reset
+# between entries, and an entry that silently inherited the wrong --job-name or
+# --output would be very hard to notice.
+
+#SCRON --job-name=catalog_rebuild
+#SCRON --account=hulacon
+#SCRON --partition=compute
+#SCRON --time=00:30:00
+#SCRON --mem=4G
+#SCRON --cpus-per-task=1
+#SCRON --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/catalog_rebuild.log
+#SCRON --open-mode=append
+0 3 * * * /gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/scripts/rebuild_catalog.sh
+
 #SCRON --job-name=work_reaper
 #SCRON --account=hulacon
 #SCRON --partition=compute
