@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Convert localizer timing CSVs into BIDS _events.tsv files.
 
-Handles files with conversion_type='localizer_events' (12 files total):
+Handles files with conversion_type='localizer_events' (16 files total):
   - Auditory localizer (3 files, 1 per subject)
   - Motor localizer (6 files, 2 runs per subject)
   - Fixation / eyetracking calibration (3 files, 1 per subject)
+  - Tone / tonotopy localizer (4 files for sub-03 and sub-04)
 
-All are final session files -> BIDS ses-30.
+Auditory, motor and fixation are final session files -> BIDS ses-30. Tone is
+the exception: it was collected in the localizer sessions, so its BIDS session
+comes from the **source path**, never from the CSV's `sess_id` (which counts
+1, 2 against BIDS ses-02, ses-03).
 
 Auditory localizer format:
   Columns: sub_id, task_id, sess_id, run_id, trial_id, stim_start, stim_end,
@@ -23,6 +27,19 @@ Fixation format:
   ~75 s eyetracking-calibration sequence with no recorded internal structure --
   target positions and timings are not in this file, and would have to come
   from the EyeLink record.
+
+Tone format:
+  Columns: sub_id, task_id, sess_id, run_id, tone_file, trial_id,
+  stim_tone_start, stim_tone_end, stim_fixation_start, stim_fixation_end.
+  15 trials of a 32 s cycle: a ~25.75 s pure-tone sweep then fixation to the
+  boundary, 480 s total. The sweep direction is a session-level property --
+  ses-02 is `pure_tones_low_to_high_filtered.wav` and ses-03 is
+  `pure_tones_high_to_low_filtered.wav` for every subject -- so it is carried
+  as a `direction` column.
+
+  `stim_fixation_start` duplicates `stim_tone_start` in every row of every
+  file, so it is ignored; the fixation period runs from `stim_tone_end` to
+  `stim_fixation_end`, as it does for the auditory localizer.
 
   Note this replaces `mmmsourcedata/shared/conversion/eventfiles/
   events_FINfixation.py`, which was written but never run. That script could
@@ -57,6 +74,8 @@ def detect_localizer_type(csv_path):
         return "motor"
     if "calibration" in fname:
         return "fixation"
+    if "tone" in fname:
+        return "tone"
     raise ValueError(f"Cannot detect localizer type from: {fname}")
 
 
@@ -69,6 +88,37 @@ def parse_subj_run(csv_path):
     if not m:
         raise ValueError(f"Cannot parse subject/run from: {fname}")
     return int(m.group(1)), int(m.group(3))
+
+
+def ses_from_path(csv_path):
+    """BIDS session number from the sourcedata path.
+
+    Used for tone, whose CSV `sess_id` counts 1, 2 against BIDS ses-02, ses-03.
+    The path is the authority; guessing from `sess_id` would be off by one.
+    """
+    m = re.search(r"/ses-(\d+)/", os.path.abspath(csv_path))
+    if not m:
+        raise ValueError(f"No /ses-NN/ component in: {csv_path}")
+    return int(m.group(1))
+
+
+def run_duration_s(bold_path):
+    """Acquisition length in seconds, or None when the BOLD is absent.
+
+    Imported lazily so auditory/motor/fixation conversions do not require
+    nibabel; only tone needs it, to truncate a run that was stopped early.
+    """
+    if not os.path.exists(bold_path):
+        return None
+    try:
+        import nibabel as nb
+    except ImportError:
+        raise ImportError(
+            "nibabel is needed to truncate tone events against the acquisition. "
+            "Use the mmmdata-agents env, or pass an already-complete run."
+        )
+    img = nb.load(bold_path)
+    return img.shape[3] * float(img.header.get_zooms()[3])
 
 
 def convert_auditory(csv_path, output_tsv, dry_run=False):
@@ -176,6 +226,98 @@ def convert_fixation(csv_path, output_tsv, dry_run=False):
     return True
 
 
+TONE_DIRECTIONS = {
+    "pure_tones_low_to_high_filtered.wav": "low_to_high",
+    "pure_tones_high_to_low_filtered.wav": "high_to_low",
+}
+
+
+def convert_tone(csv_path, output_tsv, dry_run=False):
+    """Convert a tonotopy localizer timing CSV -> BIDS events TSV.
+
+    Two events per trial, matching the auditory localizer: the tone sweep, then
+    the fixation period running to the 32 s cycle boundary.
+
+    Events are truncated against the actual acquisition. sub-03's ses-03 run was
+    stopped mid-scan (441.0 s of a 480.0 s design), so the last sweep was never
+    acquired and the one before it was cut in half. Copying the CSV wholesale
+    would put two sweeps' worth of regressors outside the data.
+    """
+    subj, _ = parse_subj_run(csv_path)
+    ses = ses_from_path(csv_path)
+    df = pd.read_csv(csv_path)
+
+    tone_files = set(df["tone_file"].map(os.path.basename))
+    if len(tone_files) != 1:
+        raise ValueError(f"{csv_path}: expected one tone file, found {tone_files}")
+    tone_file = tone_files.pop()
+    if tone_file not in TONE_DIRECTIONS:
+        raise ValueError(
+            f"{csv_path}: unrecognised tone file {tone_file}. Add it to "
+            f"TONE_DIRECTIONS with its sweep direction before converting."
+        )
+    direction = TONE_DIRECTIONS[tone_file]
+
+    events_list = []
+    for _, row in df.iterrows():
+        tone_start = float(row["stim_tone_start"])
+        tone_end = float(row["stim_tone_end"])
+        fix_end = float(row["stim_fixation_end"])
+        trial_id = int(row["trial_id"])
+        for trial_type, onset, end in (
+            ("tone", tone_start, tone_end),
+            ("fixation", tone_end, fix_end),
+        ):
+            events_list.append({
+                "onset": onset,
+                "duration": end - onset,
+                "subj_num": subj,
+                "ses_num": ses,
+                "run_idx": 1,
+                "trial_type": trial_type,
+                "trial_id": trial_id,
+                "direction": direction,
+            })
+
+    events = pd.DataFrame(events_list)
+
+    run_s = run_duration_s(output_tsv.replace("_events.tsv", "_bold.nii.gz"))
+    truncated = 0
+    if run_s is None:
+        print(f"  WARNING: no BOLD beside {os.path.basename(output_tsv)} — "
+              f"events not truncated against an acquisition")
+    else:
+        design_s = float((events["onset"] + events["duration"]).max())
+        # A millisecond of overhang is the design landing on the last volume,
+        # not a stopped scan. Clipping that would report a truncation on every
+        # complete run.
+        tol = 1e-3
+        keep = events["onset"] < run_s - tol
+        dropped = int((~keep).sum())
+        events = events[keep].copy()
+        over = events["onset"] + events["duration"] > run_s + tol
+        truncated = int(over.sum())
+        events.loc[over, "duration"] = run_s - events.loc[over, "onset"]
+        if dropped or truncated:
+            print(f"  Run is {run_s:.1f}s against a {design_s:.1f}s design: "
+                  f"dropped {dropped} events past the end, clipped {truncated}")
+
+    sidecar = dict(SIDECAR_TONE)
+    sidecar["StimulusFile"] = tone_file
+    if run_s is not None and truncated:
+        sidecar["duration"] = dict(SIDECAR_TONE["duration"])
+        sidecar["duration"]["Description"] += (
+            f" This run was stopped early: events are truncated at the "
+            f"{run_s:.1f} s acquisition, and {truncated} event(s) straddling "
+            f"the end carry a clipped duration rather than the presented one."
+        )
+
+    write_events_tsv(events, output_tsv, dry_run=dry_run)
+    json_path = output_tsv.replace("_events.tsv", "_events.json")
+    write_json_sidecar(sidecar, json_path, dry_run=dry_run)
+    return True
+
+
 def convert_file(csv_path, output_tsv, dry_run=False):
     """Convert a localizer timing CSV to BIDS events TSV+JSON."""
     loc_type = detect_localizer_type(csv_path)
@@ -183,6 +325,8 @@ def convert_file(csv_path, output_tsv, dry_run=False):
         return convert_auditory(csv_path, output_tsv, dry_run)
     if loc_type == "fixation":
         return convert_fixation(csv_path, output_tsv, dry_run)
+    if loc_type == "tone":
+        return convert_tone(csv_path, output_tsv, dry_run)
     return convert_motor(csv_path, output_tsv, dry_run)
 
 
@@ -217,6 +361,56 @@ SIDECAR_MOTOR = {
             "hand": "Hand movement block",
             "speak": "Speech production block",
             "rest": "Rest block (fixation)",
+        },
+    },
+}
+
+
+SIDECAR_TONE = {
+    "onset": {
+        "Description": (
+            "Event onset on the task clock. The design is 480.0 s against a "
+            "480.0 s acquisition (320 volumes x 1.5 s), consistent with the "
+            "program having started at the scanner trigger; unlike the fLoc "
+            "localizer the source records no trigger pulses, so that "
+            "alignment is corroborated by the durations rather than measured."
+        ),
+        "Units": "s",
+    },
+    "duration": {"Description": "Event duration.", "Units": "s"},
+    "subj_num": {"Description": "Subject identifier number"},
+    "ses_num": {
+        "Description": (
+            "BIDS session number, taken from the source path. The source CSV's "
+            "own `sess_id` counts 1, 2 against BIDS ses-02, ses-03."
+        ),
+    },
+    "run_idx": {
+        "Description": (
+            "Run number within the session. One tone run per session for "
+            "sub-03 and sub-04, so always 1; the BIDS filename carries no run "
+            "entity. The source CSV's `run_id` tracks the session number, not "
+            "a within-session counter."
+        ),
+    },
+    "trial_type": {
+        "Description": "Type of event",
+        "Levels": {
+            "tone": "Pure-tone sweep (~25.75 s)",
+            "fixation": "Fixation to the 32 s cycle boundary",
+        },
+    },
+    "trial_id": {"Description": "Sequential trial number within the run (1-15)"},
+    "direction": {
+        "Description": (
+            "Sweep direction of the tone stimulus, a session-level property: "
+            "ses-02 is low-to-high and ses-03 high-to-low for every subject. "
+            "Constant within a run, carried as a column so it survives "
+            "concatenation across runs."
+        ),
+        "Levels": {
+            "low_to_high": "pure_tones_low_to_high_filtered.wav",
+            "high_to_low": "pure_tones_high_to_low_filtered.wav",
         },
     },
 }
@@ -272,6 +466,10 @@ def main():
 
         if loc_type == "auditory":
             fname = f"{sub}_{ses}_task-auditory_events.tsv"
+        elif loc_type == "tone":
+            # One tone acquisition per session for sub-03/04, no run entity.
+            ses = bids_ses(ses_from_path(args.timing_csv))
+            fname = f"{sub}_{ses}_task-tone_events.tsv"
         elif loc_type == "fixation":
             # The BOLD carries no run entity, so the events must not either.
             fname = f"{sub}_{ses}_task-fixation_events.tsv"
