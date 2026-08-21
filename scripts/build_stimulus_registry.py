@@ -59,9 +59,25 @@ VIDEO_AFFIX = "_trimmed_normalized_filtered"
 ANNOT_RE = re.compile(r"_annotation_master_[A-Z]+$")
 
 # Movies present in the annotation tree but never shown in the experiment.
-UNUSED_ANNOTATIONS = {"fargo", "migration", "paddington"}
+UNUSED_ANNOTATIONS = {"migration", "paddington"}
 # Known gaps that should warn, not fail.
-KNOWN_MISSING_ANNOTATIONS = {"finders-fee"}
+KNOWN_MISSING_ANNOTATIONS: set[str] = set()
+
+# Annotations filed under the *source film* rather than the clip title. The
+# token matcher cannot find these and must not try: "Finder's Fee" and "Fargo"
+# share no token, and any matcher loose enough to join them would join things
+# that are genuinely different films.
+#
+# finders-fee is a scene from Fargo -- Jerry pitching Wade and Stan, and the
+# SEG-C text quotes the line the clip is named for ("What kind of finder's fee
+# were you looking for?"). This file was read as a fourth unused annotation for
+# a film never shown, while the registry separately recorded finders-fee as
+# having no annotation at all; the two statements sat four lines apart here and
+# in the generated README. Confirmed by content, not by title: the annotation's
+# last SEG-C ends at 3.31 (m.ss) = 211 s, which is finders-fee's registry
+# duration_s exactly, and the 23 SEG-C segments match the annotator's master
+# sheet row for row.
+ANNOTATION_ALIASES = {"finders-fee": "Fargo_annotation_master_SL.xlsx"}
 
 
 def norm_tokens(title: str) -> list[str]:
@@ -181,12 +197,19 @@ def build_movies() -> tuple[list[str], list[list[str]]]:
         toks = norm_tokens(canonical)
         video = match_file(toks, videos, "video", canonical)
         cue = match_file(toks, cues, "cue", canonical)
-        annot = match_file(toks, annots, "annotation", canonical)
+        sid = slug(canonical)
+        # An alias wins over matching: it exists precisely for the clip whose
+        # annotation is filed under a title the matcher cannot reach.
+        annot = ANNOTATION_ALIASES.get(sid) or match_file(
+            toks, annots, "annotation", canonical)
         for kind, val in (("video", video), ("cue", cue)):
             if val is None:
                 sys.exit(f"ERROR: no {kind} file matches '{canonical}'. "
                          f"Fix: add the file or record it as a known gap.")
-        sid = slug(canonical)
+        if sid in ANNOTATION_ALIASES and annot not in annots:
+            sys.exit(f"ERROR: ANNOTATION_ALIASES maps '{sid}' to '{annot}', which is "
+                     f"not in movie_annotations/. Fix: correct the alias or restore "
+                     f"the file.")
         if annot is None:
             if sid not in KNOWN_MISSING_ANNOTATIONS:
                 sys.exit(f"ERROR: no annotation matches '{canonical}' and it is "
@@ -350,9 +373,13 @@ File-path columns are relative to the set's directory under `stimuli/`.
 
 ## Known gaps
 
-- `finders-fee` has no annotation file (`movie_annotations/` never had one).
-- Three annotation files cover movies never shown in the experiment and are
-  deliberately absent from the registry: Fargo, Migration, Paddington.
+- Every movie has an annotation file. `finders-fee`'s is filed under the source
+  film's title (`Fargo_annotation_master_SL.xlsx`) because the clip is a scene
+  from Fargo; the registry resolves it by an explicit alias, not by matching.
+- Two annotation files cover movies never shown in the experiment and are
+  deliberately absent from the registry: Migration, Paddington.
+- `body-double`'s annotation is truncated: both levels stop at 171 s of a 267 s
+  film. Treat it as partial coverage wherever these are used as features.
 """
 
 
