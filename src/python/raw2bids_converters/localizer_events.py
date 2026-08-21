@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Convert localizer timing CSVs into BIDS _events.tsv files.
 
-Handles files with conversion_type='localizer_events' (9 files total):
+Handles files with conversion_type='localizer_events' (12 files total):
   - Auditory localizer (3 files, 1 per subject)
   - Motor localizer (6 files, 2 runs per subject)
+  - Fixation / eyetracking calibration (3 files, 1 per subject)
 
 All are final session files -> BIDS ses-30.
 
@@ -15,6 +16,19 @@ Auditory localizer format:
 Motor localizer format:
   Columns: sub_id, task, onset, offset
   Block design with conditions: foot, mouth, saccade, hand, rest (20s blocks).
+
+Fixation format:
+  Columns: event, onset_s, offset_s. Two rows: a `sync` marker at 0 with no
+  offset, and a `movie` row spanning the whole run. The run is one continuous
+  ~75 s eyetracking-calibration sequence with no recorded internal structure --
+  target positions and timings are not in this file, and would have to come
+  from the EyeLink record.
+
+  Note this replaces `mmmsourcedata/shared/conversion/eventfiles/
+  events_FINfixation.py`, which was written but never run. That script could
+  not be used as-is: it emits `onset_s`/`offset_s` rather than the `onset`/
+  `duration` BIDS requires, and names its output with a `run-01` entity the
+  BOLD does not carry, so the result would not have paired with any scan.
 
 Usage:
     python localizer_events.py <timing_csv> [<output_events_tsv>] [--dry-run]
@@ -41,6 +55,8 @@ def detect_localizer_type(csv_path):
         return "auditory"
     if "motor" in fname:
         return "motor"
+    if "calibration" in fname:
+        return "fixation"
     raise ValueError(f"Cannot detect localizer type from: {fname}")
 
 
@@ -120,13 +136,54 @@ def convert_motor(csv_path, output_tsv, dry_run=False):
     return True
 
 
+def convert_fixation(csv_path, output_tsv, dry_run=False):
+    """Convert an eyetracking-calibration timing CSV -> BIDS events TSV.
+
+    The source holds a `sync` marker and a single `movie` row covering the
+    whole run. Only the calibration block becomes an event: the sync marker
+    sits at onset 0 with no offset, so as a row it would be a zero-duration
+    regressor at the run origin carrying no information the origin does not
+    already carry. That it reads 0.000 is recorded in the sidecar instead,
+    because it is the evidence the clock starts at the scanner sync.
+    """
+    subj, _ = parse_subj_run(csv_path)
+    df = pd.read_csv(csv_path)
+
+    block = df[df["event"] == "movie"]
+    if len(block) != 1:
+        raise ValueError(
+            f"{csv_path}: expected exactly one 'movie' row, found {len(block)}"
+        )
+    row = block.iloc[0]
+    onset, offset = float(row["onset_s"]), float(row["offset_s"])
+
+    sync = df[df["event"] == "sync"]
+    if len(sync) != 1 or float(sync.iloc[0]["onset_s"]) != 0.0:
+        raise ValueError(f"{csv_path}: expected one sync marker at 0.0")
+
+    events = pd.DataFrame([{
+        "onset": onset,
+        "duration": offset - onset,
+        "subj_num": subj,
+        "ses_num": FINAL_SESSION,
+        "run_idx": 1,
+        "trial_type": "calibration",
+    }])
+
+    write_events_tsv(events, output_tsv, dry_run=dry_run)
+    json_path = output_tsv.replace("_events.tsv", "_events.json")
+    write_json_sidecar(SIDECAR_FIXATION, json_path, dry_run=dry_run)
+    return True
+
+
 def convert_file(csv_path, output_tsv, dry_run=False):
     """Convert a localizer timing CSV to BIDS events TSV+JSON."""
     loc_type = detect_localizer_type(csv_path)
     if loc_type == "auditory":
         return convert_auditory(csv_path, output_tsv, dry_run)
-    else:
-        return convert_motor(csv_path, output_tsv, dry_run)
+    if loc_type == "fixation":
+        return convert_fixation(csv_path, output_tsv, dry_run)
+    return convert_motor(csv_path, output_tsv, dry_run)
 
 
 SIDECAR_AUDITORY = {
@@ -165,6 +222,38 @@ SIDECAR_MOTOR = {
 }
 
 
+SIDECAR_FIXATION = {
+    "onset": {
+        "Description": (
+            "Block onset relative to scanner start. The source records a sync "
+            "marker at 0.000 s, so the task clock starts at the scanner sync "
+            "and no shift is applied."
+        ),
+        "Units": "s",
+    },
+    "duration": {
+        "Description": (
+            "Block duration. The calibration sequence runs marginally past "
+            "the 75.0 s acquisition (50 volumes x 1.5 s); the recorded value "
+            "is kept rather than clipped, since it is what was presented."
+        ),
+        "Units": "s",
+    },
+    "subj_num": {"Description": "Subject identifier number"},
+    "ses_num": {"Description": "BIDS session number"},
+    "run_idx": {"Description": "Run number within the session"},
+    "trial_type": {
+        "Description": (
+            "Type of event. The run is a single continuous block: the source "
+            "records no internal structure, so individual calibration target "
+            "positions and timings are not represented here and would have to "
+            "come from the EyeLink record."
+        ),
+        "Levels": {"calibration": "Eyetracking calibration sequence"},
+    },
+}
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Convert localizer timing CSV to BIDS events TSV"
@@ -183,6 +272,9 @@ def main():
 
         if loc_type == "auditory":
             fname = f"{sub}_{ses}_task-auditory_events.tsv"
+        elif loc_type == "fixation":
+            # The BOLD carries no run entity, so the events must not either.
+            fname = f"{sub}_{ses}_task-fixation_events.tsv"
         else:
             fname = f"{sub}_{ses}_task-motor_run-{run:02d}_events.tsv"
 
