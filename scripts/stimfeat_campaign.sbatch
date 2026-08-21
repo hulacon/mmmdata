@@ -44,6 +44,10 @@ set -e
 STIMFEAT=/gpfs/projects/hulacon/shared/envs/stimfeat
 export CONDA_PREFIX="${STIMFEAT}"
 for hook in "${STIMFEAT}"/etc/conda/activate.d/*.sh; do source "${hook}"; done
+# HF credentials: the activate.d hooks point HF_HOME at the PIRG-shared cache,
+# whose default token file would be group-readable. Resolve the token from the
+# user's private home file instead; the value never enters the environment.
+export HF_TOKEN_PATH="${HF_TOKEN_PATH:-$HOME/.cache/huggingface/token}"
 # torchcodec loads its FFmpeg backend from the env's own conda-bundled libs
 export LD_LIBRARY_PATH="${STIMFEAT}/lib:${LD_LIBRARY_PATH:-}"
 PY="${STIMFEAT}/bin/python"

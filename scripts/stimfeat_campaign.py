@@ -90,7 +90,7 @@ def registry(package: str) -> list[str]:
 # reported, never silently dropped: a missing cell must be visible as blocked.
 UNAVAILABLE = {
     "beats": "aud2psy [beats] extra not installed (beat_this missing)",
-    "diarize": "aud2psy [diarize] extra not installed (pyannote missing) + needs an HF token",
+    "diarize": "aud2psy [diarize] extra not installed (pyannote missing); HF token is in place",
 }
 
 
