@@ -483,6 +483,12 @@ sub-04/ses-04/behavioral/cued_recall_retrieval_subj4_sess1_run1.csv,"Cued recall
 sub-04/ses-04/behavioral/cued_recall_retrieval_subj4_sess1_run1_timing.csv,"Cued recall retrieval timing, sub-04 ses-04 run 1",n/a (timing input),timing_input
 sub-04/ses-04/behavioral/cued_recall_retrieval_subj4_sess1_run2.csv,"Cued recall retrieval behavioral, sub-04 ses-04 run 2",sub-04/ses-04/func/sub-04_ses-04_task-TBretrieval_run-02_events.tsv,timed_events
 sub-04/ses-04/behavioral/cued_recall_retrieval_subj4_sess1_run2_timing.csv,"Cued recall retrieval timing, sub-04 ses-04 run 2",n/a (timing input),timing_input
+sub-04/ses-04/behavioral/mmm04_19-Jul-2024_fLoc_oddball_run1.mat,Unclassified behavioral file: mmm04_19-Jul-2024_fLoc_oddball_run1.mat,n/a (unclassified),no_conversion
+sub-04/ses-04/behavioral/mmm04_19-Jul-2024_fLoc_oddball_run2.mat,Unclassified behavioral file: mmm04_19-Jul-2024_fLoc_oddball_run2.mat,n/a (unclassified),no_conversion
+sub-04/ses-04/behavioral/mmm04_19-Jul-2024_fLoc_oddball_run3.mat,Unclassified behavioral file: mmm04_19-Jul-2024_fLoc_oddball_run3.mat,n/a (unclassified),no_conversion
+sub-04/ses-04/behavioral/mmm04run4_19-Jul-2024_fLoc_oddball_run1.mat,Unclassified behavioral file: mmm04run4_19-Jul-2024_fLoc_oddball_run1.mat,n/a (unclassified),no_conversion
+sub-04/ses-04/behavioral/mmm04run56_19-Jul-2024_fLoc_oddball_run1.mat,Unclassified behavioral file: mmm04run56_19-Jul-2024_fLoc_oddball_run1.mat,n/a (unclassified),no_conversion
+sub-04/ses-04/behavioral/mmm04run56_19-Jul-2024_fLoc_oddball_run2.mat,Unclassified behavioral file: mmm04run56_19-Jul-2024_fLoc_oddball_run2.mat,n/a (unclassified),no_conversion
 sub-04/ses-05/behavioral/cued_recall_encoding_subj4_sess2_run1.csv,"Cued recall encoding behavioral, sub-04 ses-05 run 1",sub-04/ses-05/func/sub-04_ses-05_task-TBencoding_run-01_events.tsv,timed_events
 sub-04/ses-05/behavioral/cued_recall_encoding_subj4_sess2_run1_timing.csv,"Cued recall encoding timing, sub-04 ses-05 run 1",n/a (timing input),timing_input
 sub-04/ses-05/behavioral/cued_recall_encoding_subj4_sess2_run2.csv,"Cued recall encoding behavioral, sub-04 ses-05 run 2",sub-04/ses-05/func/sub-04_ses-05_task-TBencoding_run-02_events.tsv,timed_events
@@ -1414,6 +1420,134 @@ sub-05/ses-30/behavioral/final_recognition/final_recognition_subj5_sess1_run1.cs
 sub-05/ses-30/behavioral/final_timeline_sequence/final_timeline_subj5_sess1_run1.csv,"Final timeline behavioral, sub-05 ses-30",sub-05/ses-30/beh/sub-05_ses-30_task-FINtimeline_beh.tsv,behavioral_to_beh
 sub-05/ses-30/behavioral/motor_localizer/localizer_motor_sub5_sess1_run1_2025_Sep_04_1032_timing.csv,"Motor localizer timing, sub-05 ses-30 run 1",sub-05/ses-30/func/sub-05_ses-30_task-motor_run-01_events.tsv,localizer_events
 sub-05/ses-30/behavioral/motor_localizer/localizer_motor_sub5_sess1_run2_2025_Sep_04_1044_timing.csv,"Motor localizer timing, sub-05 ses-30 run 2",sub-05/ses-30/func/sub-05_ses-30_task-motor_run-02_events.tsv,localizer_events
+sub-06/ses-04/behavioral/cued_recall_encoding_subj6_sess1_run1.csv,"Cued recall encoding behavioral, sub-06 ses-04 run 1",sub-06/ses-04/func/sub-06_ses-04_task-TBencoding_run-01_events.tsv,timed_events
+sub-06/ses-04/behavioral/cued_recall_encoding_subj6_sess1_run1_timing.csv,"Cued recall encoding timing, sub-06 ses-04 run 1",n/a (timing input),timing_input
+sub-06/ses-04/behavioral/cued_recall_encoding_subj6_sess1_run2.csv,"Cued recall encoding behavioral, sub-06 ses-04 run 2",sub-06/ses-04/func/sub-06_ses-04_task-TBencoding_run-02_events.tsv,timed_events
+sub-06/ses-04/behavioral/cued_recall_encoding_subj6_sess1_run2_timing.csv,"Cued recall encoding timing, sub-06 ses-04 run 2",n/a (timing input),timing_input
+sub-06/ses-04/behavioral/cued_recall_encoding_subj6_sess1_run3.csv,"Cued recall encoding behavioral, sub-06 ses-04 run 3",sub-06/ses-04/func/sub-06_ses-04_task-TBencoding_run-03_events.tsv,timed_events
+sub-06/ses-04/behavioral/cued_recall_encoding_subj6_sess1_run3_timing.csv,"Cued recall encoding timing, sub-06 ses-04 run 3",n/a (timing input),timing_input
+sub-06/ses-04/behavioral/cued_recall_math_subj6_sess1_run1.csv,"Cued recall math behavioral, sub-06 ses-04",sub-06/ses-04/func/sub-06_ses-04_task-TBmath_events.tsv,timed_events
+sub-06/ses-04/behavioral/cued_recall_math_subj6_sess1_run1_timing.csv,"Cued recall math timing, sub-06 ses-04",n/a (timing input),timing_input
+sub-06/ses-04/behavioral/cued_recall_recognition_outscan_subj6_sess1_run1.csv,"Cued recall recognition (out-of-scanner), sub-06 ses-04 run 1",sub-06/ses-04/beh/sub-06_ses-04_task-TB2AFC_run-01_beh.tsv,behavioral_to_beh
+sub-06/ses-04/behavioral/cued_recall_retrieval_subj6_sess1_run1.csv,"Cued recall retrieval behavioral, sub-06 ses-04 run 1",sub-06/ses-04/func/sub-06_ses-04_task-TBretrieval_run-01_events.tsv,timed_events
+sub-06/ses-04/behavioral/cued_recall_retrieval_subj6_sess1_run1_timing.csv,"Cued recall retrieval timing, sub-06 ses-04 run 1",n/a (timing input),timing_input
+sub-06/ses-04/behavioral/cued_recall_retrieval_subj6_sess1_run2.csv,"Cued recall retrieval behavioral, sub-06 ses-04 run 2",sub-06/ses-04/func/sub-06_ses-04_task-TBretrieval_run-02_events.tsv,timed_events
+sub-06/ses-04/behavioral/cued_recall_retrieval_subj6_sess1_run2_timing.csv,"Cued recall retrieval timing, sub-06 ses-04 run 2",n/a (timing input),timing_input
+sub-06/ses-05/behavioral/cued_recall_encoding_subj6_sess2_run1.csv,"Cued recall encoding behavioral, sub-06 ses-05 run 1",sub-06/ses-05/func/sub-06_ses-05_task-TBencoding_run-01_events.tsv,timed_events
+sub-06/ses-05/behavioral/cued_recall_encoding_subj6_sess2_run1_timing.csv,"Cued recall encoding timing, sub-06 ses-05 run 1",n/a (timing input),timing_input
+sub-06/ses-05/behavioral/cued_recall_encoding_subj6_sess2_run2.csv,"Cued recall encoding behavioral, sub-06 ses-05 run 2",sub-06/ses-05/func/sub-06_ses-05_task-TBencoding_run-02_events.tsv,timed_events
+sub-06/ses-05/behavioral/cued_recall_encoding_subj6_sess2_run2_timing.csv,"Cued recall encoding timing, sub-06 ses-05 run 2",n/a (timing input),timing_input
+sub-06/ses-05/behavioral/cued_recall_encoding_subj6_sess2_run3.csv,"Cued recall encoding behavioral, sub-06 ses-05 run 3",sub-06/ses-05/func/sub-06_ses-05_task-TBencoding_run-03_events.tsv,timed_events
+sub-06/ses-05/behavioral/cued_recall_encoding_subj6_sess2_run3_timing.csv,"Cued recall encoding timing, sub-06 ses-05 run 3",n/a (timing input),timing_input
+sub-06/ses-05/behavioral/cued_recall_math_subj6_sess2_run1.csv,"Cued recall math behavioral, sub-06 ses-05",sub-06/ses-05/func/sub-06_ses-05_task-TBmath_events.tsv,timed_events
+sub-06/ses-05/behavioral/cued_recall_math_subj6_sess2_run1_timing.csv,"Cued recall math timing, sub-06 ses-05",n/a (timing input),timing_input
+sub-06/ses-05/behavioral/cued_recall_recognition_outscan_subj6_sess2_run1.csv,"Cued recall recognition (out-of-scanner), sub-06 ses-05 run 1",sub-06/ses-05/beh/sub-06_ses-05_task-TB2AFC_run-01_beh.tsv,behavioral_to_beh
+sub-06/ses-05/behavioral/cued_recall_retrieval_subj6_sess2_run1.csv,"Cued recall retrieval behavioral, sub-06 ses-05 run 1",sub-06/ses-05/func/sub-06_ses-05_task-TBretrieval_run-01_events.tsv,timed_events
+sub-06/ses-05/behavioral/cued_recall_retrieval_subj6_sess2_run1_timing.csv,"Cued recall retrieval timing, sub-06 ses-05 run 1",n/a (timing input),timing_input
+sub-06/ses-05/behavioral/cued_recall_retrieval_subj6_sess2_run2.csv,"Cued recall retrieval behavioral, sub-06 ses-05 run 2",sub-06/ses-05/func/sub-06_ses-05_task-TBretrieval_run-02_events.tsv,timed_events
+sub-06/ses-05/behavioral/cued_recall_retrieval_subj6_sess2_run2_timing.csv,"Cued recall retrieval timing, sub-06 ses-05 run 2",n/a (timing input),timing_input
+sub-06/ses-05/behavioral/cued_recall_retrieval_subj6_sess2_run3.csv,"Cued recall retrieval behavioral, sub-06 ses-05 run 3",sub-06/ses-05/func/sub-06_ses-05_task-TBretrieval_run-03_events.tsv,timed_events
+sub-06/ses-05/behavioral/cued_recall_retrieval_subj6_sess2_run3_timing.csv,"Cued recall retrieval timing, sub-06 ses-05 run 3",n/a (timing input),timing_input
+sub-06/ses-05/behavioral/cued_recall_retrieval_subj6_sess2_run4.csv,"Cued recall retrieval behavioral, sub-06 ses-05 run 4",sub-06/ses-05/func/sub-06_ses-05_task-TBretrieval_run-04_events.tsv,timed_events
+sub-06/ses-05/behavioral/cued_recall_retrieval_subj6_sess2_run4_timing.csv,"Cued recall retrieval timing, sub-06 ses-05 run 4",n/a (timing input),timing_input
+sub-06/ses-06/behavioral/cued_recall_encoding_subj6_sess3_run1.csv,"Cued recall encoding behavioral, sub-06 ses-06 run 1",sub-06/ses-06/func/sub-06_ses-06_task-TBencoding_run-01_events.tsv,timed_events
+sub-06/ses-06/behavioral/cued_recall_encoding_subj6_sess3_run1_timing.csv,"Cued recall encoding timing, sub-06 ses-06 run 1",n/a (timing input),timing_input
+sub-06/ses-06/behavioral/cued_recall_encoding_subj6_sess3_run2.csv,"Cued recall encoding behavioral, sub-06 ses-06 run 2",sub-06/ses-06/func/sub-06_ses-06_task-TBencoding_run-02_events.tsv,timed_events
+sub-06/ses-06/behavioral/cued_recall_encoding_subj6_sess3_run2_timing.csv,"Cued recall encoding timing, sub-06 ses-06 run 2",n/a (timing input),timing_input
+sub-06/ses-06/behavioral/cued_recall_encoding_subj6_sess3_run3.csv,"Cued recall encoding behavioral, sub-06 ses-06 run 3",sub-06/ses-06/func/sub-06_ses-06_task-TBencoding_run-03_events.tsv,timed_events
+sub-06/ses-06/behavioral/cued_recall_encoding_subj6_sess3_run3_timing.csv,"Cued recall encoding timing, sub-06 ses-06 run 3",n/a (timing input),timing_input
+sub-06/ses-06/behavioral/cued_recall_math_subj6_sess3_run1.csv,"Cued recall math behavioral, sub-06 ses-06",sub-06/ses-06/func/sub-06_ses-06_task-TBmath_events.tsv,timed_events
+sub-06/ses-06/behavioral/cued_recall_math_subj6_sess3_run1_timing.csv,"Cued recall math timing, sub-06 ses-06",n/a (timing input),timing_input
+sub-06/ses-06/behavioral/cued_recall_recognition_outscan_subj6_sess3_run1.csv,"Cued recall recognition (out-of-scanner), sub-06 ses-06 run 1",sub-06/ses-06/beh/sub-06_ses-06_task-TB2AFC_run-01_beh.tsv,behavioral_to_beh
+sub-06/ses-06/behavioral/cued_recall_retrieval_subj6_sess3_run1.csv,"Cued recall retrieval behavioral, sub-06 ses-06 run 1",sub-06/ses-06/func/sub-06_ses-06_task-TBretrieval_run-01_events.tsv,timed_events
+sub-06/ses-06/behavioral/cued_recall_retrieval_subj6_sess3_run1_timing.csv,"Cued recall retrieval timing, sub-06 ses-06 run 1",n/a (timing input),timing_input
+sub-06/ses-06/behavioral/cued_recall_retrieval_subj6_sess3_run2.csv,"Cued recall retrieval behavioral, sub-06 ses-06 run 2",sub-06/ses-06/func/sub-06_ses-06_task-TBretrieval_run-02_events.tsv,timed_events
+sub-06/ses-06/behavioral/cued_recall_retrieval_subj6_sess3_run2_timing.csv,"Cued recall retrieval timing, sub-06 ses-06 run 2",n/a (timing input),timing_input
+sub-06/ses-06/behavioral/cued_recall_retrieval_subj6_sess3_run3.csv,"Cued recall retrieval behavioral, sub-06 ses-06 run 3",sub-06/ses-06/func/sub-06_ses-06_task-TBretrieval_run-03_events.tsv,timed_events
+sub-06/ses-06/behavioral/cued_recall_retrieval_subj6_sess3_run3_timing.csv,"Cued recall retrieval timing, sub-06 ses-06 run 3",n/a (timing input),timing_input
+sub-06/ses-06/behavioral/cued_recall_retrieval_subj6_sess3_run4.csv,"Cued recall retrieval behavioral, sub-06 ses-06 run 4",sub-06/ses-06/func/sub-06_ses-06_task-TBretrieval_run-04_events.tsv,timed_events
+sub-06/ses-06/behavioral/cued_recall_retrieval_subj6_sess3_run4_timing.csv,"Cued recall retrieval timing, sub-06 ses-06 run 4",n/a (timing input),timing_input
+sub-06/ses-07/behavioral/cued_recall_encoding_subj6_sess4_run1.csv,"Cued recall encoding behavioral, sub-06 ses-07 run 1",sub-06/ses-07/func/sub-06_ses-07_task-TBencoding_run-01_events.tsv,timed_events
+sub-06/ses-07/behavioral/cued_recall_encoding_subj6_sess4_run1_timing.csv,"Cued recall encoding timing, sub-06 ses-07 run 1",n/a (timing input),timing_input
+sub-06/ses-07/behavioral/cued_recall_encoding_subj6_sess4_run2.csv,"Cued recall encoding behavioral, sub-06 ses-07 run 2",sub-06/ses-07/func/sub-06_ses-07_task-TBencoding_run-02_events.tsv,timed_events
+sub-06/ses-07/behavioral/cued_recall_encoding_subj6_sess4_run2_timing.csv,"Cued recall encoding timing, sub-06 ses-07 run 2",n/a (timing input),timing_input
+sub-06/ses-07/behavioral/cued_recall_encoding_subj6_sess4_run3.csv,"Cued recall encoding behavioral, sub-06 ses-07 run 3",sub-06/ses-07/func/sub-06_ses-07_task-TBencoding_run-03_events.tsv,timed_events
+sub-06/ses-07/behavioral/cued_recall_encoding_subj6_sess4_run3_timing.csv,"Cued recall encoding timing, sub-06 ses-07 run 3",n/a (timing input),timing_input
+sub-06/ses-07/behavioral/cued_recall_math_subj6_sess4_run1.csv,"Cued recall math behavioral, sub-06 ses-07",sub-06/ses-07/func/sub-06_ses-07_task-TBmath_events.tsv,timed_events
+sub-06/ses-07/behavioral/cued_recall_math_subj6_sess4_run1_timing.csv,"Cued recall math timing, sub-06 ses-07",n/a (timing input),timing_input
+sub-06/ses-07/behavioral/cued_recall_recognition_outscan_subj6_sess4_run1.csv,"Cued recall recognition (out-of-scanner), sub-06 ses-07 run 1",sub-06/ses-07/beh/sub-06_ses-07_task-TB2AFC_run-01_beh.tsv,behavioral_to_beh
+sub-06/ses-07/behavioral/cued_recall_retrieval_subj6_sess4_run1.csv,"Cued recall retrieval behavioral, sub-06 ses-07 run 1",sub-06/ses-07/func/sub-06_ses-07_task-TBretrieval_run-01_events.tsv,timed_events
+sub-06/ses-07/behavioral/cued_recall_retrieval_subj6_sess4_run1_timing.csv,"Cued recall retrieval timing, sub-06 ses-07 run 1",n/a (timing input),timing_input
+sub-06/ses-07/behavioral/cued_recall_retrieval_subj6_sess4_run2.csv,"Cued recall retrieval behavioral, sub-06 ses-07 run 2",sub-06/ses-07/func/sub-06_ses-07_task-TBretrieval_run-02_events.tsv,timed_events
+sub-06/ses-07/behavioral/cued_recall_retrieval_subj6_sess4_run2_timing.csv,"Cued recall retrieval timing, sub-06 ses-07 run 2",n/a (timing input),timing_input
+sub-06/ses-07/behavioral/cued_recall_retrieval_subj6_sess4_run3.csv,"Cued recall retrieval behavioral, sub-06 ses-07 run 3",sub-06/ses-07/func/sub-06_ses-07_task-TBretrieval_run-03_events.tsv,timed_events
+sub-06/ses-07/behavioral/cued_recall_retrieval_subj6_sess4_run3_timing.csv,"Cued recall retrieval timing, sub-06 ses-07 run 3",n/a (timing input),timing_input
+sub-06/ses-07/behavioral/cued_recall_retrieval_subj6_sess4_run4.csv,"Cued recall retrieval behavioral, sub-06 ses-07 run 4",sub-06/ses-07/func/sub-06_ses-07_task-TBretrieval_run-04_events.tsv,timed_events
+sub-06/ses-07/behavioral/cued_recall_retrieval_subj6_sess4_run4_timing.csv,"Cued recall retrieval timing, sub-06 ses-07 run 4",n/a (timing input),timing_input
+sub-06/ses-08/behavioral/cued_recall_encoding_subj6_sess5_run1.csv,"Cued recall encoding behavioral, sub-06 ses-08 run 1",sub-06/ses-08/func/sub-06_ses-08_task-TBencoding_run-01_events.tsv,timed_events
+sub-06/ses-08/behavioral/cued_recall_encoding_subj6_sess5_run1_timing.csv,"Cued recall encoding timing, sub-06 ses-08 run 1",n/a (timing input),timing_input
+sub-06/ses-08/behavioral/cued_recall_encoding_subj6_sess5_run2.csv,"Cued recall encoding behavioral, sub-06 ses-08 run 2",sub-06/ses-08/func/sub-06_ses-08_task-TBencoding_run-02_events.tsv,timed_events
+sub-06/ses-08/behavioral/cued_recall_encoding_subj6_sess5_run2_timing.csv,"Cued recall encoding timing, sub-06 ses-08 run 2",n/a (timing input),timing_input
+sub-06/ses-08/behavioral/cued_recall_encoding_subj6_sess5_run3.csv,"Cued recall encoding behavioral, sub-06 ses-08 run 3",sub-06/ses-08/func/sub-06_ses-08_task-TBencoding_run-03_events.tsv,timed_events
+sub-06/ses-08/behavioral/cued_recall_encoding_subj6_sess5_run3_timing.csv,"Cued recall encoding timing, sub-06 ses-08 run 3",n/a (timing input),timing_input
+sub-06/ses-08/behavioral/cued_recall_math_subj6_sess5_run1.csv,"Cued recall math behavioral, sub-06 ses-08",sub-06/ses-08/func/sub-06_ses-08_task-TBmath_events.tsv,timed_events
+sub-06/ses-08/behavioral/cued_recall_math_subj6_sess5_run1_timing.csv,"Cued recall math timing, sub-06 ses-08",n/a (timing input),timing_input
+sub-06/ses-08/behavioral/cued_recall_recognition_outscan_subj6_sess5_run1.csv,"Cued recall recognition (out-of-scanner), sub-06 ses-08 run 1",sub-06/ses-08/beh/sub-06_ses-08_task-TB2AFC_run-01_beh.tsv,behavioral_to_beh
+sub-06/ses-08/behavioral/cued_recall_retrieval_subj6_sess5_run1.csv,"Cued recall retrieval behavioral, sub-06 ses-08 run 1",sub-06/ses-08/func/sub-06_ses-08_task-TBretrieval_run-01_events.tsv,timed_events
+sub-06/ses-08/behavioral/cued_recall_retrieval_subj6_sess5_run1_timing.csv,"Cued recall retrieval timing, sub-06 ses-08 run 1",n/a (timing input),timing_input
+sub-06/ses-08/behavioral/cued_recall_retrieval_subj6_sess5_run2.csv,"Cued recall retrieval behavioral, sub-06 ses-08 run 2",sub-06/ses-08/func/sub-06_ses-08_task-TBretrieval_run-02_events.tsv,timed_events
+sub-06/ses-08/behavioral/cued_recall_retrieval_subj6_sess5_run2_timing.csv,"Cued recall retrieval timing, sub-06 ses-08 run 2",n/a (timing input),timing_input
+sub-06/ses-08/behavioral/cued_recall_retrieval_subj6_sess5_run3.csv,"Cued recall retrieval behavioral, sub-06 ses-08 run 3",sub-06/ses-08/func/sub-06_ses-08_task-TBretrieval_run-03_events.tsv,timed_events
+sub-06/ses-08/behavioral/cued_recall_retrieval_subj6_sess5_run3_timing.csv,"Cued recall retrieval timing, sub-06 ses-08 run 3",n/a (timing input),timing_input
+sub-06/ses-08/behavioral/cued_recall_retrieval_subj6_sess5_run4.csv,"Cued recall retrieval behavioral, sub-06 ses-08 run 4",sub-06/ses-08/func/sub-06_ses-08_task-TBretrieval_run-04_events.tsv,timed_events
+sub-06/ses-08/behavioral/cued_recall_retrieval_subj6_sess5_run4_timing.csv,"Cued recall retrieval timing, sub-06 ses-08 run 4",n/a (timing input),timing_input
+sub-06/ses-09/behavioral/cued_recall_encoding_subj6_sess6_run1.csv,"Cued recall encoding behavioral, sub-06 ses-09 run 1",sub-06/ses-09/func/sub-06_ses-09_task-TBencoding_run-01_events.tsv,timed_events
+sub-06/ses-09/behavioral/cued_recall_encoding_subj6_sess6_run1_timing.csv,"Cued recall encoding timing, sub-06 ses-09 run 1",n/a (timing input),timing_input
+sub-06/ses-09/behavioral/cued_recall_encoding_subj6_sess6_run2.csv,"Cued recall encoding behavioral, sub-06 ses-09 run 2",sub-06/ses-09/func/sub-06_ses-09_task-TBencoding_run-02_events.tsv,timed_events
+sub-06/ses-09/behavioral/cued_recall_encoding_subj6_sess6_run2_timing.csv,"Cued recall encoding timing, sub-06 ses-09 run 2",n/a (timing input),timing_input
+sub-06/ses-09/behavioral/cued_recall_encoding_subj6_sess6_run3.csv,"Cued recall encoding behavioral, sub-06 ses-09 run 3",sub-06/ses-09/func/sub-06_ses-09_task-TBencoding_run-03_events.tsv,timed_events
+sub-06/ses-09/behavioral/cued_recall_encoding_subj6_sess6_run3_timing.csv,"Cued recall encoding timing, sub-06 ses-09 run 3",n/a (timing input),timing_input
+sub-06/ses-09/behavioral/cued_recall_math_subj6_sess6_run1.csv,"Cued recall math behavioral, sub-06 ses-09",sub-06/ses-09/func/sub-06_ses-09_task-TBmath_events.tsv,timed_events
+sub-06/ses-09/behavioral/cued_recall_math_subj6_sess6_run1_timing.csv,"Cued recall math timing, sub-06 ses-09",n/a (timing input),timing_input
+sub-06/ses-09/behavioral/cued_recall_recognition_outscan_subj6_sess6_run1.csv,"Cued recall recognition (out-of-scanner), sub-06 ses-09 run 1",sub-06/ses-09/beh/sub-06_ses-09_task-TB2AFC_run-01_beh.tsv,behavioral_to_beh
+sub-06/ses-09/behavioral/cued_recall_retrieval_subj6_sess6_run1.csv,"Cued recall retrieval behavioral, sub-06 ses-09 run 1",sub-06/ses-09/func/sub-06_ses-09_task-TBretrieval_run-01_events.tsv,timed_events
+sub-06/ses-09/behavioral/cued_recall_retrieval_subj6_sess6_run1_timing.csv,"Cued recall retrieval timing, sub-06 ses-09 run 1",n/a (timing input),timing_input
+sub-06/ses-09/behavioral/cued_recall_retrieval_subj6_sess6_run2.csv,"Cued recall retrieval behavioral, sub-06 ses-09 run 2",sub-06/ses-09/func/sub-06_ses-09_task-TBretrieval_run-02_events.tsv,timed_events
+sub-06/ses-09/behavioral/cued_recall_retrieval_subj6_sess6_run2_timing.csv,"Cued recall retrieval timing, sub-06 ses-09 run 2",n/a (timing input),timing_input
+sub-06/ses-09/behavioral/cued_recall_retrieval_subj6_sess6_run3.csv,"Cued recall retrieval behavioral, sub-06 ses-09 run 3",sub-06/ses-09/func/sub-06_ses-09_task-TBretrieval_run-03_events.tsv,timed_events
+sub-06/ses-09/behavioral/cued_recall_retrieval_subj6_sess6_run3_timing.csv,"Cued recall retrieval timing, sub-06 ses-09 run 3",n/a (timing input),timing_input
+sub-06/ses-09/behavioral/cued_recall_retrieval_subj6_sess6_run4.csv,"Cued recall retrieval behavioral, sub-06 ses-09 run 4",sub-06/ses-09/func/sub-06_ses-09_task-TBretrieval_run-04_events.tsv,timed_events
+sub-06/ses-09/behavioral/cued_recall_retrieval_subj6_sess6_run4_timing.csv,"Cued recall retrieval timing, sub-06 ses-09 run 4",n/a (timing input),timing_input
+sub-07/ses-04/behavioral/cued_recall_encoding_subj7_sess1_run1.csv,"Cued recall encoding behavioral, sub-07 ses-04 run 1",sub-07/ses-04/func/sub-07_ses-04_task-TBencoding_run-01_events.tsv,timed_events
+sub-07/ses-04/behavioral/cued_recall_encoding_subj7_sess1_run1_timing.csv,"Cued recall encoding timing, sub-07 ses-04 run 1",n/a (timing input),timing_input
+sub-07/ses-04/behavioral/cued_recall_encoding_subj7_sess1_run2.csv,"Cued recall encoding behavioral, sub-07 ses-04 run 2",sub-07/ses-04/func/sub-07_ses-04_task-TBencoding_run-02_events.tsv,timed_events
+sub-07/ses-04/behavioral/cued_recall_encoding_subj7_sess1_run2_timing.csv,"Cued recall encoding timing, sub-07 ses-04 run 2",n/a (timing input),timing_input
+sub-07/ses-04/behavioral/cued_recall_encoding_subj7_sess1_run3.csv,"Cued recall encoding behavioral, sub-07 ses-04 run 3",sub-07/ses-04/func/sub-07_ses-04_task-TBencoding_run-03_events.tsv,timed_events
+sub-07/ses-04/behavioral/cued_recall_encoding_subj7_sess1_run3_timing.csv,"Cued recall encoding timing, sub-07 ses-04 run 3",n/a (timing input),timing_input
+sub-07/ses-04/behavioral/cued_recall_math_subj7_sess1_run1.csv,"Cued recall math behavioral, sub-07 ses-04",sub-07/ses-04/func/sub-07_ses-04_task-TBmath_events.tsv,timed_events
+sub-07/ses-04/behavioral/cued_recall_math_subj7_sess1_run1_timing.csv,"Cued recall math timing, sub-07 ses-04",n/a (timing input),timing_input
+sub-07/ses-04/behavioral/cued_recall_recognition_outscan_subj7_sess1_run1.csv,"Cued recall recognition (out-of-scanner), sub-07 ses-04 run 1",sub-07/ses-04/beh/sub-07_ses-04_task-TB2AFC_run-01_beh.tsv,behavioral_to_beh
+sub-07/ses-04/behavioral/cued_recall_retrieval_subj7_sess1_run1.csv,"Cued recall retrieval behavioral, sub-07 ses-04 run 1",sub-07/ses-04/func/sub-07_ses-04_task-TBretrieval_run-01_events.tsv,timed_events
+sub-07/ses-04/behavioral/cued_recall_retrieval_subj7_sess1_run1_timing.csv,"Cued recall retrieval timing, sub-07 ses-04 run 1",n/a (timing input),timing_input
+sub-07/ses-04/behavioral/cued_recall_retrieval_subj7_sess1_run2.csv,"Cued recall retrieval behavioral, sub-07 ses-04 run 2",sub-07/ses-04/func/sub-07_ses-04_task-TBretrieval_run-02_events.tsv,timed_events
+sub-07/ses-04/behavioral/cued_recall_retrieval_subj7_sess1_run2_timing.csv,"Cued recall retrieval timing, sub-07 ses-04 run 2",n/a (timing input),timing_input
+sub-07/ses-05/behavioral/cued_recall_encoding_subj7_sess2_run1.csv,"Cued recall encoding behavioral, sub-07 ses-05 run 1",sub-07/ses-05/func/sub-07_ses-05_task-TBencoding_run-01_events.tsv,timed_events
+sub-07/ses-05/behavioral/cued_recall_encoding_subj7_sess2_run1_timing.csv,"Cued recall encoding timing, sub-07 ses-05 run 1",n/a (timing input),timing_input
+sub-07/ses-05/behavioral/cued_recall_encoding_subj7_sess2_run2.csv,"Cued recall encoding behavioral, sub-07 ses-05 run 2",sub-07/ses-05/func/sub-07_ses-05_task-TBencoding_run-02_events.tsv,timed_events
+sub-07/ses-05/behavioral/cued_recall_encoding_subj7_sess2_run2_timing.csv,"Cued recall encoding timing, sub-07 ses-05 run 2",n/a (timing input),timing_input
+sub-07/ses-05/behavioral/cued_recall_encoding_subj7_sess2_run3.csv,"Cued recall encoding behavioral, sub-07 ses-05 run 3",sub-07/ses-05/func/sub-07_ses-05_task-TBencoding_run-03_events.tsv,timed_events
+sub-07/ses-05/behavioral/cued_recall_encoding_subj7_sess2_run3_timing.csv,"Cued recall encoding timing, sub-07 ses-05 run 3",n/a (timing input),timing_input
+sub-07/ses-05/behavioral/cued_recall_math_subj7_sess2_run1.csv,"Cued recall math behavioral, sub-07 ses-05",sub-07/ses-05/func/sub-07_ses-05_task-TBmath_events.tsv,timed_events
+sub-07/ses-05/behavioral/cued_recall_math_subj7_sess2_run1_timing.csv,"Cued recall math timing, sub-07 ses-05",n/a (timing input),timing_input
+sub-07/ses-05/behavioral/cued_recall_recognition_outscan_subj7_sess2_run1.csv,"Cued recall recognition (out-of-scanner), sub-07 ses-05 run 1",sub-07/ses-05/beh/sub-07_ses-05_task-TB2AFC_run-01_beh.tsv,behavioral_to_beh
+sub-07/ses-05/behavioral/cued_recall_retrieval_subj7_sess2_run1.csv,"Cued recall retrieval behavioral, sub-07 ses-05 run 1",sub-07/ses-05/func/sub-07_ses-05_task-TBretrieval_run-01_events.tsv,timed_events
+sub-07/ses-05/behavioral/cued_recall_retrieval_subj7_sess2_run1_timing.csv,"Cued recall retrieval timing, sub-07 ses-05 run 1",n/a (timing input),timing_input
+sub-07/ses-05/behavioral/cued_recall_retrieval_subj7_sess2_run2.csv,"Cued recall retrieval behavioral, sub-07 ses-05 run 2",sub-07/ses-05/func/sub-07_ses-05_task-TBretrieval_run-02_events.tsv,timed_events
+sub-07/ses-05/behavioral/cued_recall_retrieval_subj7_sess2_run2_timing.csv,"Cued recall retrieval timing, sub-07 ses-05 run 2",n/a (timing input),timing_input
+sub-07/ses-05/behavioral/cued_recall_retrieval_subj7_sess2_run3.csv,"Cued recall retrieval behavioral, sub-07 ses-05 run 3",sub-07/ses-05/func/sub-07_ses-05_task-TBretrieval_run-03_events.tsv,timed_events
+sub-07/ses-05/behavioral/cued_recall_retrieval_subj7_sess2_run3_timing.csv,"Cued recall retrieval timing, sub-07 ses-05 run 3",n/a (timing input),timing_input
+sub-07/ses-05/behavioral/cued_recall_retrieval_subj7_sess2_run4.csv,"Cued recall retrieval behavioral, sub-07 ses-05 run 4",sub-07/ses-05/func/sub-07_ses-05_task-TBretrieval_run-04_events.tsv,timed_events
+sub-07/ses-05/behavioral/cued_recall_retrieval_subj7_sess2_run4_timing.csv,"Cued recall retrieval timing, sub-07 ses-05 run 4",n/a (timing input),timing_input
 sub-03/ses-01/dicom/Series_57_Resting_baseline_PhysioLog,"Scanner physio (complete), sub-03 ses-01 task-INITresting",sub-03/ses-01/func/sub-03_ses-01_task-INITresting,physio_dcm
 sub-03/ses-03/dicom/Series_14_localizer_floc_run1_PhysioLog,"Scanner physio (complete), sub-03 ses-03 task-floc run-01",sub-03/ses-03/func/sub-03_ses-03_task-floc_run-01,physio_dcm
 sub-03/ses-03/dicom/Series_18_localizer_floc_run2_PhysioLog,"Scanner physio (complete), sub-03 ses-03 task-floc run-02",sub-03/ses-03/func/sub-03_ses-03_task-floc_run-02,physio_dcm
@@ -1646,3 +1780,109 @@ sub-05/ses-30/dicom/Series_38_final_cued_recall_run1_PhysioLog,"Scanner physio (
 sub-05/ses-30/dicom/Series_42_final_cued_recall_run2_PhysioLog,"Scanner physio (complete), sub-05 ses-30 task-FINretrieval run-02",sub-05/ses-30/func/sub-05_ses-30_task-FINretrieval_run-02,physio_dcm
 sub-05/ses-30/dicom/Series_55_final_cued_recall_run3_PhysioLog,"Scanner physio (complete), sub-05 ses-30 task-FINretrieval run-03",sub-05/ses-30/func/sub-05_ses-30_task-FINretrieval_run-03,physio_dcm
 sub-05/ses-30/dicom/Series_59_final_cued_recall_run4_PhysioLog,"Scanner physio (complete), sub-05 ses-30 task-FINretrieval run-04",sub-05/ses-30/func/sub-05_ses-30_task-FINretrieval_run-04,physio_dcm
+sub-06/ses-01/dicom/Series_61_Resting_baseline_PhysioLog,"Scanner physio (complete), sub-06 ses-01 task-INITresting",sub-06/ses-01/func/sub-06_ses-01_task-INITresting,physio_dcm
+sub-06/ses-02/dicom/Series_22_localizer_floc_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-02 task-floc run-01",sub-06/ses-02/func/sub-06_ses-02_task-floc_run-01,physio_dcm
+sub-06/ses-02/dicom/Series_26_localizer_floc_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-02 task-floc run-02",sub-06/ses-02/func/sub-06_ses-02_task-floc_run-02,physio_dcm
+sub-06/ses-02/dicom/Series_30_localizer_floc_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-02 task-floc run-03",sub-06/ses-02/func/sub-06_ses-02_task-floc_run-03,physio_dcm
+sub-06/ses-02/dicom/Series_38_localizer_prf_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-02 task-prf run-01",sub-06/ses-02/func/sub-06_ses-02_task-prf_run-01,physio_dcm
+sub-06/ses-02/dicom/Series_42_localizer_prf_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-02 task-prf run-02",sub-06/ses-02/func/sub-06_ses-02_task-prf_run-02,physio_dcm
+sub-06/ses-02/dicom/Series_46_localizer_prf_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-02 task-prf run-03",sub-06/ses-02/func/sub-06_ses-02_task-prf_run-03,physio_dcm
+sub-06/ses-02/dicom/Series_50_localizer_tone_PhysioLog,"Scanner physio (complete), sub-06 ses-02 task-tone",sub-06/ses-02/func/sub-06_ses-02_task-tone,physio_dcm
+sub-06/ses-02/dicom/Series_54_localizer_auditory_PhysioLog,"Scanner physio (complete), sub-06 ses-02 task-auditory",sub-06/ses-02/func/sub-06_ses-02_task-auditory,physio_dcm
+sub-06/ses-02/dicom/Series_58_localizer_motor_PhysioLog,"Scanner physio (complete), sub-06 ses-02 task-motor",sub-06/ses-02/func/sub-06_ses-02_task-motor,physio_dcm
+sub-06/ses-03/dicom/Series_12_localizer_floc_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-03 task-floc run-01",sub-06/ses-03/func/sub-06_ses-03_task-floc_run-01,physio_dcm
+sub-06/ses-03/dicom/Series_16_localizer_floc_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-03 task-floc run-02",sub-06/ses-03/func/sub-06_ses-03_task-floc_run-02,physio_dcm
+sub-06/ses-03/dicom/Series_20_localizer_floc_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-03 task-floc run-03",sub-06/ses-03/func/sub-06_ses-03_task-floc_run-03,physio_dcm
+sub-06/ses-03/dicom/Series_28_localizer_prf_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-03 task-prf run-01",sub-06/ses-03/func/sub-06_ses-03_task-prf_run-01,physio_dcm
+sub-06/ses-03/dicom/Series_32_localizer_prf_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-03 task-prf run-02",sub-06/ses-03/func/sub-06_ses-03_task-prf_run-02,physio_dcm
+sub-06/ses-03/dicom/Series_36_localizer_prf_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-03 task-prf run-03",sub-06/ses-03/func/sub-06_ses-03_task-prf_run-03,physio_dcm
+sub-06/ses-03/dicom/Series_40_localizer_tone_PhysioLog,"Scanner physio (complete), sub-06 ses-03 task-tone",sub-06/ses-03/func/sub-06_ses-03_task-tone,physio_dcm
+sub-06/ses-03/dicom/Series_44_localizer_auditory_PhysioLog,"Scanner physio (complete), sub-06 ses-03 task-auditory",sub-06/ses-03/func/sub-06_ses-03_task-auditory,physio_dcm
+sub-06/ses-03/dicom/Series_48_localizer_motor_PhysioLog,"Scanner physio (complete), sub-06 ses-03 task-motor",sub-06/ses-03/func/sub-06_ses-03_task-motor,physio_dcm
+sub-06/ses-04/dicom/Series_10_cued_recall_encoding_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-04 task-TBencoding run-01",sub-06/ses-04/func/sub-06_ses-04_task-TBencoding_run-01,physio_dcm
+sub-06/ses-04/dicom/Series_14_cued_recall_encoding_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-04 task-TBencoding run-02",sub-06/ses-04/func/sub-06_ses-04_task-TBencoding_run-02,physio_dcm
+sub-06/ses-04/dicom/Series_22_cued_recall_encoding_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-04 task-TBencoding run-03",sub-06/ses-04/func/sub-06_ses-04_task-TBencoding_run-03,physio_dcm
+sub-06/ses-04/dicom/Series_26_cued_recall_math_PhysioLog,"Scanner physio (complete), sub-06 ses-04 task-TBmath",sub-06/ses-04/func/sub-06_ses-04_task-TBmath,physio_dcm
+sub-06/ses-04/dicom/Series_34_cued_recall_resting_PhysioLog,"Scanner physio (complete), sub-06 ses-04 task-TBresting",sub-06/ses-04/func/sub-06_ses-04_task-TBresting,physio_dcm
+sub-06/ses-04/dicom/Series_38_cued_recall_retrieval_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-04 task-TBretrieval run-01",sub-06/ses-04/func/sub-06_ses-04_task-TBretrieval_run-01,physio_dcm
+sub-06/ses-04/dicom/Series_42_cued_recall_retrieval_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-04 task-TBretrieval run-02",sub-06/ses-04/func/sub-06_ses-04_task-TBretrieval_run-02,physio_dcm
+sub-06/ses-05/dicom/Series_12_cued_recall_encoding_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-05 task-TBencoding run-01",sub-06/ses-05/func/sub-06_ses-05_task-TBencoding_run-01,physio_dcm
+sub-06/ses-05/dicom/Series_16_cued_recall_encoding_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-05 task-TBencoding run-02",sub-06/ses-05/func/sub-06_ses-05_task-TBencoding_run-02,physio_dcm
+sub-06/ses-05/dicom/Series_20_cued_recall_encoding_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-05 task-TBencoding run-03",sub-06/ses-05/func/sub-06_ses-05_task-TBencoding_run-03,physio_dcm
+sub-06/ses-05/dicom/Series_24_cued_recall_math_PhysioLog,"Scanner physio (complete), sub-06 ses-05 task-TBmath",sub-06/ses-05/func/sub-06_ses-05_task-TBmath,physio_dcm
+sub-06/ses-05/dicom/Series_32_cued_recall_resting_PhysioLog,"Scanner physio (complete), sub-06 ses-05 task-TBresting",sub-06/ses-05/func/sub-06_ses-05_task-TBresting,physio_dcm
+sub-06/ses-05/dicom/Series_36_cued_recall_retrieval_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-05 task-TBretrieval run-01",sub-06/ses-05/func/sub-06_ses-05_task-TBretrieval_run-01,physio_dcm
+sub-06/ses-05/dicom/Series_48_cued_recall_retrieval_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-05 task-TBretrieval run-02",sub-06/ses-05/func/sub-06_ses-05_task-TBretrieval_run-02,physio_dcm
+sub-06/ses-05/dicom/Series_52_cued_recall_retrieval_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-05 task-TBretrieval run-03",sub-06/ses-05/func/sub-06_ses-05_task-TBretrieval_run-03,physio_dcm
+sub-06/ses-05/dicom/Series_56_cued_recall_retrieval_run4_PhysioLog,"Scanner physio (complete), sub-06 ses-05 task-TBretrieval run-04",sub-06/ses-05/func/sub-06_ses-05_task-TBretrieval_run-04,physio_dcm
+sub-06/ses-06/dicom/Series_09_cued_recall_encoding_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-06 task-TBencoding run-01",sub-06/ses-06/func/sub-06_ses-06_task-TBencoding_run-01,physio_dcm
+sub-06/ses-06/dicom/Series_13_cued_recall_encoding_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-06 task-TBencoding run-02",sub-06/ses-06/func/sub-06_ses-06_task-TBencoding_run-02,physio_dcm
+sub-06/ses-06/dicom/Series_17_cued_recall_encoding_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-06 task-TBencoding run-03",sub-06/ses-06/func/sub-06_ses-06_task-TBencoding_run-03,physio_dcm
+sub-06/ses-06/dicom/Series_21_cued_recall_math_PhysioLog,"Scanner physio (complete), sub-06 ses-06 task-TBmath",sub-06/ses-06/func/sub-06_ses-06_task-TBmath,physio_dcm
+sub-06/ses-06/dicom/Series_29_cued_recall_resting_PhysioLog,"Scanner physio (complete), sub-06 ses-06 task-TBresting",sub-06/ses-06/func/sub-06_ses-06_task-TBresting,physio_dcm
+sub-06/ses-06/dicom/Series_33_cued_recall_retrieval_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-06 task-TBretrieval run-01",sub-06/ses-06/func/sub-06_ses-06_task-TBretrieval_run-01,physio_dcm
+sub-06/ses-06/dicom/Series_37_cued_recall_retrieval_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-06 task-TBretrieval run-02",sub-06/ses-06/func/sub-06_ses-06_task-TBretrieval_run-02,physio_dcm
+sub-06/ses-06/dicom/Series_41_cued_recall_retrieval_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-06 task-TBretrieval run-03",sub-06/ses-06/func/sub-06_ses-06_task-TBretrieval_run-03,physio_dcm
+sub-06/ses-06/dicom/Series_49_cued_recall_retrieval_run4_PhysioLog,"Scanner physio (complete), sub-06 ses-06 task-TBretrieval run-04",sub-06/ses-06/func/sub-06_ses-06_task-TBretrieval_run-04,physio_dcm
+sub-06/ses-07/dicom/Series_10_cued_recall_encoding_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-07 task-TBencoding run-01",sub-06/ses-07/func/sub-06_ses-07_task-TBencoding_run-01,physio_dcm
+sub-06/ses-07/dicom/Series_14_cued_recall_encoding_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-07 task-TBencoding run-02",sub-06/ses-07/func/sub-06_ses-07_task-TBencoding_run-02,physio_dcm
+sub-06/ses-07/dicom/Series_18_cued_recall_encoding_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-07 task-TBencoding run-03",sub-06/ses-07/func/sub-06_ses-07_task-TBencoding_run-03,physio_dcm
+sub-06/ses-07/dicom/Series_22_cued_recall_math_PhysioLog,"Scanner physio (complete), sub-06 ses-07 task-TBmath",sub-06/ses-07/func/sub-06_ses-07_task-TBmath,physio_dcm
+sub-06/ses-07/dicom/Series_30_cued_recall_resting_PhysioLog,"Scanner physio (complete), sub-06 ses-07 task-TBresting",sub-06/ses-07/func/sub-06_ses-07_task-TBresting,physio_dcm
+sub-06/ses-07/dicom/Series_34_cued_recall_retrieval_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-07 task-TBretrieval run-01",sub-06/ses-07/func/sub-06_ses-07_task-TBretrieval_run-01,physio_dcm
+sub-06/ses-07/dicom/Series_38_cued_recall_retrieval_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-07 task-TBretrieval run-02",sub-06/ses-07/func/sub-06_ses-07_task-TBretrieval_run-02,physio_dcm
+sub-06/ses-07/dicom/Series_42_cued_recall_retrieval_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-07 task-TBretrieval run-03",sub-06/ses-07/func/sub-06_ses-07_task-TBretrieval_run-03,physio_dcm
+sub-06/ses-07/dicom/Series_46_cued_recall_retrieval_run4_PhysioLog,"Scanner physio (complete), sub-06 ses-07 task-TBretrieval run-04",sub-06/ses-07/func/sub-06_ses-07_task-TBretrieval_run-04,physio_dcm
+sub-06/ses-08/dicom/Series_10_cued_recall_encoding_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-08 task-TBencoding run-01",sub-06/ses-08/func/sub-06_ses-08_task-TBencoding_run-01,physio_dcm
+sub-06/ses-08/dicom/Series_14_cued_recall_encoding_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-08 task-TBencoding run-02",sub-06/ses-08/func/sub-06_ses-08_task-TBencoding_run-02,physio_dcm
+sub-06/ses-08/dicom/Series_18_cued_recall_encoding_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-08 task-TBencoding run-03",sub-06/ses-08/func/sub-06_ses-08_task-TBencoding_run-03,physio_dcm
+sub-06/ses-08/dicom/Series_22_cued_recall_math_PhysioLog,"Scanner physio (complete), sub-06 ses-08 task-TBmath",sub-06/ses-08/func/sub-06_ses-08_task-TBmath,physio_dcm
+sub-06/ses-08/dicom/Series_30_cued_recall_resting_PhysioLog,"Scanner physio (complete), sub-06 ses-08 task-TBresting",sub-06/ses-08/func/sub-06_ses-08_task-TBresting,physio_dcm
+sub-06/ses-08/dicom/Series_34_cued_recall_retrieval_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-08 task-TBretrieval run-01",sub-06/ses-08/func/sub-06_ses-08_task-TBretrieval_run-01,physio_dcm
+sub-06/ses-08/dicom/Series_38_cued_recall_retrieval_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-08 task-TBretrieval run-02",sub-06/ses-08/func/sub-06_ses-08_task-TBretrieval_run-02,physio_dcm
+sub-06/ses-08/dicom/Series_42_cued_recall_retrieval_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-08 task-TBretrieval run-03",sub-06/ses-08/func/sub-06_ses-08_task-TBretrieval_run-03,physio_dcm
+sub-06/ses-08/dicom/Series_46_cued_recall_retrieval_run4_PhysioLog,"Scanner physio (complete), sub-06 ses-08 task-TBretrieval run-04",sub-06/ses-08/func/sub-06_ses-08_task-TBretrieval_run-04,physio_dcm
+sub-06/ses-09/dicom/Series_12_cued_recall_encoding_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-09 task-TBencoding run-01",sub-06/ses-09/func/sub-06_ses-09_task-TBencoding_run-01,physio_dcm
+sub-06/ses-09/dicom/Series_19_cued_recall_encoding_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-09 task-TBencoding run-02",sub-06/ses-09/func/sub-06_ses-09_task-TBencoding_run-02,physio_dcm
+sub-06/ses-09/dicom/Series_23_cued_recall_encoding_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-09 task-TBencoding run-03",sub-06/ses-09/func/sub-06_ses-09_task-TBencoding_run-03,physio_dcm
+sub-06/ses-09/dicom/Series_27_cued_recall_math_PhysioLog,"Scanner physio (complete), sub-06 ses-09 task-TBmath",sub-06/ses-09/func/sub-06_ses-09_task-TBmath,physio_dcm
+sub-06/ses-09/dicom/Series_35_cued_recall_resting_PhysioLog,"Scanner physio (complete), sub-06 ses-09 task-TBresting",sub-06/ses-09/func/sub-06_ses-09_task-TBresting,physio_dcm
+sub-06/ses-09/dicom/Series_39_cued_recall_retrieval_run1_PhysioLog,"Scanner physio (complete), sub-06 ses-09 task-TBretrieval run-01",sub-06/ses-09/func/sub-06_ses-09_task-TBretrieval_run-01,physio_dcm
+sub-06/ses-09/dicom/Series_43_cued_recall_retrieval_run2_PhysioLog,"Scanner physio (complete), sub-06 ses-09 task-TBretrieval run-02",sub-06/ses-09/func/sub-06_ses-09_task-TBretrieval_run-02,physio_dcm
+sub-06/ses-09/dicom/Series_47_cued_recall_retrieval_run3_PhysioLog,"Scanner physio (complete), sub-06 ses-09 task-TBretrieval run-03",sub-06/ses-09/func/sub-06_ses-09_task-TBretrieval_run-03,physio_dcm
+sub-06/ses-09/dicom/Series_51_cued_recall_retrieval_run4_PhysioLog,"Scanner physio (complete), sub-06 ses-09 task-TBretrieval run-04",sub-06/ses-09/func/sub-06_ses-09_task-TBretrieval_run-04,physio_dcm
+sub-07/ses-01/dicom/Series_59_Resting_baseline_PhysioLog,"Scanner physio (complete), sub-07 ses-01 task-INITresting",sub-07/ses-01/func/sub-07_ses-01_task-INITresting,physio_dcm
+sub-07/ses-02/dicom/Series_16_localizer_floc_run1_PhysioLog,"Scanner physio (complete), sub-07 ses-02 task-floc run-01",sub-07/ses-02/func/sub-07_ses-02_task-floc_run-01,physio_dcm
+sub-07/ses-02/dicom/Series_20_localizer_floc_run2_PhysioLog,"Scanner physio (complete), sub-07 ses-02 task-floc run-02",sub-07/ses-02/func/sub-07_ses-02_task-floc_run-02,physio_dcm
+sub-07/ses-02/dicom/Series_24_localizer_floc_run3_PhysioLog,"Scanner physio (complete), sub-07 ses-02 task-floc run-03",sub-07/ses-02/func/sub-07_ses-02_task-floc_run-03,physio_dcm
+sub-07/ses-02/dicom/Series_32_localizer_prf_run1_PhysioLog,"Scanner physio (complete), sub-07 ses-02 task-prf run-01",sub-07/ses-02/func/sub-07_ses-02_task-prf_run-01,physio_dcm
+sub-07/ses-02/dicom/Series_36_localizer_prf_run2_PhysioLog,"Scanner physio (complete), sub-07 ses-02 task-prf run-02",sub-07/ses-02/func/sub-07_ses-02_task-prf_run-02,physio_dcm
+sub-07/ses-02/dicom/Series_40_localizer_prf_run3_PhysioLog,"Scanner physio (complete), sub-07 ses-02 task-prf run-03",sub-07/ses-02/func/sub-07_ses-02_task-prf_run-03,physio_dcm
+sub-07/ses-02/dicom/Series_44_localizer_tone_PhysioLog,"Scanner physio (complete), sub-07 ses-02 task-tone",sub-07/ses-02/func/sub-07_ses-02_task-tone,physio_dcm
+sub-07/ses-02/dicom/Series_48_localizer_auditory_PhysioLog,"Scanner physio (complete), sub-07 ses-02 task-auditory",sub-07/ses-02/func/sub-07_ses-02_task-auditory,physio_dcm
+sub-07/ses-02/dicom/Series_52_localizer_motor_PhysioLog,"Scanner physio (complete), sub-07 ses-02 task-motor",sub-07/ses-02/func/sub-07_ses-02_task-motor,physio_dcm
+sub-07/ses-03/dicom/Series_10_localizer_floc_run1_PhysioLog,"Scanner physio (complete), sub-07 ses-03 task-floc run-01",sub-07/ses-03/func/sub-07_ses-03_task-floc_run-01,physio_dcm
+sub-07/ses-03/dicom/Series_14_localizer_floc_run2_PhysioLog,"Scanner physio (complete), sub-07 ses-03 task-floc run-02",sub-07/ses-03/func/sub-07_ses-03_task-floc_run-02,physio_dcm
+sub-07/ses-03/dicom/Series_18_localizer_floc_run3_PhysioLog,"Scanner physio (complete), sub-07 ses-03 task-floc run-03",sub-07/ses-03/func/sub-07_ses-03_task-floc_run-03,physio_dcm
+sub-07/ses-03/dicom/Series_26_localizer_prf_run1_PhysioLog,"Scanner physio (complete), sub-07 ses-03 task-prf run-01",sub-07/ses-03/func/sub-07_ses-03_task-prf_run-01,physio_dcm
+sub-07/ses-03/dicom/Series_30_localizer_prf_run2_PhysioLog,"Scanner physio (complete), sub-07 ses-03 task-prf run-02",sub-07/ses-03/func/sub-07_ses-03_task-prf_run-02,physio_dcm
+sub-07/ses-03/dicom/Series_34_localizer_prf_run3_PhysioLog,"Scanner physio (complete), sub-07 ses-03 task-prf run-03",sub-07/ses-03/func/sub-07_ses-03_task-prf_run-03,physio_dcm
+sub-07/ses-03/dicom/Series_42_localizer_tone_PhysioLog,"Scanner physio (complete), sub-07 ses-03 task-tone",sub-07/ses-03/func/sub-07_ses-03_task-tone,physio_dcm
+sub-07/ses-03/dicom/Series_46_localizer_auditory_PhysioLog,"Scanner physio (complete), sub-07 ses-03 task-auditory",sub-07/ses-03/func/sub-07_ses-03_task-auditory,physio_dcm
+sub-07/ses-03/dicom/Series_50_localizer_motor_PhysioLog,"Scanner physio (complete), sub-07 ses-03 task-motor",sub-07/ses-03/func/sub-07_ses-03_task-motor,physio_dcm
+sub-07/ses-04/dicom/Series_12_cued_recall_encoding_run1_PhysioLog,"Scanner physio (complete), sub-07 ses-04 task-TBencoding run-01",sub-07/ses-04/func/sub-07_ses-04_task-TBencoding_run-01,physio_dcm
+sub-07/ses-04/dicom/Series_21_cued_recall_encoding_run2_PhysioLog,"Scanner physio (complete), sub-07 ses-04 task-TBencoding run-02",sub-07/ses-04/func/sub-07_ses-04_task-TBencoding_run-02,physio_dcm
+sub-07/ses-04/dicom/Series_27_cued_recall_encoding_run3_PhysioLog,"Scanner physio (complete), sub-07 ses-04 task-TBencoding run-03",sub-07/ses-04/func/sub-07_ses-04_task-TBencoding_run-03,physio_dcm
+sub-07/ses-04/dicom/Series_30_cued_recall_math_PhysioLog,"Scanner physio (complete), sub-07 ses-04 task-TBmath",sub-07/ses-04/func/sub-07_ses-04_task-TBmath,physio_dcm
+sub-07/ses-04/dicom/Series_36_cued_recall_resting_PhysioLog,"Scanner physio (complete), sub-07 ses-04 task-TBresting",sub-07/ses-04/func/sub-07_ses-04_task-TBresting,physio_dcm
+sub-07/ses-04/dicom/Series_40_cued_recall_retrieval_run1_PhysioLog,"Scanner physio (complete), sub-07 ses-04 task-TBretrieval run-01",sub-07/ses-04/func/sub-07_ses-04_task-TBretrieval_run-01,physio_dcm
+sub-07/ses-04/dicom/Series_44_cued_recall_retrieval_run2_PhysioLog,"Scanner physio (complete), sub-07 ses-04 task-TBretrieval run-02",sub-07/ses-04/func/sub-07_ses-04_task-TBretrieval_run-02,physio_dcm
+sub-07/ses-05/dicom/Series_12_cued_recall_encoding_run1_PhysioLog,"Scanner physio (complete), sub-07 ses-05 task-TBencoding run-01",sub-07/ses-05/func/sub-07_ses-05_task-TBencoding_run-01,physio_dcm
+sub-07/ses-05/dicom/Series_16_cued_recall_encoding_run2_PhysioLog,"Scanner physio (complete), sub-07 ses-05 task-TBencoding run-02",sub-07/ses-05/func/sub-07_ses-05_task-TBencoding_run-02,physio_dcm
+sub-07/ses-05/dicom/Series_20_cued_recall_encoding_run3_PhysioLog,"Scanner physio (complete), sub-07 ses-05 task-TBencoding run-03",sub-07/ses-05/func/sub-07_ses-05_task-TBencoding_run-03,physio_dcm
+sub-07/ses-05/dicom/Series_24_cued_recall_math_PhysioLog,"Scanner physio (complete), sub-07 ses-05 task-TBmath",sub-07/ses-05/func/sub-07_ses-05_task-TBmath,physio_dcm
+sub-07/ses-05/dicom/Series_32_cued_recall_resting_PhysioLog,"Scanner physio (complete), sub-07 ses-05 task-TBresting",sub-07/ses-05/func/sub-07_ses-05_task-TBresting,physio_dcm
+sub-07/ses-05/dicom/Series_36_cued_recall_retrieval_run1_PhysioLog,"Scanner physio (complete), sub-07 ses-05 task-TBretrieval run-01",sub-07/ses-05/func/sub-07_ses-05_task-TBretrieval_run-01,physio_dcm
+sub-07/ses-05/dicom/Series_40_cued_recall_retrieval_run2_PhysioLog,"Scanner physio (complete), sub-07 ses-05 task-TBretrieval run-02",sub-07/ses-05/func/sub-07_ses-05_task-TBretrieval_run-02,physio_dcm
+sub-07/ses-05/dicom/Series_44_cued_recall_retrieval_run3_PhysioLog,"Scanner physio (complete), sub-07 ses-05 task-TBretrieval run-03",sub-07/ses-05/func/sub-07_ses-05_task-TBretrieval_run-03,physio_dcm
+sub-07/ses-05/dicom/Series_48_cued_recall_retrieval_run4_PhysioLog,"Scanner physio (complete), sub-07 ses-05 task-TBretrieval run-04",sub-07/ses-05/func/sub-07_ses-05_task-TBretrieval_run-04,physio_dcm

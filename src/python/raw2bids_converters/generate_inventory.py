@@ -17,15 +17,24 @@ import argparse
 import csv
 import os
 import re
+import sys
 from pathlib import Path
 
-BIDS_ROOT = "/gpfs/projects/hulacon/shared/mmmdata"
-SOURCE_ROOT = os.path.join(BIDS_ROOT, "sourcedata")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(SCRIPT_DIR))
+
+# Roots come from config (paths.bids_project_dir / paths.source_dir). The raw
+# data moved out of <bids_root>/sourcedata to the sibling mmmsourcedata tree,
+# so deriving SOURCE_ROOT from BIDS_ROOT silently walked a path that no longer
+# exists -- and an empty walk reads as "this subject has no behavioral data".
+from raw2bids_converters.common import BIDS_ROOT, SOURCE_DIR as SOURCE_ROOT  # noqa: E402
 EDF_TRIAGE_CSV = os.path.join(SCRIPT_DIR, "edf_triage.csv")
 PHYSIO_TRIAGE_CSV = os.path.join(SCRIPT_DIR, "physio_triage.csv")
 
-SUBJECTS = [3, 4, 5]
+# Default only; --subjects overrides. Kept as a default rather than a constant
+# because a hardcoded cohort meant a new subject's events, beh, physio and
+# eyetracking were all absent from BIDS with nothing reporting a problem.
+DEFAULT_SUBJECTS = [3, 4, 5, 6, 7]
 CR_SESSION_OFFSET = 3   # cued recall: source sess N -> BIDS ses-(N+3)
 FR_SESSION_OFFSET = 18  # free recall: source sess N -> BIDS ses-(N+18)
 FINAL_SESSION = 30
@@ -620,7 +629,7 @@ PHYSIO_TASK_MAP = [
     (re.compile(r"localizer_floc_run(\d+)$"), "floc", True),
     (re.compile(r"localizer_tone(?:_run(\d+))?$"), "tone", True),
     (re.compile(r"localizer_auditory(?:_run(\d+))?$"), "auditory", True),
-    (re.compile(r"localizer_motor_run(\d+)$"), "motor", True),
+    (re.compile(r"localizer_motor(?:_run(\d+))?$"), "motor", True),
 ]
 
 
@@ -645,7 +654,7 @@ def _physio_series_to_bids(series_name):
     return None
 
 
-def load_physio_triage():
+def load_physio_triage(subjects=None):
     """Load physio_triage.csv and generate inventory rows for convertible files.
 
     Only COMPLETE and PARTIAL files are included.
@@ -668,6 +677,11 @@ def load_physio_triage():
                 continue
 
             sub = row["sub"]
+            # The triage table covers every subject in sourcedata; the
+            # inventory must stay scoped to the subjects being converted,
+            # or a mid-collection subject silently joins the run.
+            if subjects is not None and sub not in subjects:
+                continue
             ses = row["ses"]
             series = row["series"]
             source_path = row["source_path"]
@@ -715,10 +729,20 @@ def main():
         "--verbose", "-v", action="store_true",
         help="Print progress info",
     )
+    parser.add_argument(
+        "--subjects",
+        help="Comma-separated subject numbers or IDs (e.g. '3,4,5' or "
+             "'sub-06,sub-07'). Default: %s" % ",".join(map(str, DEFAULT_SUBJECTS)),
+    )
     args = parser.parse_args()
 
+    if args.subjects:
+        subjects = [int(str(x).replace("sub-", "")) for x in args.subjects.split(",")]
+    else:
+        subjects = DEFAULT_SUBJECTS
+
     all_rows = []
-    for subj_num in SUBJECTS:
+    for subj_num in subjects:
         if args.verbose:
             print(f"Processing {bids_sub(subj_num)}...")
         rows = walk_subject(subj_num)
@@ -737,7 +761,7 @@ def main():
         print(f"WARNING: {EDF_TRIAGE_CSV} not found, skipping EDF triage")
 
     # Add scanner physio rows from physio_triage.csv
-    physio_rows = load_physio_triage()
+    physio_rows = load_physio_triage({bids_sub(n) for n in subjects})
     if physio_rows:
         all_rows.extend(physio_rows)
         print(f"Scanner physio: {len(physio_rows)} convertible PhysioLog files added")
