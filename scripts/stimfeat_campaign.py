@@ -208,6 +208,10 @@ def build_sources() -> list[Source]:
                            OUT_ROOT / "shared1000" / "caption.csv",
                            "caption_text", "stimulus_id"),
         depends="shared1000/image/caption",
+        note="SECONDARY (Ben, 2026-08-22): humancap covers the semantic-text "
+             "role with human language. Keep this arm for the "
+             "human-vs-machine caption contrast, not as a semantic space in "
+             "its own right.",
     ))
     S.append(Source(
         "shared1000", "humancap", "word2psy", "humancap_", True,
@@ -255,6 +259,10 @@ def build_sources() -> list[Source]:
         "BLIP captions of each movie's frames, scored as text",
         _movie_caption_units,
         depends="movies/frames/caption",
+        note="SECONDARY (Ben, 2026-08-22): the human SEG-B/SEG-C annotations "
+             "carry the semantic-text role for movies. BLIP also hallucinates "
+             "on stylised frames (the Adventure Time cue reads 'the simpsons "
+             "family'). Keep for the human-vs-machine contrast only.",
     ))
     S.append(Source(
         "movies", "annot", "word2psy", "annot_", True,
@@ -273,9 +281,32 @@ def build_sources() -> list[Source]:
                            "description", "stimulus_id"),
     ))
     S.append(Source(
+        "movies", "transcript", "word2psy", "transcript_", True,
+        "2,052 ASR speech segments across the 54 movies that contain dialogue",
+        lambda: _text_unit("all", OUT_ROOT / "movies",
+                           INPUT_DIR / "movies_transcript.csv",
+                           "text", "stimulus_id"),
+        depends="movies/audio/transcribe",
+        note="what characters SAY, the auditory-linguistic counterpart of "
+             "movies/caption. 6 movies are silent and contribute no rows. "
+             "asr_confidence and no_speech_prob ride along as covariates -- "
+             "these are machine transcripts, not a script.",
+    ))
+    S.append(Source(
         "movies", "cue", "viz2psy", "", True,
         "60 movie cue images",
         _cue_units,
+    ))
+    S.append(Source(
+        "movies", "cue_caption", "word2psy", "caption_", True,
+        "BLIP captions of the 60 cue images, scored as text",
+        lambda: _text_unit("all", OUT_ROOT / "movie_cues",
+                           OUT_ROOT / "movie_cues" / "caption.csv",
+                           "caption_text", "stimulus_id"),
+        depends="movies/cue/caption",
+        note="SECONDARY (Ben, 2026-08-22): the cue images are not shown on "
+             "every trial, so this is completeness rather than a space any "
+             "analysis is waiting on. Already extracted; cheap to keep.",
     ))
 
     return S
@@ -440,6 +471,39 @@ def build_inputs(force: bool = False) -> list[str]:
                 f"{src} and shared1000.tsv describe the same 1,000 images; do "
                 f"NOT fall back to nsdId, whose base differs between them.")
         print(f"  humancap: {len(matched)}/{n_reg} images matched on cocoId")
+        made.append(str(p))
+
+    # ASR speech segments, concatenated across movies. Built from the
+    # aud2psy `transcribe` outputs already in the store rather than from
+    # the audio, so this input is a join, not a second inference pass.
+    p = INPUT_DIR / "movies_transcript.csv"
+    if force or not p.exists():
+        cols = ["stimulus_id", "segment_idx", "text", "onset", "offset",
+                "asr_confidence", "no_speech_prob"]
+        n_rows = 0
+        silent = []
+        with open(p, "w", newline="") as out:
+            w = csv.DictWriter(out, fieldnames=cols, extrasaction="ignore")
+            w.writeheader()
+            for row in movies():
+                sid = row["stimulus_id"]
+                src = OUT_ROOT / "movies" / sid / "transcribe_transcript.csv"
+                if not src.exists():
+                    raise SystemExit(
+                        f"ERROR: no transcript for {sid} at {src}. Fix: run "
+                        f"`stimfeat_campaign.py run --set movies --source "
+                        f"audio --model transcribe` first.")
+                with open(src) as f:
+                    seg = [r for r in csv.DictReader(f)
+                           if (r.get("text") or "").strip()]
+                if not seg:
+                    silent.append(sid)
+                    continue
+                w.writerows(seg)
+                n_rows += len(seg)
+        print(f"  transcript: {n_rows} speech segments from "
+              f"{len(movies()) - len(silent)} movies "
+              f"({len(silent)} with no speech: {', '.join(silent) or 'none'})")
         made.append(str(p))
 
     # movie annotations, both levels, via the parser (which applies the
@@ -617,8 +681,10 @@ def _preflight_clean() -> bool:
 
 def cmd_run(args) -> int:
     cells = _filtered(args)
+    redo = getattr(args, "redo", False)
     todo = [(s, u, m) for s, u, m in cells
-            if m not in UNAVAILABLE and not is_done(stem_for(s, u, m))]
+            if m not in UNAVAILABLE
+            and (redo or not is_done(stem_for(s, u, m)))]
     skipped = len(cells) - len(todo)
     blocked = sorted({m for s, u, m in cells if m in UNAVAILABLE})
 
@@ -629,6 +695,7 @@ def cmd_run(args) -> int:
                  "what it reports.")
 
     print(f"{len(cells)} cells matched: {len(todo)} to run, {skipped} already done"
+          + (" (--redo: done cells are being re-extracted)" if redo else "")
           + (f", blocked models skipped: {', '.join(blocked)}" if blocked else ""))
 
     n_ok = n_fail = 0
@@ -736,6 +803,10 @@ def main() -> int:
     p.add_argument("--dry-run", action="store_true",
                    help="print the commands instead of running them")
     p.add_argument("--fail-fast", action="store_true")
+    p.add_argument("--redo", action="store_true",
+                   help="re-extract matched cells even if their sidecar says "
+                        "done -- for a model whose output shape changed. "
+                        "Always narrow with --model/--source first.")
     p.add_argument("--no-verify", action="store_true",
                    help="skip the post-write §4.1 attribution check")
     p.set_defaults(fn=cmd_run)
