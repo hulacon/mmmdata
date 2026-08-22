@@ -1,0 +1,227 @@
+{
+  "descriptions": [
+    {
+      "id": "func-bold-cuedRecallEncoding-run1",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 8
+      },
+      "custom_entities": "task-cuedRecallEncoding_run-1",
+      "sidecar_changes": {
+        "TaskName": "cuedRecallEncoding",
+        "B0FieldSource": "B0map_encoding_sub06ses04"
+      }
+    },
+    {
+      "id": "func-bold-cuedRecallEncoding-run2",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 12
+      },
+      "custom_entities": "task-cuedRecallEncoding_run-2",
+      "sidecar_changes": {
+        "TaskName": "cuedRecallEncoding",
+        "B0FieldSource": "B0map_encoding_sub06ses04"
+      }
+    },
+    {
+      "id": "func-bold-cuedRecallEncoding-run3",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 20
+      },
+      "custom_entities": "task-cuedRecallEncoding_run-3",
+      "sidecar_changes": {
+        "TaskName": "cuedRecallEncoding",
+        "B0FieldSource": "B0map_encoding_sub06ses04"
+      }
+    },
+    {
+      "id": "func-bold-cuedRecallMath-run1",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 24
+      },
+      "custom_entities": "task-cuedRecallMath_run-1",
+      "sidecar_changes": {
+        "TaskName": "cuedRecallMath",
+        "B0FieldSource": "B0map_encoding_sub06ses04"
+      }
+    },
+    {
+      "id": "func-bold-cuedRecallResting-run1",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 32
+      },
+      "custom_entities": "task-cuedRecallResting_run-1",
+      "sidecar_changes": {
+        "TaskName": "cuedRecallResting",
+        "B0FieldSource": "B0map_retrieval_sub06ses04"
+      }
+    },
+    {
+      "id": "func-bold-cuedRecallRetrieval-run1",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 36
+      },
+      "custom_entities": "task-cuedRecallRetrieval_run-1",
+      "sidecar_changes": {
+        "TaskName": "cuedRecallRetrieval",
+        "B0FieldSource": "B0map_retrieval_sub06ses04"
+      }
+    },
+    {
+      "id": "func-bold-cuedRecallRetrieval-run2",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 40
+      },
+      "custom_entities": "task-cuedRecallRetrieval_run-2",
+      "sidecar_changes": {
+        "TaskName": "cuedRecallRetrieval",
+        "B0FieldSource": "B0map_retrieval_sub06ses04"
+      }
+    },
+    {
+      "id": "func-sbref-cuedRecallEncoding-run1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 7
+      },
+      "custom_entities": "task-cuedRecallEncoding_run-1",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_encoding_sub06ses04"
+      }
+    },
+    {
+      "id": "func-sbref-cuedRecallEncoding-run2",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 11
+      },
+      "custom_entities": "task-cuedRecallEncoding_run-2",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_encoding_sub06ses04"
+      }
+    },
+    {
+      "id": "func-sbref-cuedRecallEncoding-run3",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 19
+      },
+      "custom_entities": "task-cuedRecallEncoding_run-3",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_encoding_sub06ses04"
+      }
+    },
+    {
+      "id": "func-sbref-cuedRecallMath-run1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 23
+      },
+      "custom_entities": "task-cuedRecallMath_run-1",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_encoding_sub06ses04"
+      }
+    },
+    {
+      "id": "func-sbref-cuedRecallResting-run1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 31
+      },
+      "custom_entities": "task-cuedRecallResting_run-1",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_retrieval_sub06ses04"
+      }
+    },
+    {
+      "id": "func-sbref-cuedRecallRetrieval-run1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 35
+      },
+      "custom_entities": "task-cuedRecallRetrieval_run-1",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_retrieval_sub06ses04"
+      }
+    },
+    {
+      "id": "func-sbref-cuedRecallRetrieval-run2",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 39
+      },
+      "custom_entities": "task-cuedRecallRetrieval_run-2",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_retrieval_sub06ses04"
+      }
+    },
+    {
+      "id": "fmap-epi-ap-encoding",
+      "datatype": "fmap",
+      "suffix": "epi",
+      "criteria": {
+        "SeriesNumber": 5
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_encoding_sub06ses04"
+      },
+      "custom_entities": "acq-encoding_dir-AP"
+    },
+    {
+      "id": "fmap-epi-pa-encoding",
+      "datatype": "fmap",
+      "suffix": "epi",
+      "criteria": {
+        "SeriesNumber": 6
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_encoding_sub06ses04"
+      },
+      "custom_entities": "acq-encoding_dir-PA"
+    },
+    {
+      "id": "fmap-epi-ap-retrieval",
+      "datatype": "fmap",
+      "suffix": "epi",
+      "criteria": {
+        "SeriesNumber": 27
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_retrieval_sub06ses04"
+      },
+      "custom_entities": "acq-retrieval_dir-AP"
+    },
+    {
+      "id": "fmap-epi-pa-retrieval",
+      "datatype": "fmap",
+      "suffix": "epi",
+      "criteria": {
+        "SeriesNumber": 29
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_retrieval_sub06ses04"
+      },
+      "custom_entities": "acq-retrieval_dir-PA"
+    }
+  ]
+}

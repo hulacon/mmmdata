@@ -1,0 +1,149 @@
+{
+  "descriptions": [
+    {
+      "id": "anat-T1w-run1",
+      "datatype": "anat",
+      "suffix": "T1w",
+      "criteria": {
+        "SeriesNumber": 9
+      },
+      "custom_entities": "run-1"
+    },
+    {
+      "id": "anat-T1w-run2",
+      "datatype": "anat",
+      "suffix": "T1w",
+      "criteria": {
+        "SeriesNumber": 10
+      },
+      "custom_entities": "run-2"
+    },
+    {
+      "id": "anat-T1w-run3",
+      "datatype": "anat",
+      "suffix": "T1w",
+      "criteria": {
+        "SeriesNumber": 12
+      },
+      "custom_entities": "run-3"
+    },
+    {
+      "id": "anat-T1w-run4",
+      "datatype": "anat",
+      "suffix": "T1w",
+      "criteria": {
+        "SeriesNumber": 13
+      },
+      "custom_entities": "run-4"
+    },
+    {
+      "id": "anat-T2w-run1",
+      "datatype": "anat",
+      "suffix": "T2w",
+      "criteria": {
+        "SeriesNumber": 14
+      },
+      "custom_entities": "run-1"
+    },
+    {
+      "id": "anat-T2w-run2",
+      "datatype": "anat",
+      "suffix": "T2w",
+      "criteria": {
+        "SeriesNumber": 15
+      },
+      "custom_entities": "run-2"
+    },
+    {
+      "id": "anat-T2w-run3",
+      "datatype": "anat",
+      "suffix": "T2w",
+      "criteria": {
+        "SeriesNumber": 18
+      },
+      "custom_entities": "run-3"
+    },
+    {
+      "id": "anat-T2w-run4",
+      "datatype": "anat",
+      "suffix": "T2w",
+      "criteria": {
+        "SeriesNumber": 19
+      },
+      "custom_entities": "run-4"
+    },
+    {
+      "id": "func-bold-RestingBaseline-run1",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 57
+      },
+      "custom_entities": "task-RestingBaseline_run-1",
+      "sidecar_changes": {
+        "TaskName": "RestingBaseline",
+        "B0FieldSource": "B0map_encoding_sub07ses01"
+      }
+    },
+    {
+      "id": "func-sbref-RestingBaseline-run1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 56
+      },
+      "custom_entities": "task-RestingBaseline_run-1",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_encoding_sub07ses01"
+      }
+    },
+    {
+      "id": "fmap-epi-ap-encoding",
+      "datatype": "fmap",
+      "suffix": "epi",
+      "criteria": {
+        "SeriesNumber": 5
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_encoding_sub07ses01"
+      },
+      "custom_entities": "acq-encoding_dir-AP"
+    },
+    {
+      "id": "fmap-epi-pa-encoding",
+      "datatype": "fmap",
+      "suffix": "epi",
+      "criteria": {
+        "SeriesNumber": 6
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_encoding_sub07ses01"
+      },
+      "custom_entities": "acq-encoding_dir-PA"
+    },
+    {
+      "id": "fmap-epi-ap-cmrr_diff_3shell_sbref",
+      "datatype": "fmap",
+      "suffix": "epi",
+      "criteria": {
+        "SeriesNumber": 20
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_cmrr_diff_3shell_sbref_sub07ses01"
+      },
+      "custom_entities": "acq-cmrrDiff3shellSbref_dir-AP"
+    },
+    {
+      "id": "fmap-epi-pa-cmrr_diff_3shell_sbref",
+      "datatype": "fmap",
+      "suffix": "epi",
+      "criteria": {
+        "SeriesNumber": 29
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_cmrr_diff_3shell_sbref_sub07ses01"
+      },
+      "custom_entities": "acq-cmrrDiff3shellSbref_dir-PA"
+    }
+  ]
+}

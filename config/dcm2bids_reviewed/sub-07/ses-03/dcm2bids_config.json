@@ -1,0 +1,277 @@
+{
+  "descriptions": [
+    {
+      "id": "func-bold-localizerFloc-run1",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 8
+      },
+      "custom_entities": "task-localizerFloc_run-1",
+      "sidecar_changes": {
+        "TaskName": "localizerFloc",
+        "B0FieldSource": "B0map_encoding_sub07ses03"
+      }
+    },
+    {
+      "id": "func-bold-localizerFloc-run2",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 12
+      },
+      "custom_entities": "task-localizerFloc_run-2",
+      "sidecar_changes": {
+        "TaskName": "localizerFloc",
+        "B0FieldSource": "B0map_encoding_sub07ses03"
+      }
+    },
+    {
+      "id": "func-bold-localizerFloc-run3",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 16
+      },
+      "custom_entities": "task-localizerFloc_run-3",
+      "sidecar_changes": {
+        "TaskName": "localizerFloc",
+        "B0FieldSource": "B0map_encoding_sub07ses03"
+      }
+    },
+    {
+      "id": "func-bold-localizerPrf-run1",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 24
+      },
+      "custom_entities": "task-localizerPrf_run-1",
+      "sidecar_changes": {
+        "TaskName": "localizerPrf",
+        "B0FieldSource": "B0map_retrieval_sub07ses03"
+      }
+    },
+    {
+      "id": "func-bold-localizerPrf-run2",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 28
+      },
+      "custom_entities": "task-localizerPrf_run-2",
+      "sidecar_changes": {
+        "TaskName": "localizerPrf",
+        "B0FieldSource": "B0map_retrieval_sub07ses03"
+      }
+    },
+    {
+      "id": "func-bold-localizerPrf-run3",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 32
+      },
+      "custom_entities": "task-localizerPrf_run-3",
+      "sidecar_changes": {
+        "TaskName": "localizerPrf",
+        "B0FieldSource": "B0map_retrieval_sub07ses03"
+      }
+    },
+    {
+      "id": "func-bold-localizerTone-run1",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 40
+      },
+      "custom_entities": "task-localizerTone_run-1",
+      "sidecar_changes": {
+        "TaskName": "localizerTone",
+        "B0FieldSource": "B0map_retrieval_sub07ses03"
+      }
+    },
+    {
+      "id": "func-bold-localizerAuditory-run1",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 44
+      },
+      "custom_entities": "task-localizerAuditory_run-1",
+      "sidecar_changes": {
+        "TaskName": "localizerAuditory",
+        "B0FieldSource": "B0map_retrieval_sub07ses03"
+      }
+    },
+    {
+      "id": "func-bold-localizerMotor-run1",
+      "datatype": "func",
+      "suffix": "bold",
+      "criteria": {
+        "SeriesNumber": 48
+      },
+      "custom_entities": "task-localizerMotor_run-1",
+      "sidecar_changes": {
+        "TaskName": "localizerMotor",
+        "B0FieldSource": "B0map_retrieval_sub07ses03"
+      }
+    },
+    {
+      "id": "func-sbref-localizerFloc-run1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 7
+      },
+      "custom_entities": "task-localizerFloc_run-1",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_encoding_sub07ses03"
+      }
+    },
+    {
+      "id": "func-sbref-localizerFloc-run2",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 11
+      },
+      "custom_entities": "task-localizerFloc_run-2",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_encoding_sub07ses03"
+      }
+    },
+    {
+      "id": "func-sbref-localizerFloc-run3",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 15
+      },
+      "custom_entities": "task-localizerFloc_run-3",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_encoding_sub07ses03"
+      }
+    },
+    {
+      "id": "func-sbref-localizerPrf-run1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 23
+      },
+      "custom_entities": "task-localizerPrf_run-1",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_retrieval_sub07ses03"
+      }
+    },
+    {
+      "id": "func-sbref-localizerPrf-run2",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 27
+      },
+      "custom_entities": "task-localizerPrf_run-2",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_retrieval_sub07ses03"
+      }
+    },
+    {
+      "id": "func-sbref-localizerPrf-run3",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 31
+      },
+      "custom_entities": "task-localizerPrf_run-3",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_retrieval_sub07ses03"
+      }
+    },
+    {
+      "id": "func-sbref-localizerTone-run1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 39
+      },
+      "custom_entities": "task-localizerTone_run-1",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_retrieval_sub07ses03"
+      }
+    },
+    {
+      "id": "func-sbref-localizerAuditory-run1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 43
+      },
+      "custom_entities": "task-localizerAuditory_run-1",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_retrieval_sub07ses03"
+      }
+    },
+    {
+      "id": "func-sbref-localizerMotor-run1",
+      "datatype": "func",
+      "suffix": "sbref",
+      "criteria": {
+        "SeriesNumber": 47
+      },
+      "custom_entities": "task-localizerMotor_run-1",
+      "sidecar_changes": {
+        "B0FieldSource": "B0map_retrieval_sub07ses03"
+      }
+    },
+    {
+      "id": "fmap-epi-ap-encoding",
+      "datatype": "fmap",
+      "suffix": "epi",
+      "criteria": {
+        "SeriesNumber": 5
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_encoding_sub07ses03"
+      },
+      "custom_entities": "acq-encoding_dir-AP"
+    },
+    {
+      "id": "fmap-epi-pa-encoding",
+      "datatype": "fmap",
+      "suffix": "epi",
+      "criteria": {
+        "SeriesNumber": 6
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_encoding_sub07ses03"
+      },
+      "custom_entities": "acq-encoding_dir-PA"
+    },
+    {
+      "id": "fmap-epi-ap-retrieval",
+      "datatype": "fmap",
+      "suffix": "epi",
+      "criteria": {
+        "SeriesNumber": 19
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_retrieval_sub07ses03"
+      },
+      "custom_entities": "acq-retrieval_dir-AP"
+    },
+    {
+      "id": "fmap-epi-pa-retrieval",
+      "datatype": "fmap",
+      "suffix": "epi",
+      "criteria": {
+        "SeriesNumber": 21
+      },
+      "sidecar_changes": {
+        "B0FieldIdentifier": "B0map_retrieval_sub07ses03"
+      },
+      "custom_entities": "acq-retrieval_dir-PA"
+    }
+  ]
+}
