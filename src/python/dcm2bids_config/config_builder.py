@@ -38,9 +38,14 @@ def _build_bold_description(
         "datatype": "func",
         "suffix": "bold",
         "custom_entities": f"task-{task.task_label}",
+        # SeriesDescription, not MultibandAccelerationFactor, separates the
+        # BOLD from its SBRef (whose description carries a "_SBRef" suffix).
+        # The multiband field is absent from sub-06/07's DICOM export, which
+        # silently matched nothing; SeriesDescription == ProtocolName holds for
+        # all 609 already-converted runs and for the new cohort alike.
         "criteria": {
             "ProtocolName": protocol,
-            "MultibandAccelerationFactor": 3,
+            "SeriesDescription": protocol,
         },
         "sidecar_changes": {
             "TaskName": task.task_label,
@@ -113,7 +118,12 @@ def _build_fmap_description_seriesnumber(
     session: str,
 ) -> dict:
     """Build a fieldmap description matched by SeriesNumber."""
-    series_desc = f"se_epi_{direction.lower()}"
+    # dcm2bids matches criteria with fnmatch, so an unwildcarded string is an
+    # exact match. The description suffix is not stable across cohorts --
+    # "se_epi_ap" (sub-03/04/05), "se_epi_ap_encoding" and "se_epi_ap
+    # retrieval" (sub-06/07, separator varying by session) -- so anchor on the
+    # direction and let SeriesNumber, already exact, do the disambiguation.
+    series_desc = f"se_epi_{direction.lower()}*"
     return {
         "datatype": "fmap",
         "suffix": "epi",

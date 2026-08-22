@@ -102,6 +102,10 @@ def run_dcm2bids(
         "--cleanenv",
         "-B", f"{bids_root}:{bids_root}",
         "-B", f"{config_dir}:{config_dir}",
+        # DICOMs live outside the BIDS root since the sourcedata migration, so
+        # the bids_root bind no longer covers them. Read-only: dcm2bids only
+        # reads the source tree, and it is not ours to write.
+        "-B", f"{dicom_dir}:{dicom_dir}:ro",
         str(container),
         "dcm2bids",
         "-d", str(dicom_dir),
@@ -153,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = _load_config(repo_root)
 
     bids_root = Path(cfg["paths"]["bids_project_dir"])
+    source_root = Path(cfg["paths"]["source_dir"])
     code_root = Path(cfg["paths"]["code_root"])
     singularity_dir = Path(cfg["paths"]["singularity_dir"])
     container = singularity_dir / "dcm2bids-3.2.0.sif"
@@ -204,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
 
     errors = 0
     for session in sessions:
-        dicom_dir = bids_root / "sourcedata" / args.subject / session / "dicom"
+        dicom_dir = source_root / args.subject / session / "dicom"
         if not dicom_dir.exists():
             print(f"  [!] {args.subject}/{session}: DICOM dir not found: {dicom_dir}")
             errors += 1

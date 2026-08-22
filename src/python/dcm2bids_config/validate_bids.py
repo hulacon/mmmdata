@@ -125,6 +125,8 @@ def check_bold_dicom_alignment(
     bids_root: Path,
     subject: str,
     session: str,
+    *,
+    source_root: Path | None = None,
 ) -> list[ValidationIssue]:
     """Cross-reference BOLD JSON sidecars with DICOM source directories.
 
@@ -134,7 +136,11 @@ def check_bold_dicom_alignment(
     """
     issues: list[ValidationIssue] = []
     func_dir = bids_root / subject / session / "func"
-    dicom_dir = bids_root / "sourcedata" / subject / session / "dicom"
+    if source_root is None:
+        # DICOMs live in the sibling source tree, not under the BIDS root;
+        # without it there is nothing to cross-reference against.
+        return issues
+    dicom_dir = source_root / subject / session / "dicom"
     if not func_dir.is_dir() or not dicom_dir.is_dir():
         return issues
 
@@ -318,6 +324,7 @@ def validate_session(
     *,
     min_volumes: int = 20,
     events_dir: Path | None = None,
+    source_root: Path | None = None,
 ) -> ValidationReport:
     """Run all validation checks for a single subject/session.
 
@@ -331,6 +338,9 @@ def validate_session(
         Minimum BOLD volumes to consider a run complete.
     events_dir : Path, optional
         Alternative directory for events files.
+    source_root : Path, optional
+        Sibling DICOM source tree (config ``paths.source_dir``). Required for
+        the BOLD/DICOM cross-check; that check is skipped when omitted.
 
     Returns
     -------
@@ -342,7 +352,9 @@ def validate_session(
         check_bold_volumes(bids_root, subject, session, min_volumes=min_volumes)
     )
     report.issues.extend(
-        check_bold_dicom_alignment(bids_root, subject, session)
+        check_bold_dicom_alignment(
+            bids_root, subject, session, source_root=source_root
+        )
     )
     report.issues.extend(
         check_physio_alignment(bids_root, subject, session)

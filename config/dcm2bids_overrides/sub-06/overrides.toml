@@ -1,0 +1,127 @@
+# Sub-06 session overrides
+# Each section documents and handles sessions deviating from the canonical schedule.
+#
+# Localizer battery differs from sub-03/04/05: ses-02 and ses-03 each run the
+# full set (fLOC x3, PRF x3, tone, auditory, motor) against two fieldmap
+# groups, rather than the split fLOC arrangement those subjects used.
+# 'motor' is an existing task label -- sub-03/04/05 carry it only in ses-30.
+
+# =============================================================================
+# ses-01: Anatomy — plus an AP/PA fieldmap pair sub-03/04/05 never acquired
+# =============================================================================
+# The ses-01 protocol changed between cohorts: sub-06/07 acquired an encoding
+# fieldmap pair in the anatomy session, sub-03/04/05 acquired none. Decision
+# (2026-08-21, Ben): convert AND link them, so INITresting gets SDC for these
+# two subjects. That makes INITresting preprocessing differ across cohorts --
+# intentional, and recorded here so it is not read later as a conversion bug.
+[ses-01]
+note = "Anatomy + INITresting, with an encoding fieldmap pair (cohort-specific)"
+# The anatomy session type defaults to fmap_strategy="none", which suppresses
+# fmap emission entirely -- without this the bold would carry a B0FieldSource
+# pointing at a fieldmap that was never converted.
+fmap_strategy = "series_number"
+fmap_groups = ["encoding"]
+
+[[ses-01.tasks]]
+task_label = "INITresting"
+protocol_base = "Resting_baseline"
+fmap_group = "encoding"
+has_sbref = true
+
+[ses-01.fmap_series.encoding]
+ap = 5
+pa = 7
+
+# =============================================================================
+# ses-02: Localizer — fLOC (3 runs) + PRF (3 runs) + tone + auditory + motor
+# =============================================================================
+[ses-02]
+note = "Localizer: fLOC runs 1-3 on fmap group one; PRF, tone, auditory, motor on group two"
+fmap_groups = ["first", "second"]
+
+[[ses-02.tasks]]
+task_label = "floc"
+protocol_base = "localizer_floc_run{n}"
+fmap_group = "first"
+runs = 3
+has_sbref = true
+
+[[ses-02.tasks]]
+task_label = "prf"
+protocol_base = "localizer_prf_run{n}"
+fmap_group = "second"
+runs = 3
+has_sbref = true
+
+[[ses-02.tasks]]
+task_label = "tone"
+protocol_base = "localizer_tone"
+fmap_group = "second"
+has_sbref = true
+
+[[ses-02.tasks]]
+task_label = "auditory"
+protocol_base = "localizer_auditory"
+fmap_group = "second"
+has_sbref = true
+
+[[ses-02.tasks]]
+task_label = "motor"
+protocol_base = "localizer_motor"
+fmap_group = "second"
+has_sbref = true
+
+[ses-02.fmap_series.first]
+ap = 5
+pa = 6
+
+[ses-02.fmap_series.second]
+ap = 31
+pa = 33
+
+# =============================================================================
+# ses-03: Localizer — fLOC (3 runs) + PRF (3 runs) + tone + auditory + motor
+# =============================================================================
+[ses-03]
+note = "Localizer: fLOC runs 1-3 on fmap group one; PRF, tone, auditory, motor on group two"
+fmap_groups = ["first", "second"]
+
+[[ses-03.tasks]]
+task_label = "floc"
+protocol_base = "localizer_floc_run{n}"
+fmap_group = "first"
+runs = 3
+has_sbref = true
+
+[[ses-03.tasks]]
+task_label = "prf"
+protocol_base = "localizer_prf_run{n}"
+fmap_group = "second"
+runs = 3
+has_sbref = true
+
+[[ses-03.tasks]]
+task_label = "tone"
+protocol_base = "localizer_tone"
+fmap_group = "second"
+has_sbref = true
+
+[[ses-03.tasks]]
+task_label = "auditory"
+protocol_base = "localizer_auditory"
+fmap_group = "second"
+has_sbref = true
+
+[[ses-03.tasks]]
+task_label = "motor"
+protocol_base = "localizer_motor"
+fmap_group = "second"
+has_sbref = true
+
+[ses-03.fmap_series.first]
+ap = 5
+pa = 7
+
+[ses-03.fmap_series.second]
+ap = 21
+pa = 23

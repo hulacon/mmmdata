@@ -20,9 +20,14 @@ from .overrides import apply_overrides, load_overrides
 from .session_defs import SESSION_SCHEDULE, get_session_def
 
 
-def _resolve_dicom_dir(bids_root: Path, subject: str, session: str) -> Path:
-    """Resolve the DICOM directory for a subject/session."""
-    return bids_root / "sourcedata" / subject / session / "dicom"
+def _resolve_dicom_dir(source_root: Path, subject: str, session: str) -> Path:
+    """Resolve the DICOM directory for a subject/session.
+
+    DICOMs live in the sibling source tree (config ``paths.source_dir``), not
+    under the BIDS root. The raw data moved out of ``<bids_root>/sourcedata``
+    so the BIDS dataset can be shared without exposing PII.
+    """
+    return source_root / subject / session / "dicom"
 
 
 def _resolve_overrides_path(config_dir: Path, subject: str) -> Path:
@@ -38,7 +43,7 @@ def _resolve_output_path(config_dir: Path, subject: str, session: str) -> Path:
 def generate_one(
     subject: str,
     session: str,
-    bids_root: Path,
+    source_root: Path,
     config_dir: Path,
     *,
     dry_run: bool = False,
@@ -85,7 +90,7 @@ def generate_one(
     # 4. Inspect DICOMs for fieldmap info (unless overridden)
     fmap_info = override_fmap
     if fmap_info is None and session_def.fmap_strategy != "none":
-        dicom_dir = _resolve_dicom_dir(bids_root, subject, session)
+        dicom_dir = _resolve_dicom_dir(source_root, subject, session)
         detection = inspect_fieldmaps(dicom_dir)
         result["warnings"].extend(detection.warnings)
 
@@ -131,7 +136,7 @@ def generate_one(
     result["config"] = config
 
     # 5b. Check for truncated / duplicate BOLD series
-    dicom_dir = _resolve_dicom_dir(bids_root, subject, session)
+    dicom_dir = _resolve_dicom_dir(source_root, subject, session)
     if dicom_dir.is_dir():
         bold_check = inspect_bold_series(dicom_dir)
         if bold_check.truncated or bold_check.duplicates:
@@ -209,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Load project config
     cfg = load_config()
-    bids_root = Path(cfg["paths"]["bids_project_dir"])
+    source_root = Path(cfg["paths"]["source_dir"])
 
     if args.config_dir:
         config_dir = Path(args.config_dir)
@@ -226,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     results = []
     for session in sessions:
         result = generate_one(
-            args.subject, session, bids_root, config_dir,
+            args.subject, session, source_root, config_dir,
             dry_run=args.dry_run, force=args.force,
         )
         results.append(result)
