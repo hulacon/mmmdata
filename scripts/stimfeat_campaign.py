@@ -533,7 +533,11 @@ def _write_labels(name: str, rows: list[dict], cols: list[str]) -> Path:
     """
     LABEL_DIR.mkdir(parents=True, exist_ok=True)
     path = LABEL_DIR / name
-    present = [c for c in cols if rows and c in rows[0]]
+    # `stimulus_id` and `chunk_idx` are this table's own key and are written
+    # below; a caller asking for either would duplicate the column.
+    present = [c for c in cols
+               if rows and c in rows[0]
+               and c not in ("stimulus_id", "chunk_idx")]
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["stimulus_id", "chunk_idx", *present],
                            extrasaction="ignore")
@@ -633,10 +637,18 @@ def build_inputs(force: bool = False) -> list[str]:
                     silent.append(sid)
                     continue
                 w.writerows(seg)
-                label_rows.extend(seg)
+                # aud2psy's own chunk_idx is the segment's index *within its
+                # movie*; this table's chunk_idx is the row ordinal over the
+                # concatenation of all movies, which is what word2psy will
+                # number against. Two different things, so the upstream one
+                # is kept under its own name instead of being clobbered.
+                label_rows.extend(
+                    {**r, "transcribe_chunk_idx": r.get("chunk_idx")}
+                    for r in seg
+                )
                 n_rows += len(seg)
         _write_labels("movies_transcript.csv", label_rows,
-                      ["chunk_idx", "transcribe_asr_confidence",
+                      ["transcribe_chunk_idx", "transcribe_asr_confidence",
                        "transcribe_no_speech_prob"])
         print(f"  transcript: {n_rows} speech segments from "
               f"{len(movies()) - len(silent)} movies "
@@ -664,8 +676,17 @@ def build_inputs(force: bool = False) -> list[str]:
             raise SystemExit(
                 "ERROR: parse_movie_annotations.py wrote no TSV. "
                 "Fix: run it with --check and resolve what it reports.")
+        # Print the detail lines under a PROBLEMS/REFUSED header too. Printing
+        # only the header meant "annotations: PROBLEMS (1):" appeared on every
+        # run with nothing saying what the problem was.
+        echo = False
         for line in r.stdout.splitlines():
-            if line.strip().startswith(("PROBLEMS", "REFUSED")) or ": REFUSED" in line:
+            head = line.strip().startswith(("PROBLEMS", "REFUSED")) or ": REFUSED" in line
+            if head:
+                echo = True
+            elif echo and not line.startswith((" ", "\t")):
+                echo = False
+            if head or echo:
                 print(f"  annotations: {line.strip()}")
         _split_annotations(tsv, segb, segc)
         made += [str(segb), str(segc)]
