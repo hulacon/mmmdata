@@ -88,10 +88,36 @@ def registry(package: str) -> list[str]:
 
 # Cells that cannot run in the current environment. Kept in the matrix and
 # reported, never silently dropped: a missing cell must be visible as blocked.
-UNAVAILABLE = {
-    "beats": "aud2psy [beats] extra not installed (beat_this missing)",
-    "diarize": "aud2psy [diarize] extra not installed (pyannote missing); HF token is in place",
+#
+# MEASURED, not declared. Each entry names the import an optional extra
+# provides; availability is probed against the live interpreter. A
+# hand-maintained blocked-list is only correct until someone installs
+# something, and its staleness is invisible -- it reads as a real gap.
+OPTIONAL_IMPORTS = {
+    "beats": ("beat_this", "pip install 'beat_this @ git+https://github.com/CPJKU/beat_this'"),
+    "diarize": ("pyannote.audio", "pip install 'pyannote.audio>=4.0' (also needs an HF token and gate acceptance)"),
+    "egemaps": ("opensmile", "pip install 'opensmile>=2.5' (audEERING research licence, non-commercial)"),
+    "ebind": ("ebind", "pip install 'ebind @ git+https://github.com/encord-team/ebind'"),
+    "ebind_audio": ("ebind", "pip install 'ebind @ git+https://github.com/encord-team/ebind'"),
+    "ebind_text": ("ebind", "pip install 'ebind @ git+https://github.com/encord-team/ebind'"),
 }
+
+
+def _unavailable() -> dict[str, str]:
+    """Probe the live env for each optional extra's import."""
+    import importlib.util
+    blocked = {}
+    for model, (module, fix) in OPTIONAL_IMPORTS.items():
+        try:
+            present = importlib.util.find_spec(module) is not None
+        except (ImportError, ValueError):
+            present = False
+        if not present:
+            blocked[model] = f"{module} not importable -- {fix}"
+    return blocked
+
+
+UNAVAILABLE = _unavailable()
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +165,12 @@ class Source:
     depends: str | None = None  # "set/source/model" that must exist first
     note: str | None = None
     deferred: str | None = None  # why this source is out of the current wave
+    # Run every unit of one model through a single CLI invocation, so the
+    # model's weights load once instead of once per unit. Only worth it when
+    # units are SHORT -- for movie-length inputs the load is already amortised
+    # and the per-model re-decode would cost more than it saves. aud2psy only
+    # (its 0.14.0 --inputs-from); viz2psy/word2psy units are whole sets already.
+    batch: bool = False
 
     def units(self) -> list[Unit]:
         return self.units_fn()
@@ -233,14 +265,17 @@ def build_sources() -> list[Source]:
     ))
     S.append(Source(
         "twp1000", "word_audio", "aud2psy", "", True,
-        "4,000 word x voice audio files (~1 s each)",
+        "spoken-word audio (~0.54 s each), in the voice actually presented",
         _word_audio_units,
-        deferred="DEFERRED 2026-08-20. 64,000 of the manifest's 66,484 cells -- "
-                 "96% of the campaign -- and aud2psy has no per-stimulus aggregate "
-                 "table, so each ~1 s word would yield ~2 grid rows rather than the "
-                 "one row per (word, voice) the analysis wants. Needs an aggregate "
-                 "design in aud2psy before it is worth the GPU time. Include with "
-                 "--include-deferred.",
+        batch=True,
+        note="REOPENED 2026-08-22 (Ben), scoped to the presented voice only: the "
+             "word->voice assignment is frozen across subjects, so 1,000 of the "
+             "4,000 recordings carry the whole design and the arm is 18,000 cells, "
+             "not 72,000. Rationale is aud2psy coverage of the TB components -- a "
+             "matched acoustic comparison against NAT, and audio regressors -- "
+             "which no other source provides. Cost is compute, not disk: ~25 s per "
+             "cell is almost entirely model load, for ~0.54 s of audio. "
+             "--all-voices restores the full 4,000.",
     ))
 
     # -- movies -----------------------------------------------------------
@@ -312,11 +347,58 @@ def build_sources() -> list[Source]:
     return S
 
 
+# Set by --all-voices. Default False: only the voice each word was actually
+# presented in. See _word_audio_units for why that is the right default.
+ALL_VOICES = False
+# Set by --shard I/N; (i, n) 1-based, or None for every unit.
+SHARD = None
+
+
+def _shard(units: list) -> list:
+    """Round-robin slice of units for --shard I/N.
+
+    Round-robin rather than contiguous blocks so every shard draws from the
+    whole alphabet: units are cost-homogeneous here, but a contiguous split
+    would put any future ordering correlation (length, source, voice) entirely
+    inside one shard and skew its wall clock.
+    """
+    if SHARD is None:
+        return units
+    i, n = SHARD
+    return [u for k, u in enumerate(units) if k % n == (i - 1)]
+
+
 def _word_audio_units() -> list[Unit]:
+    """One unit per word, in the voice that word was actually presented in.
+
+    All four recordings of every word exist, but the word -> voice assignment
+    is frozen across subjects (registry column `presented_voice`), so 3,000 of
+    the 4,000 files are never heard by anyone. Scoring them would quadruple a
+    compute-bound arm to describe audio no participant received.
+
+    It would also break Contract B. Every voice of a word carries the same
+    `--stimulus-id`, separated only by output directory, so extracting all four
+    yields four rows sharing one `stimulus_id` with no voice column -- a
+    duplicate-key refusal in `psytwill features`. Restricted to the presented
+    voice, each word has exactly one row and the key is unique by construction.
+
+    `--all-voices` restores the full 4,000 for a question that genuinely needs
+    the unheard recordings (e.g. voice-identity controls). Its duplicate-key
+    consequence is real and is the caller's to resolve.
+    """
     out = []
+    missing = 0
     for row in twp1000():
         wid = row["stimulus_id"]
-        for voice in VOICES:
+        if ALL_VOICES:
+            voices = [v for v in VOICES if row.get(f"audio_file_{v}")]
+        else:
+            pv = (row.get("presented_voice") or "").strip()
+            if not pv:
+                missing += 1
+                continue
+            voices = [pv]
+        for voice in voices:
             col = f"audio_file_{voice}"
             if not row.get(col):
                 continue
@@ -326,6 +408,10 @@ def _word_audio_units() -> list[Unit]:
                 inputs=[str(STIM_DIR / "twp1000" / row[col])],
                 extra=["--stimulus-id", wid],
             ))
+    if missing and not ALL_VOICES:
+        print(f"  NOTE  {missing} words have no presented_voice in the registry "
+              f"(never presented to any subject yet); rebuild the registry after "
+              f"new subjects are BIDSified to pick them up.")
     return out
 
 
@@ -572,7 +658,7 @@ def _filtered(args) -> list[tuple[Source, Unit, str]]:
         if src.deferred and not args.include_deferred:
             continue
         try:
-            units = src.units()
+            units = _shard(src.units())
         except FileNotFoundError as e:
             print(f"  warning: {src.key} units unavailable: {e}", file=sys.stderr)
             continue
@@ -598,7 +684,7 @@ def cmd_plan(args) -> int:
                              deferred=src.deferred))
             continue
         try:
-            units = src.units()
+            units = _shard(src.units())
         except FileNotFoundError as e:
             rows.append(dict(key=src.key, package=src.package, error=str(e)))
             continue
@@ -679,6 +765,116 @@ def _preflight_clean() -> bool:
     return r.returncode == 0
 
 
+
+def _split_batchable(todo: list) -> tuple[list, list]:
+    """Partition pending cells into batch groups and per-cell leftovers.
+
+    A group is one (source, model): every pending unit of that model, run
+    through a single invocation. Grouping by model rather than by output
+    directory is what makes the saving worth having -- one load for all 1,000
+    words, not one per voice subdirectory.
+    """
+    groups: dict[tuple, list] = {}
+    rest = []
+    for src, unit, model in todo:
+        if src.batch and src.package == "aud2psy" and len(unit.inputs) == 1:
+            groups.setdefault((src.key, model), []).append((src, unit, model))
+        else:
+            rest.append((src, unit, model))
+    return list(groups.values()), rest
+
+
+def _run_batch_group(group: list, args) -> tuple[int, int, list]:
+    """Run one (source, model) group through a single aud2psy invocation."""
+    import csv as _csv
+
+    src, _, model = group[0]
+    label = f"{src.key}/{model}"
+    root = OUT_ROOT / src.set_ / src.source
+    manifest_dir = INPUT_DIR / "_batch"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest = manifest_dir / f"{src.set_}_{src.source}_{model}.csv"
+
+    rows = []
+    missing = []
+    for s, unit, m in group:
+        if not Path(unit.inputs[0]).exists():
+            missing.append(unit.id)
+            continue
+        stem = stem_for(s, unit, m)
+        try:
+            rel = stem.relative_to(root)
+        except ValueError:
+            # A unit that writes outside the source root cannot ride the shared
+            # -o; fall back rather than silently relocating its output.
+            return _run_group_individually(group, args)
+        sid = unit.extra[unit.extra.index("--stimulus-id") + 1] \
+            if "--stimulus-id" in unit.extra else unit.id
+        rows.append({"path": unit.inputs[0], "stimulus_id": sid, "output": str(rel)})
+
+    if not rows:
+        print(f"  {label} SKIP: no inputs present ({len(missing)} missing)")
+        return 0, len(group), [f"{label} (missing inputs)"]
+
+    with open(manifest, "w", newline="") as f:
+        w = _csv.DictWriter(f, ["path", "stimulus_id", "output"])
+        w.writeheader()
+        w.writerows(rows)
+
+    cmd = [PY, "-m", "aud2psy.cli", model, "--inputs-from", str(manifest),
+           "-o", str(root), "--hop", str(GRID_HOP)]
+    if args.dry_run:
+        print(f"  [batch] {label}: {len(rows)} units in ONE invocation "
+              f"(model loads once)\n      {' '.join(cmd)}")
+        return 0, 0, []
+
+    print(f"  [batch] {label}: {len(rows)} units, one model load ...", flush=True)
+    t0 = time.time()
+    r = subprocess.run(cmd)
+    dt = time.time() - t0
+
+    n_ok = n_fail = 0
+    failures = []
+    for s, unit, m in group:
+        stem = stem_for(s, unit, m)
+        if not is_done(stem):
+            n_fail += 1
+            failures.append(f"{s.key}/{m}[{unit.id}]")
+            continue
+        bad = {} if args.no_verify else unattributed_features(stem)
+        if bad:
+            for table, cols in bad.items():
+                print(f"      §4.1 VIOLATION {table}: {len(cols)} feature "
+                      f"column(s) psytwill cannot attribute: {cols[:6]}")
+            n_fail += 1
+            failures.append(f"{s.key}/{m}[{unit.id}] (unprefixed columns)")
+        else:
+            n_ok += 1
+    per = dt / max(len(rows), 1)
+    print(f"      {'ok' if not n_fail else 'PARTIAL'}  {dt:.1f}s total, "
+          f"{per:.2f}s/unit  ({n_ok} ok, {n_fail} failed, rc={r.returncode})")
+    return n_ok, n_fail, failures
+
+
+def _run_group_individually(group: list, args) -> tuple[int, int, list]:
+    """Per-cell fallback when a group cannot share one output root."""
+    n_ok = n_fail = 0
+    failures = []
+    for s, unit, m in group:
+        stem = stem_for(s, unit, m)
+        stem.parent.mkdir(parents=True, exist_ok=True)
+        if args.dry_run:
+            print(f"  {s.key}/{m}[{unit.id}]\n      {' '.join(command_for(s, unit, m))}")
+            continue
+        r = subprocess.run(command_for(s, unit, m))
+        if r.returncode == 0 and is_done(stem):
+            n_ok += 1
+        else:
+            n_fail += 1
+            failures.append(f"{s.key}/{m}[{unit.id}]")
+    return n_ok, n_fail, failures
+
+
 def cmd_run(args) -> int:
     cells = _filtered(args)
     redo = getattr(args, "redo", False)
@@ -698,8 +894,19 @@ def cmd_run(args) -> int:
           + (" (--redo: done cells are being re-extracted)" if redo else "")
           + (f", blocked models skipped: {', '.join(blocked)}" if blocked else ""))
 
+    # Batchable sources run one CLI invocation per model over all their pending
+    # units, so the weights load once rather than once per unit. Everything
+    # else keeps the per-cell path. The done-marker is unchanged either way:
+    # one §4.1 family per cell, its .meta.json written by the same save_result.
+    batched, todo = _split_batchable(todo)
     n_ok = n_fail = 0
     failures = []
+    for group in batched:
+        ok, fail, names = _run_batch_group(group, args)
+        n_ok += ok
+        n_fail += fail
+        failures.extend(names)
+
     for i, (src, unit, model) in enumerate(todo, 1):
         stem = stem_for(src, unit, model)
         cmd = command_for(src, unit, model)
@@ -785,6 +992,15 @@ def main() -> int:
                        help="image | frames | audio | word | caption | humancap | annot | cue")
         p.add_argument("--model", metavar="NAME", help="one registry model name")
         p.add_argument("--unit", metavar="ID", help="one unit id (e.g. a movie stimulus_id)")
+        p.add_argument("--shard", metavar="I/N",
+                       help="process only shard I of N (1-based), splitting the "
+                            "matched UNITS round-robin. For arm-sized sources "
+                            "that exceed one job's wall clock; each shard is "
+                            "independently resumable like any other slice")
+        p.add_argument("--all-voices", action="store_true",
+                       help="twp1000/word_audio: score all 4 voices of every "
+                            "word, not just the one presented. Quadruples the "
+                            "arm and makes stimulus_id non-unique across voices")
         p.add_argument("--include-deferred", action="store_true",
                        help="include sources deferred out of the current wave")
 
@@ -816,6 +1032,20 @@ def main() -> int:
     p.set_defaults(fn=cmd_verify)
 
     args = ap.parse_args()
+    # Module-level because the Source table holds unit builders as zero-arg
+    # thunks; threading a flag through every builder to reach one of them
+    # would be worse than a single explicit global set once, here.
+    global ALL_VOICES, SHARD
+    ALL_VOICES = getattr(args, "all_voices", False)
+    s = getattr(args, "shard", None)
+    if s:
+        try:
+            i, n = (int(x) for x in s.split("/"))
+        except ValueError:
+            sys.exit(f"ERROR: --shard wants I/N (1-based), got {s!r}")
+        if not (1 <= i <= n):
+            sys.exit(f"ERROR: --shard {s} out of range; need 1 <= I <= N")
+        SHARD = (i, n)
     return args.fn(args)
 
 

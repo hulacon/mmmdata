@@ -257,8 +257,45 @@ def build_shared1000() -> tuple[list[str], list[list[str]]]:
     return header, rows
 
 
+def presented_voice_map() -> dict[str, str]:
+    """The word -> voice assignment the experiment actually used.
+
+    All four voice recordings exist for every word, but only ONE is ever
+    presented, and the assignment is FROZEN across subjects -- it is not
+    re-randomised per participant, and it is not derivable from `itmno`.
+    That is a design fact recorded nowhere in `stimuli/`: it survives only in
+    the events files. Deriving it here is what makes it declared rather than
+    re-inferred by every consumer that needs it.
+
+    The one-voice-per-word invariant is ASSERTED, not assumed. If a future
+    subject is presented a word in a second voice, this exits rather than
+    silently picking a winner -- at which point `presented_voice` is the wrong
+    shape for the design and the column must become per-subject.
+    """
+    seen = defaultdict(set)
+    for path in sorted(BIDS_ROOT.glob("sub-*/ses-*/func/*_events.tsv")):
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f, delimiter="\t"):
+                word = (row.get("word") or "").strip()
+                voice = (row.get("voice") or "").strip()
+                if not word or not voice:
+                    continue
+                if word.lower() in {"n/a", "nan"} or voice.lower() in {"n/a", "nan"}:
+                    continue
+                seen[word].add(voice)
+    conflicts = {w: sorted(v) for w, v in seen.items() if len(v) > 1}
+    if conflicts:
+        for w, v in sorted(conflicts.items())[:10]:
+            print(f"CONFLICT: '{w}' presented in {v}")
+        sys.exit(f"ERROR: {len(conflicts)} words presented in more than one "
+                 f"voice. The frozen word->voice assignment no longer holds, "
+                 f"so `presented_voice` cannot be a single column.")
+    return {w: next(iter(v)) for w, v in seen.items()}
+
+
 def build_twp1000() -> tuple[list[str], list[list[str]]]:
     root = STIM_DIR / "twp1000"
+    presented = presented_voice_map()
     rows = []
     for row in read_csv_rows(root / "twp1000.csv"):
         word, itmno = row["word"], row["itmno"]
@@ -268,14 +305,18 @@ def build_twp1000() -> tuple[list[str], list[list[str]]]:
             if not (root / rel).exists():
                 sys.exit(f"ERROR: twp1000 audio missing on disk: {rel}")
             files.append(rel)
-        rows.append([word, itmno] + files)
+        rows.append([word, itmno] + files + [presented.get(word, "")])
     if len(rows) != 1000:
         sys.exit(f"ERROR: twp1000.csv has {len(rows)} rows, expected 1000.")
     words = [r[0] for r in rows]
     if len(set(words)) != len(words):
         sys.exit("ERROR: duplicate words in twp1000.")
+    n_presented = sum(1 for r in rows if r[-1])
+    print(f"  twp1000: {n_presented}/1000 words have a presented voice "
+          f"({len(VOICES) * 1000 - n_presented} of the {len(VOICES) * 1000} "
+          f"recordings are never heard by anyone)")
     rows.sort(key=lambda r: int(r[1]))
-    header = ["stimulus_id", "itmno"] + [f"audio_file_{v}" for v in VOICES]
+    header = ["stimulus_id", "itmno"] + [f"audio_file_{v}" for v in VOICES] + ["presented_voice"]
     return header, rows
 
 
