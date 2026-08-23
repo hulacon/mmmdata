@@ -607,6 +607,10 @@ def build_inputs(force: bool = False) -> list[str]:
         # the segment ordinal are provenance about the transcription, not
         # features of the speech, so they go to the labels table.
         cols = ["stimulus_id", "text", "onset", "offset"]
+        # aud2psy 0.15.0 prefixed its feature columns and renamed
+        # segment_idx -> chunk_idx (§4.1). The transcript is read here, so
+        # the rename lands here too.
+        rename = {"transcribe_text": "text"}
         label_rows = []
         n_rows = 0
         silent = []
@@ -622,8 +626,9 @@ def build_inputs(force: bool = False) -> list[str]:
                         f"`stimfeat_campaign.py run --set movies --source "
                         f"audio --model transcribe` first.")
                 with open(src) as f:
-                    seg = [r for r in csv.DictReader(f)
-                           if (r.get("text") or "").strip()]
+                    seg = [{**r, **{v: r[k] for k, v in rename.items() if k in r}}
+                           for r in csv.DictReader(f)]
+                seg = [r for r in seg if (r.get("text") or "").strip()]
                 if not seg:
                     silent.append(sid)
                     continue
@@ -631,7 +636,8 @@ def build_inputs(force: bool = False) -> list[str]:
                 label_rows.extend(seg)
                 n_rows += len(seg)
         _write_labels("movies_transcript.csv", label_rows,
-                      ["segment_idx", "asr_confidence", "no_speech_prob"])
+                      ["chunk_idx", "transcribe_asr_confidence",
+                       "transcribe_no_speech_prob"])
         print(f"  transcript: {n_rows} speech segments from "
               f"{len(movies()) - len(silent)} movies "
               f"({len(silent)} with no speech: {', '.join(silent) or 'none'})")
