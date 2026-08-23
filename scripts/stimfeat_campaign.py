@@ -72,6 +72,13 @@ OUT_ROOT = BIDS_ROOT / "derivatives" / "stimuli_features"
 # Under the store rather than in `stimuli/`: they are generated, and writes
 # into the BIDS stimuli tree are blocked anyway.
 INPUT_DIR = OUT_ROOT / "_inputs"
+# Experiment variables that used to ride along inside the extractor inputs:
+# annotator, seg_number, ASR confidence, caption ordinal. They are not
+# features and word2psy no longer carries them (0.6.0 made passthrough
+# opt-in), so they live here instead -- one row per input row, keyed by
+# `chunk_idx`, which is the extractor's own row ordinal. Joining a labels
+# table back onto the feature table is (stimulus_id, chunk_idx).
+LABEL_DIR = OUT_ROOT / "_labels"
 
 STIMFEAT_ENV = Path("/gpfs/projects/hulacon/shared/envs/stimfeat")
 PY = str(STIMFEAT_ENV / "bin" / "python")
@@ -515,6 +522,28 @@ def unattributed_features(stem: Path) -> dict[str, list[str]]:
 # ---------------------------------------------------------------------------
 # Derived input CSVs
 # ---------------------------------------------------------------------------
+def _write_labels(name: str, rows: list[dict], cols: list[str]) -> Path:
+    """Write the experiment-side labels for one derived input.
+
+    `chunk_idx` is written explicitly rather than left implicit in row
+    order. word2psy numbers chunks 0..N-1 over the input file, so the two
+    agree by construction -- but materialising it means a later reordering
+    of the input breaks the join loudly instead of silently re-pairing
+    every label with the wrong row.
+    """
+    LABEL_DIR.mkdir(parents=True, exist_ok=True)
+    path = LABEL_DIR / name
+    present = [c for c in cols if rows and c in rows[0]]
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["stimulus_id", "chunk_idx", *present],
+                           extrasaction="ignore")
+        w.writeheader()
+        for i, r in enumerate(rows):
+            w.writerow({"stimulus_id": r["stimulus_id"], "chunk_idx": i,
+                        **{c: r.get(c) for c in present}})
+    return path
+
+
 def build_inputs(force: bool = False) -> list[str]:
     """Generate the derived word2psy input CSVs. Idempotent."""
     INPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -541,16 +570,22 @@ def build_inputs(force: bool = False) -> list[str]:
         src = STIM_DIR / "shared1000" / "coco_captions.csv"
         unmatched = set()
         matched = set()
+        kept = []
         with open(src) as f, open(p, "w", newline="") as out:
             w = csv.writer(out)
-            w.writerow(["stimulus_id", "caption_index", "caption"])
+            w.writerow(["stimulus_id", "caption"])
             for row in csv.DictReader(f):
                 sid = by_coco.get(str(row["cocoId"]))
                 if sid is None:
                     unmatched.add(row["cocoId"])
                     continue
                 matched.add(sid)
-                w.writerow([sid, row["caption_index"], row["caption"]])
+                w.writerow([sid, row["caption"]])
+                kept.append({"stimulus_id": sid,
+                             "caption_index": row["caption_index"]})
+        # Which of an image's five captions this is: an ordinal of the
+        # annotation set, not a feature of the image.
+        _write_labels("shared1000_humancap.csv", kept, ["caption_index"])
         n_reg = len(by_coco)
         if unmatched or len(matched) != n_reg:
             raise SystemExit(
@@ -567,8 +602,12 @@ def build_inputs(force: bool = False) -> list[str]:
     # the audio, so this input is a join, not a second inference pass.
     p = INPUT_DIR / "movies_transcript.csv"
     if force or not p.exists():
-        cols = ["stimulus_id", "segment_idx", "text", "onset", "offset",
-                "asr_confidence", "no_speech_prob"]
+        # onset/offset stay in the input: they are the stimulus's own
+        # coordinates and word2psy cannot derive them. ASR confidences and
+        # the segment ordinal are provenance about the transcription, not
+        # features of the speech, so they go to the labels table.
+        cols = ["stimulus_id", "text", "onset", "offset"]
+        label_rows = []
         n_rows = 0
         silent = []
         with open(p, "w", newline="") as out:
@@ -589,7 +628,10 @@ def build_inputs(force: bool = False) -> list[str]:
                     silent.append(sid)
                     continue
                 w.writerows(seg)
+                label_rows.extend(seg)
                 n_rows += len(seg)
+        _write_labels("movies_transcript.csv", label_rows,
+                      ["segment_idx", "asr_confidence", "no_speech_prob"])
         print(f"  transcript: {n_rows} speech segments from "
               f"{len(movies()) - len(silent)} movies "
               f"({len(silent)} with no speech: {', '.join(silent) or 'none'})")
@@ -637,8 +679,11 @@ def _split_annotations(tsv: Path, segb: Path, segc: Path) -> None:
             f"ERROR: {tsv} has no `level` column (found {list(rows[0])}). "
             f"Fix: parse_movie_annotations.py must emit one row per segment "
             f"with a level column naming SEG-B vs SEG-C.")
-    keep = ["stimulus_id", "annotator", "seg_number", "onset", "offset",
-            "duration", "corrected", "description"]
+    # The extractor gets identity, the segment's own bounds, and the text.
+    # Who annotated it, which segment number it is, and whether it was
+    # corrected are variables of this study, not features of the stimulus.
+    keep = ["stimulus_id", "onset", "offset", "description"]
+    labels = ["seg_number", "annotator", "duration", "corrected"]
     for out_path, want in ((segb, "B"), (segc, "C")):
         sel = [r for r in rows if r[level_col].upper().endswith(want)]
         with open(out_path, "w", newline="") as f:
@@ -646,6 +691,7 @@ def _split_annotations(tsv: Path, segb: Path, segc: Path) -> None:
                                extrasaction="ignore")
             w.writeheader()
             w.writerows(sel)
+        _write_labels(out_path.name, sel, labels)
 
 
 # ---------------------------------------------------------------------------

@@ -54,7 +54,7 @@ echo "=== groups ==="
 
 echo "=== build ==="
 rc=0
-"${PY}" "${DRIVER}" aggregate "$@" || rc=$?
+"${PY}" -u "${DRIVER}" aggregate "$@" || rc=$?
 
 echo "Finished $(date -Is) rc=${rc}"
 exit ${rc}
