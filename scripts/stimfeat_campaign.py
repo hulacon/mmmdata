@@ -27,6 +27,9 @@ Usage
     stimfeat_campaign.py run --set shared1000 --source image --model clip
     stimfeat_campaign.py run --set movies --source frames --unit adventure-time
     stimfeat_campaign.py run --set movies --source audio --dry-run
+    stimfeat_campaign.py verify                    # §4.1-check what is written
+    stimfeat_campaign.py aggregate --dry-run       # psytwill groups
+    stimfeat_campaign.py aggregate --set movies    # build them
 
 Filters (`--set/--source/--model/--unit`) compose and apply to every verb.
 `--dry-run` on `run` prints the commands it would execute and exits 0.
@@ -980,6 +983,158 @@ def cmd_verify(args) -> int:
     return 1 if n_bad else 0
 
 
+# ---------------------------------------------------------------------------
+# Aggregation -- the psytwill `features` surface (settles-when #5)
+# ---------------------------------------------------------------------------
+# A cell writes one family; a family is 1-3 tables of *different granularity*
+# (`main`/`frames` per stimulus or window, `chunks` per text chunk, `words`
+# per word). Those granularities cannot share one long table: they key on the
+# same (stimulus_id, onset, offset) and a one-word chunk collides with its own
+# word row. So the aggregate groups by (set, source, table), not by set.
+#
+# Two kinds of table are skipped rather than passed to psytwill, which refuses
+# both: ones with no feature columns at all (index-only, e.g. a `speakers`
+# table), and ones that carry features but no `stimulus_id` (§4.1). The second
+# kind should be empty -- word2psy 0.5.1 fixed the guard that caused it -- and
+# is reported loudly if it is not.
+
+AGG_DIR = OUT_ROOT / "psytwill"
+
+
+def _dir_stems(directory: Path) -> list[str]:
+    """Every cell stem written into one directory, longest first."""
+    stems = _dir_stems.cache.get(directory)
+    if stems is None:
+        stems = sorted(
+            {stem_for(s_, u, m).stem
+             for s_ in build_sources()
+             for u in s_.units()
+             if u.out_dir == directory
+             for m in s_.models},
+            key=len, reverse=True,
+        )
+        _dir_stems.cache[directory] = stems
+    return stems
+
+
+_dir_stems.cache = {}
+
+
+def family_tables(src: Source, unit: Unit, model: str) -> dict[str, Path]:
+    """{table name: csv} for one cell.
+
+    A bare `<stem>*.csv` glob over-matches: `caption.csv`'s stem also globs
+    `caption_clip_text_chunks.csv`, which belongs to the `caption` *source*
+    (prefix `caption_`), not to the `caption` *model*. Longest stem wins.
+    """
+    stem = stem_for(src, unit, model)
+    mine = stem.stem
+    others = [n for n in _dir_stems(stem.parent) if len(n) > len(mine)]
+    out = {}
+    for path in sorted(stem.parent.glob(mine + "*.csv")):
+        if any(path.stem == n or path.stem.startswith(n + "_") for n in others):
+            continue
+        name = path.stem[len(mine):].lstrip("_") or "main"
+        out[name] = path
+    return out
+
+
+def _table_usable(path: Path) -> tuple[bool, str]:
+    """Can psytwill aggregate this table? (usable, reason-if-not)."""
+    from psytwill.spaces import INDEX_COLUMNS
+
+    with open(path, newline="") as f:
+        header = next(csv.reader(f), [])
+    if not [c for c in header if c not in INDEX_COLUMNS]:
+        return False, "no feature columns"
+    if "stimulus_id" not in header:
+        return False, "no stimulus_id (§4.1)"
+    return True, ""
+
+
+def aggregate_groups(args) -> tuple[dict[tuple[str, str, str], list[Path]],
+                                    list[tuple[Path, str]]]:
+    """(set, source, table) -> input CSVs, plus the tables that were skipped."""
+    groups: dict[tuple[str, str, str], list[Path]] = {}
+    skipped: list[tuple[Path, str]] = []
+    for src, unit, model in _filtered(args):
+        if not is_done(stem_for(src, unit, model)):
+            continue
+        for table, path in family_tables(src, unit, model).items():
+            usable, why = _table_usable(path)
+            if not usable:
+                skipped.append((path, why))
+                continue
+            groups.setdefault((src.set_, src.source, table), []).append(path)
+    return {k: sorted(v) for k, v in sorted(groups.items())}, skipped
+
+
+def agg_output(key: tuple[str, str, str]) -> Path:
+    set_, source, table = key
+    name = f"{set_}_{source}" + ("" if table == "main" else f"_{table}")
+    return AGG_DIR / f"{name}_features.parquet"
+
+
+def cmd_aggregate(args) -> int:
+    """Build the psytwill long-form feature table for each group."""
+    groups, skipped = aggregate_groups(args)
+    if not groups:
+        print("no aggregatable tables matched the filters")
+        return 0
+
+    by_reason: dict[str, int] = {}
+    for _, why in skipped:
+        by_reason[why] = by_reason.get(why, 0) + 1
+    if by_reason:
+        print("skipped tables psytwill cannot consume:")
+        for why, n in sorted(by_reason.items()):
+            print(f"  {n:>6}  {why}")
+        bad = [p for p, why in skipped if "stimulus_id" in why]
+        if bad:
+            print(f"  WARNING: {len(bad)} table(s) have features but no "
+                  f"stimulus_id -- re-extract with word2psy >= 0.5.1, "
+                  f"e.g. {bad[0]}")
+        print()
+
+    print(f"{len(groups)} group(s):")
+    todo = []
+    for key, paths in groups.items():
+        out = agg_output(key)
+        state = "done" if out.exists() and not args.redo else "todo"
+        print(f"  {'/'.join(key):<34} {len(paths):>6} inputs  -> "
+              f"{out.name}  [{state}]")
+        if state == "todo":
+            todo.append((key, paths, out))
+    if args.dry_run:
+        print(f"\ndry run: {len(todo)} group(s) would be built")
+        return 0
+    if not todo:
+        print("\nnothing to do (use --redo to rebuild)")
+        return 0
+
+    from psytwill.features import build_features
+
+    AGG_DIR.mkdir(parents=True, exist_ok=True)
+    n_fail = 0
+    for key, paths, out in todo:
+        label = "/".join(key)
+        t0 = time.time()
+        try:
+            summary = build_features([str(p) for p in paths], output=out)
+        except Exception as exc:                       # noqa: BLE001
+            n_fail += 1
+            print(f"  FAIL {label}: {type(exc).__name__}: {exc}")
+            if args.fail_fast:
+                return 1
+            continue
+        print(f"  ok   {label}: {summary['rows']:,} rows, "
+              f"{summary['n_stimuli']:,} stimuli, {len(summary['models'])} "
+              f"models, {out.stat().st_size/1e6:.0f} MB, "
+              f"{time.time() - t0:.0f}s")
+    print(f"\n{len(todo) - n_fail}/{len(todo)} group(s) built")
+    return 1 if n_fail else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1026,6 +1181,17 @@ def main() -> int:
     p.add_argument("--no-verify", action="store_true",
                    help="skip the post-write §4.1 attribution check")
     p.set_defaults(fn=cmd_run)
+
+    p = sub.add_parser(
+        "aggregate",
+        help="build the psytwill long-form feature table per (set, source, table)")
+    add_filters(p)
+    p.add_argument("--dry-run", action="store_true",
+                   help="list the groups and exit")
+    p.add_argument("--redo", action="store_true",
+                   help="rebuild groups whose parquet already exists")
+    p.add_argument("--fail-fast", action="store_true")
+    p.set_defaults(fn=cmd_aggregate)
 
     p = sub.add_parser("verify", help="§4.1-check every family already in the store")
     add_filters(p)
