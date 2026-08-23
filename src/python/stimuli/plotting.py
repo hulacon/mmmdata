@@ -9,12 +9,20 @@ viz2psy functions used:
 - viz2psy.viz.interactive.scatter.plot_scatter_interactive
 - viz2psy.viz.heatmap.plot_heatmap
 
-Data is loaded from viz2psy score CSVs (one per movie or one
-combined CSV for images).
+Data comes from the Contract B feature store's psytwill aggregates
+(``derivatives/stimuli_features/psytwill/<group>_features.parquet``),
+identified by ``store`` (the directory) and ``group``. Those tables are
+long — one row per (stimulus, coordinate, model, feature) — so the loader
+here pivots back to the wide frame the plotting code expects.
+
+Superseded the pre-0.6.0 ``stimuli/*/viz2psy_scores*`` CSVs, which covered
+only viz2psy, reached neither twp1000 nor any audio or text feature, and
+used the column names viz2psy 0.6.0 renamed.
 """
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -23,8 +31,15 @@ import numpy as np
 import pandas as pd
 
 
-# High-dimensional embedding prefixes
-_HIGHDIM_PREFIXES = ("clip_", "dinov2_", "gist_", "saliency_")
+#: Contract B §4.1 embedding columns: a model prefix plus fixed-width index
+#: suffixes (``clip_000``, ``ebind_1023``, the ``saliency_23_23`` grid).
+#: Named scores (``places_airfield``, ``llstat_b_mean``) do not match.
+_EMBEDDING_RE = re.compile(r"_\d+(_\d+)*$")
+
+#: Long-table columns that locate a row rather than measure it.
+_KEY_COLUMNS = (
+    "stimulus_id", "voice", "time", "onset", "offset", "chunk_idx", "word_idx",
+)
 
 
 def _ensure_viz2psy(viz2psy_dir: Optional[str] = None) -> bool:
@@ -48,40 +63,93 @@ def _save_html(fig, save_path: Optional[str] = None) -> None:
 
 
 def _scalar_columns(df: pd.DataFrame) -> list[str]:
-    """Return non-embedding numeric columns."""
+    """Return plottable numeric columns: no embeddings, no key columns."""
     return [
         c for c in df.select_dtypes(include="number").columns
-        if not any(c.startswith(p) for p in _HIGHDIM_PREFIXES)
-        and c != "time"
+        if not _EMBEDDING_RE.search(c) and c not in _KEY_COLUMNS
     ]
 
 
-def _load_image_scores(scores_dir: str) -> pd.DataFrame:
-    """Load image scores CSV."""
-    p = Path(scores_dir)
-    if p.is_file() and p.suffix == ".csv":
-        return pd.read_csv(p)
-    csv = p / "viz2psy_scores.csv" if p.is_dir() else p
-    if not csv.exists() and p.is_dir():
-        csv = p.parent / "viz2psy_scores.csv"
-    if not csv.exists():
-        raise FileNotFoundError(f"Image scores not found at {csv}")
-    return pd.read_csv(csv)
+def _group_path(store: str, group: str) -> Path:
+    return Path(store) / f"{group}_features.parquet"
 
 
-def _find_movie_csv(scores_dir: str, movie_name: str) -> Path:
-    """Find a movie scores CSV by name."""
-    d = Path(scores_dir)
-    exact = d / f"{movie_name}_scores.csv"
-    if exact.exists():
-        return exact
-    lower = movie_name.lower()
-    for csv in d.glob("*_scores.csv"):
-        if csv.stem.removesuffix("_scores").lower() == lower:
-            return csv
-    raise FileNotFoundError(
-        f"Movie scores not found for '{movie_name}' in {d}"
-    )
+def available_groups(store: str) -> list[str]:
+    """Group ids in the feature store, for an error message worth reading."""
+    d = Path(store)
+    if not d.exists():
+        return []
+    return sorted(p.name.removesuffix("_features.parquet")
+                  for p in d.glob("*_features.parquet"))
+
+
+def load_group(
+    store: str,
+    group: str,
+    stimulus_id: Optional[str] = None,
+    models: Optional[list[str]] = None,
+    embeddings: bool = False,
+) -> pd.DataFrame:
+    """One feature group as a wide frame: a row per stimulus/coordinate.
+
+    Filters are pushed into the scan rather than applied afterwards — the
+    largest group is 237 M rows, and the embedding columns alone are most
+    of them.
+    """
+    import duckdb
+
+    path = _group_path(store, group)
+    if not path.exists():
+        groups = available_groups(store)
+        raise FileNotFoundError(
+            f"No feature group {group!r} in {store}. "
+            + (f"Available: {', '.join(groups)}" if groups
+               else "The store holds no aggregates; run "
+                    "`stimfeat_campaign.py aggregate`.")
+        )
+
+    where, params = [], []
+    if stimulus_id is not None:
+        where.append("lower(stimulus_id) = lower(?)")
+        params.append(stimulus_id)
+    if models:
+        where.append(f"model IN ({', '.join('?' for _ in models)})")
+        params.extend(models)
+    if not embeddings and not models:
+        where.append(r"NOT regexp_matches(feature, '_\d+(_\d+)*$')")
+
+    sql = (f"SELECT * FROM read_parquet('{path}') "
+           f"WHERE {' AND '.join(where) if where else 'TRUE'}")
+    con = duckdb.connect()
+    try:
+        con.execute("SET enable_progress_bar = false")
+        long = con.execute(sql, params).df()
+    finally:
+        con.close()
+
+    if long.empty:
+        raise ValueError(
+            f"No rows in group {group!r}"
+            + (f" for stimulus {stimulus_id!r}" if stimulus_id else "")
+        )
+
+    keys = [c for c in _KEY_COLUMNS if long[c].notna().any()]
+    long = long.copy()
+    long["_v"] = long["value"].where(long["value"].notna(), long["value_str"])
+    wide = long.pivot_table(
+        index=keys, columns="feature", values="_v", aggfunc="first"
+    ).reset_index()
+    wide.columns.name = None
+    # The long table carries numbers and strings in one column, so the pivot
+    # comes back as object; restore numeric dtype where the whole column is
+    # numeric, or _scalar_columns finds nothing to plot.
+    for column in wide.columns:
+        if column in keys or wide[column].dtype != object:
+            continue
+        coerced = pd.to_numeric(wide[column], errors="coerce")
+        if coerced.notna().sum() == wide[column].notna().sum():
+            wide[column] = coerced
+    return wide
 
 
 # ---------------------------------------------------------------------------
@@ -89,8 +157,9 @@ def _find_movie_csv(scores_dir: str, movie_name: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def plot_movie_feature_timeline(
-    scores_dir: str,
+    store: str,
     movie_name: str,
+    group: str = "movies_frames",
     features: Optional[list[str]] = None,
     time_range: Optional[list[float]] = None,
     title: Optional[str] = None,
@@ -104,10 +173,13 @@ def plot_movie_feature_timeline(
 
     Parameters
     ----------
-    scores_dir : str
-        Path to directory containing movie score CSVs.
+    store : str
+        The psytwill aggregates directory inside the feature store.
     movie_name : str
-        Movie name (e.g., "Mr-Bean").
+        Movie stimulus_id (e.g., "adventure-time").
+    group : str
+        Feature group. Default "movies_frames" (the 0.5 s visual grid);
+        "movies_audio_frames" for acoustics.
     features : list of str, optional
         Features to plot. Supports glob patterns if viz2psy available.
         Default: all scalar features.
@@ -122,8 +194,7 @@ def plot_movie_feature_timeline(
     -------
     plotly Figure
     """
-    csv_path = _find_movie_csv(scores_dir, movie_name)
-    df = pd.read_csv(csv_path)
+    df = load_group(store, group, stimulus_id=movie_name)
 
     if time_range and len(time_range) == 2:
         df = df[(df["time"] >= time_range[0]) & (df["time"] <= time_range[1])]
@@ -174,8 +245,9 @@ def plot_movie_feature_timeline(
 # ---------------------------------------------------------------------------
 
 def plot_image_feature_comparison(
-    scores_dir: str,
+    store: str,
     feature: str,
+    group: str = "shared1000_image",
     top_n: Optional[int] = None,
     title: Optional[str] = None,
     save_path: Optional[str] = None,
@@ -185,8 +257,10 @@ def plot_image_feature_comparison(
 
     Parameters
     ----------
-    scores_dir : str
-        Path to scores CSV or directory containing it.
+    store : str
+        The psytwill aggregates directory inside the feature store.
+    group : str
+        Feature group. Default "shared1000_image".
     feature : str
         Feature column name (e.g., "memorability", "Awe").
     top_n : int, optional
@@ -201,7 +275,7 @@ def plot_image_feature_comparison(
     """
     import plotly.express as px
 
-    df = _load_image_scores(scores_dir)
+    df = load_group(store, group)
 
     if feature not in df.columns:
         available = _scalar_columns(df)
@@ -231,7 +305,8 @@ def plot_image_feature_comparison(
 # ---------------------------------------------------------------------------
 
 def plot_feature_similarity_matrix(
-    scores_dir: str,
+    store: str,
+    group: str = "shared1000_image",
     model: str = "clip",
     n_stimuli: Optional[int] = 50,
     title: Optional[str] = None,
@@ -242,8 +317,10 @@ def plot_feature_similarity_matrix(
 
     Parameters
     ----------
-    scores_dir : str
-        Path to scores CSV or directory containing it.
+    store : str
+        The psytwill aggregates directory inside the feature store.
+    group : str
+        Feature group. Default "shared1000_image".
     model : str, default "clip"
         Embedding prefix ("clip" or "dinov2").
     n_stimuli : int, optional, default 50
@@ -258,7 +335,8 @@ def plot_feature_similarity_matrix(
     """
     import plotly.graph_objects as go
 
-    df = _load_image_scores(scores_dir)
+    # Embeddings are excluded by default; naming the model opts in.
+    df = load_group(store, group, models=[model])
 
     prefix = f"{model}_"
     embed_cols = [c for c in df.columns if c.startswith(prefix)]
@@ -307,8 +385,9 @@ def plot_feature_similarity_matrix(
 # ---------------------------------------------------------------------------
 
 def plot_feature_distribution(
-    scores_dir: str,
+    store: str,
     feature: str,
+    group: str = "shared1000_image",
     group_by: Optional[str] = None,
     title: Optional[str] = None,
     save_path: Optional[str] = None,
@@ -318,8 +397,10 @@ def plot_feature_distribution(
 
     Parameters
     ----------
-    scores_dir : str
-        Path to scores CSV or directory containing it.
+    store : str
+        The psytwill aggregates directory inside the feature store.
+    group : str
+        Feature group. Default "shared1000_image".
     feature : str
         Feature column name.
     group_by : str, optional
@@ -334,7 +415,7 @@ def plot_feature_distribution(
     """
     import plotly.express as px
 
-    df = _load_image_scores(scores_dir)
+    df = load_group(store, group)
 
     if feature not in df.columns:
         available = _scalar_columns(df)
@@ -359,7 +440,8 @@ def plot_feature_distribution(
 # ---------------------------------------------------------------------------
 
 def plot_embedding_scatter(
-    scores_dir: str,
+    store: str,
+    group: str = "shared1000_image",
     model: str = "clip",
     method: str = "pca",
     color_by: Optional[str] = None,
@@ -375,8 +457,10 @@ def plot_embedding_scatter(
 
     Parameters
     ----------
-    scores_dir : str
-        Path to scores CSV or directory containing it.
+    store : str
+        The psytwill aggregates directory inside the feature store.
+    group : str
+        Feature group. Default "shared1000_image".
     model : str, default "clip"
         Embedding prefix ("clip" or "dinov2").
     method : str, default "pca"
@@ -393,7 +477,10 @@ def plot_embedding_scatter(
     -------
     plotly Figure
     """
-    df = _load_image_scores(scores_dir)
+    # The embedding model, plus whatever `color_by` names -- a scatter
+    # coloured by a score needs that score loaded alongside the dimensions.
+    wanted = [model] + ([color_by.split("_")[0]] if color_by else [])
+    df = load_group(store, group, models=wanted)
 
     if n_stimuli and len(df) > n_stimuli:
         df = df.sample(n=n_stimuli, random_state=42).reset_index(drop=True)
