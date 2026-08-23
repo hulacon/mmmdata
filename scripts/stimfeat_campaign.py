@@ -468,55 +468,202 @@ def command_for(src: Source, unit: Unit, model: str) -> list[str]:
 # every extraction before 2026-08-20 used only embedding models, whose columns
 # are prefixed by construction. So every cell is checked against the consumer
 # that actually has to attribute the columns: psytwill's own resolver.
+#
+# A declaration-based gate is a filter with two sides, and this one only ever
+# looked at one of them. Through 2026-08-23 it narrowed to `is_declared(c)` --
+# flagging only columns the sidecar *claims as features* that psytwill cannot
+# attribute -- and so missed three real defects in a row:
+#
+#   1. `is_downbeat` (aud2psy `beats`): never declared at all, so invisible.
+#      `is_declared()` gates on declaration; an undeclared emitted column
+#      cannot fail a check that only inspects declarations.
+#   2. 335 word-level tables carrying features but no `stimulus_id`: the gate
+#      checked column *attributability* and never that the key column exists.
+#   3. aud2psy sidecars declare columns as `models.<m>.columns`, while
+#      viz2psy/word2psy nest them under `models.<m>.features.columns`. Reading
+#      only the nested form left `declared` empty for every aud2psy cell, so
+#      even the forward check was a no-op there.
+#
+# The gate now mirrors the consumer rather than the declarations, and checks
+# emission against the sidecar in BOTH directions. psytwill melts every column
+# not in its INDEX_COLUMNS and attributes it by model-name prefix, so that --
+# not the declared column list -- is the contract a cell has to satisfy.
 
-def unattributed_features(stem: Path) -> dict[str, list[str]]:
-    """{table: [columns psytwill cannot attribute to any model]} for one cell.
+#: Kinds of §4.1 violation, in report order. Each maps to one directional
+#: question about the cell's emitted tables vs. its sidecar.
+VIOLATION_KINDS = {
+    "unattributable": "emitted feature column matches no model prefix",
+    "no_stimulus_id": "table has features but no stimulus_id",
+    "undeclared": "emitted, attributable, but absent from the sidecar",
+    "not_emitted": "declared as a feature but written to no table",
+}
 
-    Reserved (non-feature) columns are expected to be unattributed and are
-    not reported. Returns {} for a fully compliant family.
-    """
-    from psytwill.features import _resolve_models
+#: Aggregate tables rename `x` to `x_mean` / `x_sd` / ... (§4.1).
+_AGG_SUFFIXES = ("_mean", "_sd", "_min", "_max")
+
+
+def _reserved_columns() -> set[str]:
+    """psytwill's INDEX_COLUMNS -- the columns it will not melt as features."""
     try:
         from psytwill.spaces import RESERVED_COLUMNS
-        reserved = set(RESERVED_COLUMNS)
+        return set(RESERVED_COLUMNS)
+    except ImportError:
+        pass
+    try:  # psytwill >= 0.5 spells it INDEX_COLUMNS
+        from psytwill.spaces import INDEX_COLUMNS
+        return set(INDEX_COLUMNS)
     except ImportError:  # older psytwill; §4.1 carries the canonical list
-        reserved = {
+        return {
             "stimulus_id", "filename", "filepath", "image_idx", "time",
             "onset", "offset", "chunk_idx", "chunk_label", "n_words", "word",
             "word_idx", "sentence_idx", "voice", "speaker", "turn_idx",
         }
+
+
+def _declared_columns(sidecar: dict) -> tuple[set[str], set[str]]:
+    """(explicitly declared feature columns, models that declared a list).
+
+    §4.1 permits two declaration shapes and the store uses both: viz2psy and
+    word2psy nest the list under ``models.<m>.features.columns``; aud2psy puts
+    it directly on the entry as ``models.<m>.columns``. Embedding models
+    declare a ``pattern`` + ``count`` instead of a list -- they contribute no
+    columns here and their model name is left out of the second set, which is
+    what keeps `undeclared` / `not_emitted` from firing on 1,024 EBind dims.
+    """
+    declared: set[str] = set()
+    listed: set[str] = set()
+    for name, entry in (sidecar.get("models") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        feats = entry.get("features")
+        cols = None
+        if isinstance(feats, dict) and isinstance(feats.get("columns"), list):
+            cols = feats["columns"]
+        elif isinstance(entry.get("columns"), list):
+            cols = entry["columns"]
+        if cols is None:
+            continue
+        declared.update(cols)
+        listed.add(name)
+    return declared, listed
+
+
+def _family_tables(stem: Path) -> list[Path]:
+    """The CSVs of one cell's family: `<stem>.csv` and `<stem>_<table>.csv`.
+
+    Anchored on a `_` boundary, and attributed to the **longest** cell stem
+    that claims it. One directory holds many cells whose stems prefix each
+    other: `shared1000/image` writes `caption.csv`, and the word2psy models
+    that consume those captions write `caption_emotion_chunks.csv`,
+    `caption_wordform_words.csv`, and nine more. A bare prefix glob hands all
+    of them to the `caption` cell, whose sidecar declares one BLIP model and
+    therefore cannot attribute a single `emotion_*` column -- 11 violations
+    against the wrong sidecar. The pre-2026-08-23 gate globbed the same way
+    and never showed it, because `is_declared()` filtered every one of those
+    columns back out.
+    """
+    base = stem.stem
+    # `.stem` on "caption_emotion.meta.json" is "caption_emotion.meta", not
+    # the cell stem -- Path.stem strips one suffix, and a sidecar has two.
+    siblings = {
+        name for name in (
+            p.name.removesuffix(".meta.json")
+            for p in stem.parent.glob("*.meta.json")
+        )
+        if name != base and name.startswith(base + "_")
+    }
+
+    def claimed_by_sibling(name: str) -> bool:
+        return any(name == sib or name.startswith(sib + "_") for sib in siblings)
+
+    return sorted(
+        p for p in stem.parent.glob(f"{base}*.csv")
+        if (p.stem == base or p.stem.startswith(base + "_"))
+        and not claimed_by_sibling(p.stem)
+    )
+
+
+def family_violations(stem: Path) -> list[tuple[str, str, list[str]]]:
+    """§4.1 violations for one cell's family as (kind, table, columns).
+
+    Empty for a compliant family. `kind` is a key of VIOLATION_KINDS; `table`
+    is the CSV's filename, or the family stem for the family-wide checks.
+    """
+    from psytwill.features import _resolve_models
+
+    reserved = _reserved_columns()
     meta = stem.with_suffix(".meta.json")
     if not meta.exists():
-        return {}
+        return []
     sidecar = json.loads(meta.read_text())
-    bad: dict[str, list[str]] = {}
-    for table in sorted(stem.parent.glob(f"{stem.stem}*.csv")):
+    declared, listed_models = _declared_columns(sidecar)
+
+    def base_name(col: str) -> str:
+        for suffix in _AGG_SUFFIXES:
+            if col.endswith(suffix):
+                return col[: -len(suffix)]
+        return col
+
+    out: list[tuple[str, str, list[str]]] = []
+    emitted_bases: set[str] = set()
+
+    for table in _family_tables(stem):
         with open(table) as f:
             cols = next(csv.reader(f), [])
         if not cols:
             continue
-        _, un = _resolve_models(cols, sidecar)
-        # Columns the campaign itself adds as passthrough context (annotator,
-        # seg_number, ...) are not features either; they are whatever the
-        # input CSV carried. Only flag columns the sidecar claims as features.
-        declared = set()
-        for entry in sidecar.get("models", {}).values():
-            feats = entry.get("features", {})
-            declared.update(feats.get("columns", []) or [])
-        # Aggregate tables rename `x` to `x_mean` / `x_sd` / ... (§4.1), so a
-        # chunks-level column counts as declared if its base name is.
-        def is_declared(col: str) -> bool:
-            if col in declared:
-                return True
-            for suffix in ("_mean", "_sd", "_min", "_max"):
-                if col.endswith(suffix) and col[: -len(suffix)] in declared:
-                    return True
-            return False
+        features = [c for c in cols if c not in reserved]
+        emitted_bases.update(base_name(c) for c in features)
 
-        offenders = [c for c in un if c not in reserved and is_declared(c)]
-        if offenders:
-            bad[table.name] = offenders
-    return bad
+        # Direction 1 -- what psytwill cannot attribute. No declaration
+        # filter: an undeclared unprefixed column is exactly the defect the
+        # old `is_declared()` narrowing made invisible.
+        mapping, un = _resolve_models(features, sidecar)
+        if un:
+            out.append(("unattributable", table.name, sorted(un)))
+
+        # The key column, which attributability says nothing about. psytwill
+        # falls back to `chunk_label` with a warning -- which for
+        # `movies/caption` made the caption *text* the stimulus id.
+        if features and "stimulus_id" not in cols:
+            out.append(("no_stimulus_id", table.name, []))
+
+        # Direction 2 -- emitted and attributable, but the sidecar never says
+        # so. Only meaningful for models that declared an explicit list.
+        if declared:
+            stray = sorted(
+                c for c in features
+                if base_name(c) not in declared and c not in declared
+                and mapping.get(c) in listed_models
+            )
+            if stray:
+                out.append(("undeclared", table.name, stray))
+
+    # Direction 2, the other way -- declared but written nowhere. A sidecar
+    # that promises a column the family does not contain is as wrong as one
+    # that omits a column it does.
+    if declared:
+        missing = sorted(
+            c for c in declared
+            if c not in reserved and c not in emitted_bases
+            and base_name(c) not in emitted_bases
+        )
+        if missing:
+            out.append(("not_emitted", stem.name, missing))
+
+    return out
+
+
+def report_violations(
+    label: str,
+    violations: list[tuple[str, str, list[str]]],
+    indent: str = "      ",
+) -> None:
+    """Print one cell's violations, one line per (kind, table)."""
+    for kind, table, cols in violations:
+        detail = f": {cols[:6]}{' ...' if len(cols) > 6 else ''}" if cols else ""
+        print(f"{indent}§4.1 {label} {table} [{kind}] "
+              f"{VIOLATION_KINDS[kind]}{detail}")
 
 
 # ---------------------------------------------------------------------------
@@ -917,13 +1064,12 @@ def _run_batch_group(group: list, args) -> tuple[int, int, list]:
             n_fail += 1
             failures.append(f"{s.key}/{m}[{unit.id}]")
             continue
-        bad = {} if args.no_verify else unattributed_features(stem)
+        bad = [] if args.no_verify else family_violations(stem)
         if bad:
-            for table, cols in bad.items():
-                print(f"      §4.1 VIOLATION {table}: {len(cols)} feature "
-                      f"column(s) psytwill cannot attribute: {cols[:6]}")
+            report_violations(f"{s.key}/{m}[{unit.id}]", bad)
             n_fail += 1
-            failures.append(f"{s.key}/{m}[{unit.id}] (unprefixed columns)")
+            kinds = sorted({kind for kind, _, _ in bad})
+            failures.append(f"{s.key}/{m}[{unit.id}] ({', '.join(kinds)})")
         else:
             n_ok += 1
     per = dt / max(len(rows), 1)
@@ -1007,15 +1153,15 @@ def cmd_run(args) -> int:
         r = subprocess.run(cmd)
         dt = time.time() - t0
         if r.returncode == 0 and is_done(stem):
-            bad = {} if args.no_verify else unattributed_features(stem)
+            bad = [] if args.no_verify else family_violations(stem)
             if bad:
-                for table, cols in bad.items():
-                    print(f"      §4.1 VIOLATION {table}: {len(cols)} feature "
-                          f"column(s) psytwill cannot attribute: {cols[:6]}")
-                print(f"      Fix: prefix them with the model's registry name "
-                      f"in {src.package}, then re-run this cell.")
+                report_violations(label, bad)
+                print(f"      Fix: in {src.package}, prefix each column with "
+                      f"the model's registry name and declare it in the "
+                      f"sidecar, then re-run this cell.")
                 n_fail += 1
-                failures.append(f"{label} (unprefixed columns)")
+                kinds = sorted({kind for kind, _, _ in bad})
+                failures.append(f"{label} ({', '.join(kinds)})")
                 if args.fail_fast:
                     break
             else:
@@ -1044,15 +1190,17 @@ def cmd_verify(args) -> int:
     cells = [(s_, u, m) for s_, u, m in _filtered(args)
              if is_done(stem_for(s_, u, m))]
     n_bad = 0
+    by_kind: dict[str, int] = {k: 0 for k in VIOLATION_KINDS}
     for src, unit, model in cells:
-        bad = unattributed_features(stem_for(src, unit, model))
+        bad = family_violations(stem_for(src, unit, model))
         if bad:
             n_bad += 1
-            for table, cols in bad.items():
-                print(f"  §4.1 {src.key}/{model}[{unit.id}] {table}: "
-                      f"{len(cols)} unattributable: {cols[:6]}")
-    print(f"\n{len(cells)} families checked, {n_bad} with unattributable "
-          f"feature columns")
+            report_violations(f"{src.key}/{model}[{unit.id}]", bad, indent="  ")
+            for kind, _, _ in bad:
+                by_kind[kind] += 1
+    print(f"\n{len(cells)} families checked, {n_bad} with §4.1 violations")
+    for kind, why in VIOLATION_KINDS.items():
+        print(f"  {by_kind[kind]:>6}  {kind:<16} {why}")
     return 1 if n_bad else 0
 
 
