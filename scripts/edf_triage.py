@@ -27,7 +27,12 @@ from eyelinkio import read_edf
 
 # --- Config ---
 SOURCEDATA = "/gpfs/projects/hulacon/shared/mmmdata/sourcedata"
-OUTPUT_CSV = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/raw2bids_converters/edf_triage.csv"
+# Written beside the converters, which is where generate_inventory.py reads it.
+# Not tracked in git: it is generated data keyed on raw source filenames.
+OUTPUT_CSV = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "src", "python", "raw2bids_converters", "edf_triage.csv",
+)
 VIABILITY_THRESHOLD = 0.60  # >=60% valid to keep a channel
 
 # --- EDF filename parsing (mirrors edf_to_physio.py) ---
@@ -39,18 +44,18 @@ def parse_edf_path(edf_path):
     sub = parts[0]  # sub-XX
     ses = parts[1]  # ses-YY
 
-    # Standard: s3s1r1m_2025_04_01_12_39.EDF
+    # Standard: s#s#r#m_YYYY_MM_DD_HH_MM.EDF
     m = re.match(r"s\d+s\d+r(\d+)([mr])_", fname)
     if m:
         return sub, ses, int(m.group(1)), "encoding" if m.group(2) == "m" else "retrieval"
 
-    # Missing suffix: s4s6r1_2025_05_14_14_15.EDF
+    # Missing suffix: s#s#r#_YYYY_MM_DD_HH_MM.EDF
     m = re.match(r"s\d+s\d+r(\d+)_\d{4}_", fname)
     if m:
         phase = "encoding" if "/Encoding/" in edf_path or "/encoding/" in edf_path else "retrieval"
         return sub, ses, int(m.group(1)), phase
 
-    # Extra 's': s4s4s1r_2025_04_30_12_38.EDF
+    # Extra 's': s#s#s#r_YYYY_MM_DD_HH_MM.EDF
     m = re.match(r"s\d+s\d+s(\d+)[mr]?_", fname)
     if m:
         phase = "encoding" if "/Encoding/" in edf_path or "/encoding/" in edf_path else "retrieval"

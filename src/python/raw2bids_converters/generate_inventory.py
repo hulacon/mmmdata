@@ -121,6 +121,10 @@ EDF_ANOMALIES = {
     "s4s4s1r_": (4, 4, 1, "m"),
     # sub-04/ses-24: "s4s6r1" missing phase letter; actually retrieval run 1
     "s4s6r1_2025": (4, 6, 1, "r"),
+    # The two keys below are the one place a real date-time is load-bearing:
+    # both files share the prefix "s3s6r1r_" and only the acquisition time
+    # separates the encoding run from the retrieval run, so a generic key
+    # cannot tell them apart. Everywhere else, use placeholder forms.
     # sub-03/ses-24: all 3 files labeled 'r' (retrieval) but BOLD acq times
     # and trigger counts prove the first two are encoding runs:
     #   s3s6r1r_12_05 → 772 triggers ≈ 775 vols NATencoding run-01 (acq 12:06)
@@ -558,12 +562,24 @@ def walk_subject(subj_num):
     return rows
 
 
-def load_edf_triage():
+def load_edf_triage(required=True):
     """Load edf_triage.csv into a dict keyed by source_file path.
 
-    Returns empty dict if the file doesn't exist.
+    The file is generated data, not code, so it is not tracked in git -- which
+    means "absent" is a normal state on a fresh checkout and must not be a
+    silent one. Without it every EDF exclusion disappears from the inventory
+    and the result looks like a clean run, so absence raises by default. Pass
+    ``required=False`` to build an inventory deliberately without triage.
     """
     if not os.path.isfile(EDF_TRIAGE_CSV):
+        if required:
+            raise FileNotFoundError(
+                f"No EDF triage table at {EDF_TRIAGE_CSV}. Without it every "
+                "EDF exclusion is silently dropped from the inventory. "
+                "Regenerate it with `sbatch scripts/edf_triage.sbatch` (it "
+                "writes to that path), or pass required=False to build an "
+                "inventory without triage on purpose."
+            )
         return {}
     triage = {}
     with open(EDF_TRIAGE_CSV, newline="") as f:
@@ -734,6 +750,13 @@ def main():
         help="Comma-separated subject numbers or IDs (e.g. '3,4,5' or "
              "'sub-06,sub-07'). Default: %s" % ",".join(map(str, DEFAULT_SUBJECTS)),
     )
+    parser.add_argument(
+        "--no-triage", action="store_true",
+        help="Build the inventory without EDF triage decisions. Every EDF is "
+             "then marked convertible, including runs triage would exclude -- "
+             "so state it deliberately rather than reaching this state by a "
+             "missing file.",
+    )
     args = parser.parse_args()
 
     if args.subjects:
@@ -750,15 +773,17 @@ def main():
         if args.verbose:
             print(f"  Found {len(rows)} files")
 
-    # Apply EDF triage decisions
-    triage = load_edf_triage()
+    # Apply EDF triage decisions. Missing-by-accident raises inside the loader;
+    # only --no-triage reaches the skip, so an inventory built without
+    # exclusions is always something someone chose.
+    triage = load_edf_triage(required=not args.no_triage)
     if triage:
         all_rows = apply_edf_triage(all_rows, triage)
         n_excluded = sum(1 for r in all_rows if r["conversion_type"] == "edf_excluded")
         n_edf = sum(1 for r in all_rows if r["conversion_type"] in ("edf_to_physio", "edf_excluded"))
         print(f"EDF triage applied: {n_excluded}/{n_edf} files excluded")
     else:
-        print(f"WARNING: {EDF_TRIAGE_CSV} not found, skipping EDF triage")
+        print("EDF triage SKIPPED (--no-triage): no EDF run is excluded")
 
     # Add scanner physio rows from physio_triage.csv
     physio_rows = load_physio_triage({bids_sub(n) for n in subjects})

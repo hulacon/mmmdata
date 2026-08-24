@@ -32,7 +32,17 @@ INVENTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "file_inven
 
 
 def load_inventory():
-    """Load and return all rows from file_inventory.csv."""
+    """Load and return all rows from file_inventory.csv.
+
+    Generated data, so it is not tracked in git; regenerate it rather than
+    expecting a checkout to carry it.
+    """
+    if not os.path.isfile(INVENTORY):
+        raise FileNotFoundError(
+            f"No conversion manifest at {INVENTORY}. It is generated, not "
+            "tracked in git -- rebuild it with `python generate_inventory.py "
+            f"--output {INVENTORY}`."
+        )
     with open(INVENTORY, newline="") as f:
         reader = csv.DictReader(f)
         return list(reader)

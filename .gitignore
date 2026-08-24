@@ -45,3 +45,9 @@ work_*/
 
 # Generated reports
 validation_report.tsv
+
+# Generated conversion tables — data, not code. They are keyed on raw source
+# filenames (which embed acquisition date-times), and this repo is public.
+# Regenerate: scripts/edf_triage.sbatch, then generate_inventory.py.
+src/python/raw2bids_converters/edf_triage.csv
+src/python/raw2bids_converters/file_inventory.csv

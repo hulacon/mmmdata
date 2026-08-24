@@ -53,7 +53,7 @@ def parse_edf_filename(edf_path):
     """
     fname = os.path.basename(edf_path)
 
-    # Standard: s3s1r1m_2025_04_01_12_39.EDF
+    # Standard: s#s#r#m_YYYY_MM_DD_HH_MM.EDF
     m = re.match(r"s(\d+)s(\d+)r(\d+)([mr])_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}\.EDF$", fname)
     if m:
         subj = int(m.group(1))
@@ -62,7 +62,7 @@ def parse_edf_filename(edf_path):
         phase = "encoding" if m.group(4) == "m" else "retrieval"
         return subj, sess, run, phase
 
-    # Missing suffix: s4s6r1_2025_05_14_14_15.EDF (infer from directory)
+    # Missing suffix: s#s#r#_YYYY_MM_DD_HH_MM.EDF (infer from directory)
     m = re.match(r"s(\d+)s(\d+)r(\d+)_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}\.EDF$", fname)
     if m:
         subj = int(m.group(1))
@@ -71,7 +71,7 @@ def parse_edf_filename(edf_path):
         phase = "encoding" if "/Encoding/" in edf_path or "/encoding/" in edf_path else "retrieval"
         return subj, sess, run, phase
 
-    # Extra 's': s4s4s1r_2025_04_30_12_38.EDF
+    # Extra 's': s#s#s#r_YYYY_MM_DD_HH_MM.EDF
     m = re.match(r"s(\d+)s(\d+)s(\d+)[mr]?_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}\.EDF$", fname)
     if m:
         subj = int(m.group(1))
