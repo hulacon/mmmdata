@@ -1298,6 +1298,20 @@ def agg_output(key: tuple[str, str, str]) -> Path:
 
 def cmd_aggregate(args) -> int:
     """Build the psytwill long-form feature table for each group."""
+    if getattr(args, "model", None):
+        sys.exit(
+            "ERROR: `aggregate --model` would write a partial group.\n"
+            "  A group parquet is keyed (set, source, table) and holds EVERY "
+            "model of that\n"
+            "  table; rebuilding it from one model's CSVs silently drops the "
+            "others, and\n"
+            "  --redo overwrites the good file with the partial one.\n"
+            "  Fix: narrow with --set/--source instead. To pick up a single "
+            "re-extracted\n"
+            "  model, re-run `run --model NAME --redo` and then `aggregate "
+            "--redo` over\n"
+            "  the (set, source) pairs that contain it."
+        )
     groups, skipped = aggregate_groups(args)
     if not groups:
         print("no aggregatable tables matched the filters")
