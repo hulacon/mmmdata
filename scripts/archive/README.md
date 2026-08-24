@@ -33,9 +33,8 @@ Three things retired them:
 3. **They are not resumable.** `stimfeat_campaign.py` treats the sidecar as
    the done-marker, so it resumes at model granularity with no state file.
 
-Their output paths are queued for deletion (mmmdata-agents
-`docs/CLUSTER-TODO.md` §12). Once that runs, these scripts will write to
-directories that no longer exist. That is intended: read
+Their output paths were **deleted 2026-08-23**, so these scripts now write to
+directories that no longer exist. That is intended, not a bug to fix: read
 `derivatives/stimuli_features/` instead, through the psytwill aggregates.
 
 To re-extract anything they produced:
