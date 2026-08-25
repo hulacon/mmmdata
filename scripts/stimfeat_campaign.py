@@ -292,10 +292,11 @@ def build_sources() -> list[Source]:
              "which no other source provides. Cost is compute, not disk: ~25 s per "
              "cell is almost entirely model load, for ~0.54 s of audio. "
              "--all-voices restores the full 4,000.",
-        # conversation-structure over a single ~0.54 s one-voice recording is
-        # meaningless (its diarize tables are degenerate), and as its own cell
-        # it cannot run anyway: aud2psy requires diarize in the same batch call.
-        exclude=("conversation",),
+        # conversation structure and speaking rate over a single ~0.54 s
+        # one-voice recording are meaningless (degenerate turn/word tables),
+        # and as their own cells they cannot run anyway: aud2psy requires
+        # diarize/transcribe in the same batch call.
+        exclude=("conversation", "speech_rate"),
     ))
 
     # -- movies -----------------------------------------------------------
@@ -469,6 +470,10 @@ def command_for(src: Source, unit: Unit, model: str) -> list[str]:
             # cell has not run yet
             speakers = unit.out_dir / f"{src.prefix}diarize_speakers.csv"
             cmd += ["--speakers", str(speakers)]
+        if model == "speech_rate":
+            # likewise: stored transcribe word timestamps, no Whisper re-run
+            words = unit.out_dir / f"{src.prefix}transcribe_transcript_words.csv"
+            cmd += ["--words", str(words)]
         return cmd
     if src.package == "word2psy":
         return [PY, "-m", "word2psy.cli", model, *unit.inputs,

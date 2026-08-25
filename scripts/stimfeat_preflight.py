@@ -46,6 +46,10 @@ KNOWN_NESTED = {
     # emits `speech_emotion_{valence,arousal,dominance}`, and psytwill's
     # `_model_prefixes` sorts longest-first. Added to contracts §4.1.
     ("speech_emotion", "speech"),
+    # Caught by this pre-flight before the speech_rate extraction ran
+    # (2026-08-25) — resolves for the same reason as speech_emotion.
+    # Added to contracts §4.1.
+    ("speech_rate", "speech"),
 }
 
 
