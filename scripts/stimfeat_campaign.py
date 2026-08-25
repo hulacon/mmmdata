@@ -181,13 +181,17 @@ class Source:
     # and the per-model re-decode would cost more than it saves. aud2psy only
     # (its 0.14.0 --inputs-from); viz2psy/word2psy units are whole sets already.
     batch: bool = False
+    # Registry models this source does not run (with the reason where the
+    # Source is built). An excluded model is out of the matrix entirely --
+    # unlike UNAVAILABLE, which keeps the cell visible as blocked.
+    exclude: tuple = ()
 
     def units(self) -> list[Unit]:
         return self.units_fn()
 
     @property
     def models(self) -> list[str]:
-        return registry(self.package)
+        return [m for m in registry(self.package) if m not in self.exclude]
 
     @property
     def key(self) -> str:
@@ -286,6 +290,10 @@ def build_sources() -> list[Source]:
              "which no other source provides. Cost is compute, not disk: ~25 s per "
              "cell is almost entirely model load, for ~0.54 s of audio. "
              "--all-voices restores the full 4,000.",
+        # conversation-structure over a single ~0.54 s one-voice recording is
+        # meaningless (its diarize tables are degenerate), and as its own cell
+        # it cannot run anyway: aud2psy requires diarize in the same batch call.
+        exclude=("conversation",),
     ))
 
     # -- movies -----------------------------------------------------------
@@ -450,8 +458,15 @@ def command_for(src: Source, unit: Unit, model: str) -> list[str]:
         cmd += unit.extra
         return cmd
     if src.package == "aud2psy":
-        return [PY, "-m", "aud2psy.cli", model, *unit.inputs,
-                "-o", str(stem), "--hop", str(GRID_HOP), *unit.extra]
+        cmd = [PY, "-m", "aud2psy.cli", model, *unit.inputs,
+               "-o", str(stem), "--hop", str(GRID_HOP), *unit.extra]
+        if model == "conversation":
+            # derives from the stored diarize turn table rather than re-running
+            # pyannote; aud2psy fails loudly, naming this path, if the diarize
+            # cell has not run yet
+            speakers = unit.out_dir / f"{src.prefix}diarize_speakers.csv"
+            cmd += ["--speakers", str(speakers)]
+        return cmd
     if src.package == "word2psy":
         return [PY, "-m", "word2psy.cli", model, *unit.inputs,
                 "-o", str(stem), *unit.extra]
