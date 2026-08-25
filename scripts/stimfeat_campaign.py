@@ -246,6 +246,8 @@ def build_sources() -> list[Source]:
         "shared1000", "image", "viz2psy", "", True,
         "1,000 NSD images, one invocation per model",
         _image_units,
+        # motion is video-only (flow between frames); still images would error
+        exclude=("motion",),
     ))
     S.append(Source(
         "shared1000", "caption", "word2psy", "caption_", True,
@@ -349,6 +351,7 @@ def build_sources() -> list[Source]:
         "movies", "cue", "viz2psy", "", True,
         "60 movie cue images",
         _cue_units,
+        exclude=("motion",),  # video-only, see shared1000/image
     ))
     S.append(Source(
         "movies", "cue_caption", "word2psy", "caption_", True,
