@@ -21,7 +21,11 @@ DEFAULT_BIDS_ROOT = Path("/gpfs/projects/hulacon/shared/mmmdata")
 # ---------------------------------------------------------------------------
 
 FMRIPREP_VARIANTS: tuple[str, ...] = ("fmriprep", "fmriprep_nordic")
-DEFAULT_VARIANT: str = "fmriprep_nordic"
+# NORDIC arm punted from the re-preprocessing campaign (D14, 2026-08-21);
+# the raw 25.2.5 arm is the campaign's only product and the default. Until
+# the campaign's coverage gate passes, derivatives/fmriprep may be PARTIAL —
+# check coverage before subject-level analyses.
+DEFAULT_VARIANT: str = "fmriprep"
 DEFAULT_SPACE: str = "MNI152NLin2009cAsym_res-2"
 
 # Derivatives directories (relative to bids_root)
