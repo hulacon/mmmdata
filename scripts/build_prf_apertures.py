@@ -22,6 +22,17 @@ Both MAT readers are required and neither substitutes for the other: the
 experiment workspace is v7.3 (HDF5 -> h5py) and the per-run mats are pre-v7.3
 (-> scipy.io.loadmat).
 
+ORIENTATION, the trap that matters most. h5py returns a MATLAB v7.3 array with
+its dimensions REVERSED, so the 768x768 frame it hands back is the TRANSPOSE of
+the one MATLAB drew to the screen. Every frame is therefore transposed on read.
+This is not a cosmetic detail: without it polar angle is mirrored, V1/V2/V3
+borders land in the wrong place, and the resulting maps still look like
+textbook retinotopy. Confirmed empirically against anatomy, not just reasoned
+about -- see `prf_orientation_check.py`, which uses the fact that each
+hemisphere represents the contralateral field (r = -0.67 between preferred
+horizontal position and MNI x) and that dorsal V1 represents the lower field
+(r = -0.28 vs MNI z).
+
 Index conventions, easy to get wrong:
   - `frameorder` is MATLAB 1-based; 0 means a blank (uniform gray) frame, and
     row 0 and row 1 are zero on exactly the same frames.
@@ -235,6 +246,10 @@ def load_mask_stack(resolution, chunk=64):
         for start in range(0, N_MASKS, chunk):
             stop = min(start + chunk, N_MASKS)
             block = masks[start:stop]
+            # Transpose back into MATLAB's display orientation -- see the
+            # ORIENTATION note in the module docstring. Done before resizing so
+            # the two operations cannot be confused with one another.
+            block = np.swapaxes(block, 1, 2)
             if resolution == native:
                 out[start:stop] = block
             else:
@@ -242,7 +257,7 @@ def load_mask_stack(resolution, chunk=64):
                     # Bicubic with PIL's support scaling is the antialiased
                     # downsample MATLAB's imresize(...,'cubic') performs, which
                     # is what analyzePRF's example applies to this same stack.
-                    img = Image.fromarray(block[k]).resize(
+                    img = Image.fromarray(np.ascontiguousarray(block[k])).resize(
                         (resolution, resolution), Image.BICUBIC)
                     out[start + k] = np.asarray(img, dtype=np.uint8)
             print(f"  masks {stop}/{N_MASKS}", end="\r", flush=True)
@@ -338,6 +353,14 @@ def cmd_build(args):
             "DistinctMasks": int(np.unique(nz).size),
             "NativeResolution": 768,
             "Resolution": args.resolution,
+            "Orientation": (
+                "MATLAB display orientation: row index = screen vertical "
+                "(row 0 = top), column index = screen horizontal (column 0 = "
+                "left). The source workspace is read with h5py, which reverses "
+                "MATLAB v7.3 dimensions, so each frame is transposed on read. "
+                "Verified against anatomy (contralateral hemifields r=-0.67 vs "
+                "MNI x; dorsal V1 = lower field r=-0.28 vs MNI z), not assumed."
+            ),
             "ResampleMethod": (
                 "PIL bicubic with support scaling (antialiased), "
                 "matching imresize(...,'cubic')"
