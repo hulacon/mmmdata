@@ -1,5 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=glmsingle_tb_pooled
+#SBATCH --account=hulacon
 #SBATCH --partition=memorylong
 #SBATCH --time=72:00:00
 #SBATCH --nodes=1

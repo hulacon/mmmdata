@@ -1,5 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=glmsingle_tb_siloed
+#SBATCH --account=hulacon
 #SBATCH --partition=compute
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
