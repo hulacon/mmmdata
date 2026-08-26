@@ -25,7 +25,13 @@
 # core-hour blocker. Inside this allocation the cgroup bounds the pool, so
 # the whole matrix is ~75 min.
 #
-# Usage:  sbatch space_geometry.sbatch [outdir]
+# Usage:  sbatch space_geometry.sbatch [outdir] [name] [models]
+#
+#   outdir   output directory (default: the workbench out/)
+#   name     output file stem (default: shared1000_geometry)
+#   models   optional comma list restricting the run to a model subset
+#            (bare model names, applied to every input table) — for addendum
+#            runs over spaces added to the store after a full matrix ran
 #==============================================================================
 
 set -euo pipefail
@@ -33,10 +39,13 @@ set -euo pipefail
 PY=/gpfs/projects/hulacon/shared/envs/stimfeat/bin/python
 STORE=/gpfs/projects/hulacon/shared/mmmdata/derivatives/stimuli_features/psytwill
 OUTDIR="${1:-/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata-agents/docs/workbench/feature-space-geometry/out}"
+NAME="${2:-shared1000_geometry}"
+MODELS="${3:-}"
 
 echo "host      : $(hostname)"
 echo "cpus      : ${SLURM_CPUS_PER_TASK:-?}"
 echo "outdir    : ${OUTDIR}"
+echo "name      : ${NAME}  models=${MODELS:-all}"
 echo "psytwill  : $($PY -c 'import psytwill; print(psytwill.__version__, psytwill.__file__)')"
 echo "started   : $(date -Is)"
 echo
@@ -55,7 +64,8 @@ srun "$PY" -m psytwill.cli compare \
     --n-splits 5 \
     --permutations 1000 \
     --seed 0 \
-    --name shared1000_geometry \
+    ${MODELS:+--models "${MODELS}"} \
+    --name "${NAME}" \
     -o "${OUTDIR}"
 
 echo

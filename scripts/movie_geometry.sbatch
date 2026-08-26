@@ -30,7 +30,7 @@
 #
 # Usage:
 #   sbatch [--time=... --partition=...] movie_geometry.sbatch \
-#       WIDTH BLOCK PERMS NAME [MEASURES] [STRIDE]
+#       WIDTH BLOCK PERMS NAME [MEASURES] [STRIDE] [MODELS]
 #
 #   WIDTH    window width in seconds (0.5 | 4 | 32)
 #   BLOCK    overlap-null block size in rows (~30-60 s at the width)
@@ -40,6 +40,9 @@
 #   STRIDE   optional; keep every Nth row per clip (default 1). Used to run
 #            the n^2 measures (rsa, cka_rbf) at the native grain, where
 #            full-n costs 65-154 h (probe 46627576).
+#   MODELS   optional comma list restricting the run to a model subset
+#            (bare model names, applied to every input table) — for addendum
+#            runs over spaces added to the store after a full matrix ran
 #==============================================================================
 
 set -euo pipefail
@@ -50,6 +53,7 @@ PERMS="${3:?permutation draws}"
 NAME="${4:?output name}"
 MEASURES="${5:-}"
 STRIDE="${6:-1}"
+MODELS="${7:-}"
 
 PY=/gpfs/projects/hulacon/shared/envs/stimfeat/bin/python
 STORE=/gpfs/projects/hulacon/shared/mmmdata/derivatives/stimuli_features/psytwill
@@ -58,16 +62,20 @@ OUTDIR=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata-agents/docs/workbench/
 echo "host      : $(hostname)"
 echo "cpus      : ${SLURM_CPUS_PER_TASK:-?}"
 echo "width     : ${WIDTH}s  block=${BLOCK}  perms=${PERMS}  stride=${STRIDE}"
-echo "measures  : ${MEASURES:-all}"
+echo "measures  : ${MEASURES:-all}  models=${MODELS:-all}"
 echo "psytwill  : $($PY -c 'import psytwill; print(psytwill.__version__, psytwill.__file__)')"
 echo "started   : $(date -Is)"
 echo
 
+# The beats group is point events, not a grid: --window pooling puts each
+# event in its window and windows with no beat are absent (NaN after align,
+# dropped per pair) — the points->grid case of the time-aware cross mode.
 srun "$PY" -m psytwill.cli compare \
     "${STORE}/movies_frames_features.parquet:frames" \
     "${STORE}/movies_ebind_features.parquet:ebindgrp" \
     "${STORE}/movies_audio_frames_features.parquet:audio" \
     "${STORE}/movies_caption_chunks_features.parquet:cap" \
+    "${STORE}/movies_audio_beats_features.parquet:beats" \
     --key stimulus_id,time \
     --window "${WIDTH}" \
     --pool mean \
@@ -76,6 +84,7 @@ srun "$PY" -m psytwill.cli compare \
     --permutations "${PERMS}" \
     --stride "${STRIDE}" \
     ${MEASURES:+--measures "${MEASURES}"} \
+    ${MODELS:+--models "${MODELS}"} \
     --k 20 \
     --n-splits 5 \
     --seed 0 \
