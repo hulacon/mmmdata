@@ -128,6 +128,24 @@ def run_mriqc(
         '-B', f'{bids_dir}:{bids_dir}:ro',
         '-B', f'{output_dir}:{output_dir}',
         '-B', f'{work_dir}:{work_dir}',
+    ]
+
+    # TemplateFlow: when the caller exports SINGULARITYENV_TEMPLATEFLOW_HOME,
+    # bind the resolved directory read-write. Resolution matters: the
+    # conventional location under the BIDS root is a symlink into the shared
+    # envs cache, and a symlink whose target is not bound dangles inside the
+    # container (templateflow then dies with FileExistsError on mkdir).
+    tf_home = os.environ.get('SINGULARITYENV_TEMPLATEFLOW_HOME')
+    if tf_home:
+        tf_real = Path(tf_home).resolve()
+        if tf_real.is_dir():
+            cmd.extend(['-B', f'{tf_real}:{tf_real}'])
+            os.environ['SINGULARITYENV_TEMPLATEFLOW_HOME'] = str(tf_real)
+        else:
+            print(f"WARNING: TEMPLATEFLOW_HOME {tf_home} does not resolve to "
+                  f"a directory; container will fall back to its default")
+
+    cmd += [
         str(mriqc_image),
         str(bids_dir),
         str(output_dir),

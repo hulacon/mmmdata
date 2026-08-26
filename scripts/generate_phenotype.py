@@ -20,7 +20,10 @@ import pandas as pd
 # ── Paths ────────────────────────────────────────────────────────────────────
 
 BIDS_ROOT = Path("/gpfs/projects/hulacon/shared/mmmdata")
-SCAN_LOGS = BIDS_ROOT / "sourcedata/shared/scan_logs"
+# Raw source data lives beside the BIDS root (mmmsourcedata), not under it —
+# the sourcedata/ tree was migrated out in Aug 2026 so the dataset can be
+# shared without exposing PII.
+SCAN_LOGS = BIDS_ROOT.parent / "mmmsourcedata/shared/scan_logs"
 SCANLOG = SCAN_LOGS / "mmm_scanlog.xlsx"
 DEMOGRAPHICS = SCAN_LOGS / "Demographics Form.xlsx"
 VVIQ_FILE = SCAN_LOGS / "VVIQ.xlsx"
