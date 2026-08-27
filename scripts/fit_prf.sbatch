@@ -39,6 +39,8 @@
 # Usage:
 #   sbatch --array=1 fit_prf.sbatch        # pilot: sub-03 ses-02 (gate passed here)
 #   sbatch --array=2-10 fit_prf.sbatch     # the rest, after seff review
+#   sbatch --job-name=fit_negprf --export=ALL,PRF_NEGATE=1 --array=1-10 fit_prf.sbatch
+#       # negative-pRF variant: identical fit on sign-flipped BOLD, `negprf` suffix
 #==============================================================================
 
 SUBJECTS=(03 03 04 04 05 05 06 06 07 07)
@@ -70,10 +72,17 @@ export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 
+NEGATE_FLAG=""
+if [ "${PRF_NEGATE:-0}" = "1" ]; then
+    NEGATE_FLAG="--negate"
+    echo "Negative-pRF variant: fitting sign-flipped BOLD (negprf suffix)"
+fi
+
 python ${REPO_ROOT}/scripts/fit_prf.py \
     --subject ${SUBJECT} \
     --session ${SESSION} \
-    --jobs ${SLURM_CPUS_PER_TASK}
+    --jobs ${SLURM_CPUS_PER_TASK} \
+    ${NEGATE_FLAG}
 
 EXIT_STATUS=$?
 

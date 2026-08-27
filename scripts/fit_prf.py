@@ -388,7 +388,7 @@ def to_visual(x0, y0, sigma, n, res=APERTURE_RES, fov=FOV_DEG):
     return ang, ecc, size, sigma * deg_per_px
 
 
-def write_maps(results, mask_img, mask, out_dir, base, meta):
+def write_maps(results, mask_img, mask, out_dir, base, meta, suffix="prf"):
     import nibabel as nib
     out_dir.mkdir(parents=True, exist_ok=True)
     shape = mask.shape
@@ -401,10 +401,10 @@ def write_maps(results, mask_img, mask, out_dir, base, meta):
         # float parameter maps. Only the affine is wanted.
         img = nib.Nifti1Image(vol, mask_img.affine)
         img.header.set_data_dtype(np.float32)
-        p = out_dir / f"{base}_desc-{name}_prf.nii.gz"
+        p = out_dir / f"{base}_desc-{name}_{suffix}.nii.gz"
         nib.save(img, str(p))
         written.append(p.name)
-    sidecar = out_dir / f"{base}_prf.json"
+    sidecar = out_dir / f"{base}_{suffix}.json"
     meta = dict(meta)
     meta["Maps"] = written
     sidecar.write_text(json.dumps(meta, indent=2) + "\n")
@@ -538,6 +538,9 @@ def main():
                     help="grid R2%% below which a voxel is not refined (default 5)")
     ap.add_argument("--occipital-only", action="store_true",
                     help="restrict to the posterior third of the FOV (fast pilot)")
+    ap.add_argument("--negate", action="store_true",
+                    help="sign-flip the PSC BOLD before fitting to characterise "
+                         "negative pRFs; outputs use the `negprf` suffix")
     ap.add_argument("--jobs", type=int, default=28)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--self-test", action="store_true")
@@ -599,6 +602,14 @@ def main():
     Y = np.concatenate(blocks, axis=0)
     del blocks
 
+    # Negative-pRF variant: an identical fit on sign-flipped data. The grid
+    # stage keeps only positively-correlated voxels (grid R2 is signed), so
+    # the standard fit is blind to anticorrelated responses and this flipped
+    # pass is their exact complement, not a redundancy.
+    if args.negate:
+        print("  --negate: sign-flipping PSC BOLD (negative-pRF fit)")
+        Y = -Y
+
     Q = nuisance_projector(run_index)
     h = hrf_kernel()
     Y_r = residualise(Y, Q)
@@ -627,6 +638,13 @@ def main():
         "MaskVoxels": int(mask.sum()),
         "Provenance": "mmmdata/scripts/fit_prf.py; workbench prf-retinotopy",
     }
+    if args.negate:
+        meta["Description"] = ("CSS pRF fit on SIGN-FLIPPED PSC BOLD in the native "
+                               "functional volume: negative-pRF characterisation.")
+        meta["SignFlipped"] = True
+        meta["SignFlipReference"] = ("Negative-pRF approach per "
+                                     "https://www.biorxiv.org/content/10.1101/"
+                                     "2024.09.27.615397v2")
 
     if args.dry_run:
         print("\n--dry-run: design and data assembled, no fitting.")
@@ -669,7 +687,8 @@ def main():
 
     out_dir = Path(args.out_root) / f"sub-{subject}" / f"ses-{session}"
     base = f"sub-{subject}_ses-{session}_task-prf_space-func"
-    written, sidecar = write_maps(results, mask_img, mask, out_dir, base, meta)
+    written, sidecar = write_maps(results, mask_img, mask, out_dir, base, meta,
+                                  suffix="negprf" if args.negate else "prf")
 
     good = r2 > 10.0
     print(f"\n  wrote {len(written)} maps to {out_dir}")
