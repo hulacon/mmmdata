@@ -2,11 +2,11 @@
 #SBATCH --job-name=fit_prf
 #SBATCH --account=hulacon
 #SBATCH --partition=compute
-#SBATCH --time=16:00:00
+#SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=28
-#SBATCH --mem=64G
+#SBATCH --mem=24G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fit_prf_%A_%a.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fit_prf_%A_%a.err
 
@@ -23,13 +23,13 @@
 # test-retest units the charter's Settles-when 3 asks for, so this array gives
 # both legs at once.
 #
-# Sizing, MEASURED on sub-03 ses-02 before first submission:
-#   mask            367,000 voxels (intersection of the three run masks)
-#   grid search     7,200 candidates, ~4 min threaded on 28 cores
-#   refinement      1.52 s/voxel -> ~5.5 h on 28 cores for the full mask
-#   peak memory     Y is (600, 367k) float32 = 0.9 GB; ~8 GB with working copies
-# 16 h and 64 G are therefore ~2.5x headroom on both. Revise from `seff` after
-# the pilot rather than carrying these numbers forward untested.
+# Sizing, revised from the pilot's seff (array task 1, COMPLETED exit 0):
+#   wall            3:54 (the pre-submission ~5.5 h refinement estimate carried
+#                   login-node BLAS pessimism; only ~2% of the mask clears the
+#                   grid-R2 gate for refinement, not the full mask)
+#   peak memory     8.64 GB of 64 G
+# 2 h / 24 G gives ~30x time and ~2.5x memory headroom over the measured pilot,
+# covering mask-size variation across subjects.
 #
 # Array task mapping (subject-major, ses-02 then ses-03):
 #   1: sub-03/ses-02   2: sub-03/ses-03   3: sub-04/ses-02   4: sub-04/ses-03
