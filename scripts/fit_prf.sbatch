@@ -41,6 +41,10 @@
 #   sbatch --array=2-10 fit_prf.sbatch     # the rest, after seff review
 #   sbatch --job-name=fit_negprf --export=ALL,PRF_NEGATE=1 --array=1-10 fit_prf.sbatch
 #       # negative-pRF variant: identical fit on sign-flipped BOLD, `negprf` suffix
+#   sbatch --job-name=fit_spmprf --export=ALL,PRF_HRF=spm --array=1-10 fit_prf.sbatch
+#       # SPM-canonical comparison arm, `spmprf` suffix (default HRF is Kay,
+#       # analyzePRF's getcanonicalhrf -- DECIDED 2026-08-27 after it won the
+#       # per-voxel R2 comparison; see derivatives/prf/hrf-comparison.json)
 #==============================================================================
 
 SUBJECTS=(03 03 04 04 05 05 06 06 07 07)
@@ -78,10 +82,14 @@ if [ "${PRF_NEGATE:-0}" = "1" ]; then
     echo "Negative-pRF variant: fitting sign-flipped BOLD (negprf suffix)"
 fi
 
+HRF_KIND="${PRF_HRF:-kay}"
+echo "HRF kernel: ${HRF_KIND}"
+
 python ${REPO_ROOT}/scripts/fit_prf.py \
     --subject ${SUBJECT} \
     --session ${SESSION} \
     --jobs ${SLURM_CPUS_PER_TASK} \
+    --hrf ${HRF_KIND} \
     ${NEGATE_FLAG}
 
 EXIT_STATUS=$?
