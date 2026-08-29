@@ -11,8 +11,11 @@ from behavioral.accuracy import accuracy_by_condition, confidence_accuracy_curve
 from behavioral.learning import session_learning_curve
 from behavioral.final_session import timeline_analysis
 
-# Skip all tests if matplotlib is not available
+# Skip all tests if the plotting stack is not available. behavioral.
+# plotting._get_matplotlib() imports seaborn too, so guarding matplotlib
+# alone still errored on a checkout without it.
 plt = pytest.importorskip("matplotlib.pyplot")
+pytest.importorskip("seaborn")
 
 
 class TestPlotAccuracyByCondition:

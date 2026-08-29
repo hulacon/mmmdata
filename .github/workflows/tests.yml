@@ -1,0 +1,68 @@
+# Off-cluster test CI for mmmdata.
+#
+# Separate from ci.yml, which builds the Jekyll docs site and only runs on
+# docs/** changes -- until now nothing ran the Python suite on a push.
+#
+# The dataset lives on Talapas GPFS and a GitHub runner cannot see it, so
+# this runs the host-independent tier: everything that works from fixtures
+# and tmp_path. Tests marked `requires_dataset` skip themselves
+# (conftest.py); they are the cluster's job, not CI's.
+#
+# Dependencies are listed explicitly rather than installed from a manifest
+# because the repo has no pyproject.toml and the shared Talapas conda env
+# is not reproducible on a runner. Everything here is pip-installable and
+# CPU-only -- no torch, which is why the stimulus-feature work is not in
+# scope for this workflow.
+
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # docs/doc/shared is the mmmdata-docs submodule; the suite does
+          # not read it and a fresh clone leaves it empty.
+          submodules: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov tomli_w \
+                      pandas numpy pybids duckdb matplotlib seaborn
+
+      - name: Confirm the runner has neither GPFS nor SLURM
+        # If either appeared, the suite would silently start exercising a
+        # different tier and this workflow would stop testing what it claims.
+        run: |
+          test ! -d /gpfs/projects/hulacon || { echo "GPFS present on runner"; exit 1; }
+          ! command -v sbatch >/dev/null || { echo "SLURM present on runner"; exit 1; }
+
+      - name: Test (off-cluster tier)
+        # No PYTHONPATH: the repo-root conftest.py puts src/python on
+        # sys.path, and running without it is the regression this guards.
+        run: pytest -q -rs

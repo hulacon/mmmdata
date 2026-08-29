@@ -1,11 +1,19 @@
 # This file contains base configuration settings (edit local.toml to override)
+#
+# Absolute paths use the fully resolved `/gpfs/projects/hulacon/...`
+# form. The bare `/projects/hulacon/...` form is not a synonym: it
+# resolves on login and compute nodes but not inside every sandboxed
+# harness, so tools reading these keys raised FileNotFoundError on a
+# path that plainly existed. Four keys here were missed when the rest
+# were converted and were being patched by a committed local.toml;
+# they are correct at source now. Guarded by tests/test_portability.py.
 
 [paths]
 # Main BIDS dataset directory
-bids_project_dir = "/projects/hulacon/shared/mmmdata"
+bids_project_dir = "/gpfs/projects/hulacon/shared/mmmdata"
 
 # Raw source data directory (pre-BIDS conversion inputs)
-source_dir = "/projects/hulacon/shared/mmmsourcedata"
+source_dir = "/gpfs/projects/hulacon/shared/mmmsourcedata"
 
 # Code repository root (where this config file is located)
 code_root = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
@@ -20,8 +28,8 @@ singularity_dir = "/gpfs/projects/hulacon/shared/containers"
 venv_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/.venv"
 
 # Output directories
-output_dir = "/projects/hulacon/shared/mmmdata/derivatives"
-inventory_dir = "/projects/hulacon/shared/mmmdata/inventory"
+output_dir = "/gpfs/projects/hulacon/shared/mmmdata/derivatives"
+inventory_dir = "/gpfs/projects/hulacon/shared/mmmdata/inventory"
 
 # Shared scratch root for pipeline work trees. Everything under it is swept
 # nightly by scripts/clean_shared_work.sh (scrontab): any run dir with no file

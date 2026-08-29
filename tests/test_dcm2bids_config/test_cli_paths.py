@@ -8,6 +8,8 @@ nothing after that migration; these pin the corrected resolution.
 
 from pathlib import Path
 
+import pytest
+
 from src.python.dcm2bids_config.cli import _resolve_dicom_dir
 from src.python.core.config import load_config
 
@@ -24,11 +26,15 @@ def test_resolve_dicom_dir_does_not_nest_under_bids_root():
     assert "sourcedata" not in got.relative_to("/some").parts[1:]
 
 
+@pytest.mark.requires_dataset
 def test_configured_source_dir_exists_and_holds_dicoms():
     """The configured source_dir must be a real tree with per-subject DICOMs.
 
     Guards the migration itself: a config still pointing at the retired
     in-tree sourcedata/ fails here rather than at conversion time.
+
+    Reads the real tree, so it is dataset-tier: off-cluster it skips
+    rather than reporting the absent mount as a config error.
     """
     cfg = load_config()
     source_root = Path(cfg["paths"]["source_dir"])
