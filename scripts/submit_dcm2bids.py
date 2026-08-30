@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -67,6 +68,21 @@ def submit(
     if dry_run:
         print("  (dry-run: not submitted)")
         return 0
+
+    # Checked after the dry-run branch on purpose: previewing the command
+    # is useful off-cluster, submitting it is not possible there. Without
+    # this, subprocess raises a bare FileNotFoundError whose message is
+    # just "sbatch", which reads like the .sbatch file is missing rather
+    # than the scheduler.
+    if shutil.which("sbatch") is None:
+        print(
+            "ERROR: SLURM is not available on this host: `sbatch` is not "
+            "on PATH.\n"
+            "  Submit from a Talapas login node, or re-run with --dry-run "
+            "to preview the command.",
+            file=sys.stderr,
+        )
+        return 1
 
     # Ensure logs directory exists (dcm2bids.sbatch writes logs there)
     (root / "logs").mkdir(exist_ok=True)

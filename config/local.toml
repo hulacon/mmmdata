@@ -1,29 +1,19 @@
 # Local overrides for base.toml. Deep-merged over base by
 # core.config.load_config(), so only the keys listed here change.
 #
-# Why this file has content now: base.toml spells four paths with the bare
-# `/projects/hulacon/...` prefix. That path is NOT visible from inside a
-# Claude Science sandbox on a Talapas OnDemand desktop — only the fully
-# resolved `/gpfs/projects/hulacon/...` form is. Tools reading these keys
-# (list_subjects, get_session_summary, anything via ProjectPaths) raise
-# FileNotFoundError until they are overridden.
+# This file previously re-spelled four [paths] keys with the `/gpfs`
+# prefix, because base.toml had them in the bare `/projects/...` form
+# that is invisible inside some sandboxed harnesses. base.toml carries
+# the resolved form itself now, so those overrides are gone: base is
+# correct at source rather than patched here.
 #
-# The `/gpfs`-prefixed form is correct everywhere — login nodes, compute
-# nodes, and inside the sandbox. base.toml already uses it for code_root,
-# singularity_dir, venv_dir, work_dir, and shared_work_root; these four keys
-# were missed.
-#
-# Note: this file IS tracked in git (mmmdata's .gitignore does not exclude
-# it, unlike mmmdata-agents'), so committing it makes the fix apply for
-# every operator. Verify that is intended before committing.
-#
-# Added 2026-08-14.
+# Note this file is tracked in git (unlike mmmdata-agents', which is
+# ignored), so anything added here applies to every operator, not just
+# you. Keep genuinely per-operator settings out of it, or untrack it.
 
-[paths]
-bids_project_dir = "/gpfs/projects/hulacon/shared/mmmdata"
-source_dir = "/gpfs/projects/hulacon/shared/mmmsourcedata"
-output_dir = "/gpfs/projects/hulacon/shared/mmmdata/derivatives"
-inventory_dir = "/gpfs/projects/hulacon/shared/mmmdata/inventory"
+# Example: point at a local copy of the dataset when working off-cluster
+# [paths]
+# bids_project_dir = "/path/to/your/mmmdata"
 
 # Example: set your email for SLURM notifications
 # [slurm]
