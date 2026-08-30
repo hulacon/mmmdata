@@ -63,16 +63,43 @@ class TestConfiguredPathsResolveEverywhere:
             "use the /gpfs-prefixed form in base.toml: " + "; ".join(offenders)
         )
 
-    def test_local_toml_does_not_shadow_base_paths(self):
-        """local.toml is tracked here, so a [paths] block in it applies to
-        every operator. Base should be right at source instead."""
-        local = REPO_ROOT / "config" / "local.toml"
-        if not local.exists():
-            pytest.skip("no local.toml in this checkout")
-        cfg = tomllib.loads(local.read_text())
-        assert not cfg.get("paths"), (
-            "local.toml overrides [paths] for everyone; fix config/base.toml "
-            f"instead (found: {sorted(cfg['paths'])})"
+    def test_local_toml_is_gitignored(self):
+        """config/local.toml must stay untracked.
+
+        It was tracked once, and a [paths] block in it silently applied to
+        every operator. The guard used to be "it contains no [paths]", which
+        skipped itself whenever the file was absent -- so on a fresh clone it
+        asserted nothing. This asserts the property that actually matters and
+        cannot skip: the ignore rule is present, so the file is per-operator
+        and a [paths] block in it is nobody else's problem.
+        """
+        ignored = [
+            line.strip()
+            for line in (REPO_ROOT / ".gitignore").read_text().splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        assert "config/local.toml" in ignored, (
+            "config/local.toml must be gitignored; tracking it makes one "
+            "operator's overrides apply to everyone"
+        )
+
+    def test_local_toml_example_is_tracked_and_ships_no_active_overrides(self):
+        """The template is what a fresh clone gets instead of local.toml.
+
+        It has to exist -- untracking local.toml without it would delete the
+        only documentation of how the overlay works -- and every setting in
+        it must be commented out, or copying it to local.toml would silently
+        override base.
+        """
+        example = REPO_ROOT / "config" / "local.toml.example"
+        assert example.exists(), (
+            "config/local.toml.example is the tracked template for the "
+            "gitignored local.toml; it must exist"
+        )
+        cfg = tomllib.loads(example.read_text())
+        assert cfg == {}, (
+            "every setting in local.toml.example must be commented out; "
+            f"active keys would override base.toml on copy (found: {sorted(cfg)})"
         )
 
     def test_every_configured_path_is_absolute(self):
