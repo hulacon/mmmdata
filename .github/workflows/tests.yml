@@ -47,7 +47,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
+          # Deliberately no `cache: pip`. That option derives its key from a
+          # requirements.txt or pyproject.toml, and this repo has neither --
+          # which is the same reason the Install step lists dependencies
+          # inline. Asking for it fails the job before any test runs.
+
+      # The dependency list lives in this file, so this file is what the
+      # cache key hashes: the install changes exactly when it changes.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('.github/workflows/tests.yml') }}
+          restore-keys: |
+            pip-${{ runner.os }}-py${{ matrix.python-version }}-
 
       - name: Install
         run: |
