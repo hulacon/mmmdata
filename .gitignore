@@ -51,3 +51,7 @@ validation_report.tsv
 # Regenerate: scripts/edf_triage.sbatch, then generate_inventory.py.
 src/python/raw2bids_converters/edf_triage.csv
 src/python/raw2bids_converters/file_inventory.csv
+
+# Per-operator config overrides. Untracked so one operator's settings do not
+# apply to everyone; config/local.toml.example is the tracked template.
+config/local.toml

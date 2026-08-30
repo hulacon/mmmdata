@@ -1,0 +1,19 @@
+# Local configuration overrides for mmmdata.
+#
+# Copy this file to local.toml and uncomment/edit the settings you need.
+# local.toml is gitignored -- it won't be committed to the repository.
+# Values here are deep-merged over base.toml by core.config.load_config(),
+# so only the keys you list change. The file is optional: load_config()
+# reads base.toml alone when it is absent.
+#
+# Because this is per-operator, a [paths] block here is fine -- point at a
+# local copy of the dataset, and only your checkout is affected. Do NOT put
+# one in base.toml's place: if a path is wrong for everyone, fix base.toml.
+
+# Example: point at a local copy of the dataset when working off-cluster
+# [paths]
+# bids_project_dir = "/path/to/your/mmmdata"
+
+# Example: set your email for SLURM notifications
+# [slurm]
+# email = "your.email@domain.com"
