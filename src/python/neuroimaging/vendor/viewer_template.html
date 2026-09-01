@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+  :root { --bg:#101014; --panel:#1a1a22; --ink:#e8e8ee; --dim:#9a9aa8;
+          --edge:#2c2c38; --accent:#7aa2ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.45 system-ui, sans-serif;
+         display:flex; flex-direction:column; height:100vh; }
+  header { padding:8px 14px; border-bottom:1px solid var(--edge);
+           display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0; font-weight:600; }
+  header .hint { color:var(--dim); font-size:12px; }
+  main { flex:1; display:flex; min-height:0; }
+  #viewport { flex:1; position:relative; min-width:0; }
+  canvas { outline:none; }
+  aside { width:240px; padding:10px 12px; border-left:1px solid var(--edge);
+          background:var(--panel); overflow-y:auto; flex-shrink:0; }
+  aside h2 { font-size:11px; text-transform:uppercase; letter-spacing:.08em;
+             color:var(--dim); margin:14px 0 6px; }
+  aside h2:first-child { margin-top:2px; }
+  label.row { display:flex; align-items:center; gap:7px; padding:3px 0;
+              cursor:pointer; overflow-wrap:anywhere; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  button { background:#26263280; color:var(--ink); border:1px solid var(--edge);
+           border-radius:6px; padding:5px 10px; cursor:pointer; font:inherit;
+           font-size:13px; }
+  button:hover { border-color:var(--accent); }
+  #wheelbox { display:none; margin-top:6px; text-align:center; }
+  #wheelbox .cap { font-size:11px; color:var(--dim); margin-top:2px; }
+  footer { padding:5px 14px; border-top:1px solid var(--edge); font-size:12px;
+           color:var(--dim); display:flex; gap:16px; min-height:28px; }
+  footer #status.err { color:#ff8484; }
+  #loc { margin-left:auto; text-align:right; white-space:pre; }
+  details#about { font-size:12px; color:var(--dim); }
+  details#about pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+</style>
+</head>
+<body>
+<header>
+  <h1>__TITLE__</h1>
+  <span class="hint" id="hint"></span>
+</header>
+<main>
+  <div id="viewport"><canvas id="gl"></canvas></div>
+  <aside>
+    <h2>Overlay</h2>
+    <div id="layers"></div>
+    <h2>Opacity</h2>
+    <input type="range" id="alpha" min="0" max="1" step="0.05">
+    <div id="views" style="display:none">
+      <h2>View</h2>
+      <div id="viewbtns" style="display:flex;gap:5px;flex-wrap:wrap"></div>
+    </div>
+    <div id="wheelbox">
+      <canvas id="wheel" width="130" height="130"></canvas>
+      <div class="cap">polar angle — deg CCW from right<br>horizontal meridian</div>
+    </div>
+    <h2>Bundle</h2>
+    <button id="savenvd" title="Export a NiiVue document (.nvd) for FreeBrowse — works over file://, inert inside a sandboxed artifact page">Save .nvd</button>
+    <h2>About</h2>
+    <details id="about"><summary>provenance</summary><pre id="notes"></pre></details>
+  </aside>
+</main>
+<footer><span id="status">initializing…</span><span id="loc"></span></footer>
+
+<script>__NIIVUE_JS__</script>
+<script>
+"use strict";
+const CONFIG = __CONFIG_JSON__;
+const $ = id => document.getElementById(id);
+const status = (msg, err) => { const s = $("status");
+  s.textContent = msg; s.className = err ? "err" : ""; };
+window.addEventListener("error", e => status("ERROR: " + e.message, true));
+window.addEventListener("unhandledrejection",
+  e => status("ERROR: " + (e.reason && e.reason.message || e.reason), true));
+
+function toBuffer(b64) {
+  const bin = atob(b64), a = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+  return a.buffer;
+}
+
+function drawWheel() {
+  const c = $("wheel"), g = c.getContext("2d");
+  const R = c.width / 2, r0 = R * 0.45;
+  for (let d = 0; d < 360; d++) {
+    // screen y is flipped: math-CCW angle d maps to canvas angle -d
+    g.beginPath();
+    g.arc(R, R, R - 14, (-d - 1.5) * Math.PI / 180, -d * Math.PI / 180);
+    g.arc(R, R, r0, -d * Math.PI / 180, (-d - 1.5) * Math.PI / 180, true);
+    g.closePath();
+    g.fillStyle = `hsl(${d},100%,50%)`;
+    g.fill();
+  }
+  g.fillStyle = "#e8e8ee"; g.font = "10px system-ui";
+  g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillText("0", 2 * R - 7, R); g.fillText("90", R, 7);
+  g.fillText("180", 8, R); g.fillText("270", R, 2 * R - 7);
+}
+
+const nv = new niivue.Niivue({
+  backColor: [0.063, 0.063, 0.078, 1],
+  show3Dcrosshair: CONFIG.mode === "volume",
+  isColorbar: true,
+  isAlphaClipDark: true,           // volume overlays: hide below cal_min
+  multiplanarShowRender: niivue.SHOW_RENDER.ALWAYS,
+});
+nv.onLocationChange = d => { $("loc").textContent = (d && d.string) || ""; };
+
+// Exclusive stat-layer toggle; shade layers and the underlay stay put.
+let active = -1;  // index into CONFIG list of toggleable entries
+function toggleables() {
+  return CONFIG.mode === "volume"
+    ? CONFIG.volumes.map((v, i) => ({ ...v, i })).filter(v => !v.isUnderlay)
+    : CONFIG.meshes[0].layers.map((l, i) => ({ ...l, i })).filter(l => !l.shade);
+}
+function applyActive() {
+  const alpha = parseFloat($("alpha").value);
+  for (const t of toggleables()) {
+    const on = t.i === active;
+    if (CONFIG.mode === "volume") {
+      nv.volumes[t.i].colorbarVisible = on;
+      nv.setOpacity(t.i, on ? alpha : 0);
+    } else {
+      const id = nv.meshes[0].id;
+      nv.setMeshLayerProperty(id, t.i, "colorbarVisible", on ? 1 : 0);
+      nv.setMeshLayerProperty(id, t.i, "opacity", on ? alpha : 0);
+    }
+    if (on) $("wheelbox").style.display = t.angle_legend ? "block" : "none";
+  }
+  if (active < 0) $("wheelbox").style.display = "none";
+  nv.updateGLVolume();
+}
+function buildControls() {
+  const box = $("layers");
+  const mk = (label, idx) => {
+    const l = document.createElement("label"); l.className = "row";
+    const r = document.createElement("input");
+    r.type = "radio"; r.name = "layer"; r.checked = idx === active;
+    r.addEventListener("change", () => { active = idx; applyActive(); });
+    l.append(r, document.createTextNode(label));
+    box.append(l);
+  };
+  mk("none", -1);
+  for (const t of toggleables()) mk(t.label, t.i);
+}
+
+async function init() {
+  nv.attachToCanvas($("gl"));
+  if (CONFIG.mode === "volume") {
+    $("hint").textContent =
+      "click: crosshair · scroll: slice · right-drag: zoom · drag render view: rotate";
+    for (const v of CONFIG.volumes) {
+      const img = await niivue.NVImage.loadFromBase64({
+        base64: v.base64, name: v.name });
+      img.colormap = v.colormap;
+      if (v.cal_min !== null) img.cal_min = v.cal_min;
+      if (v.cal_max !== null) img.cal_max = v.cal_max;
+      img.opacity = v.isUnderlay ? 1 : 0;
+      img.colorbarVisible = false;
+      nv.addVolume(img);
+    }
+    nv.setSliceType(nv.sliceTypeMultiplanar);
+  } else {
+    $("hint").textContent = "drag: rotate · scroll: zoom · right-drag: pan";
+    const m = CONFIG.meshes[0];
+    const layers = m.layers.map(l => {
+      const spec = { name: l.name, base64: l.base64, colormap: l.colormap,
+                     cal_min: l.cal_min === null ? 0 : l.cal_min,
+                     opacity: l.shade ? l.opacity : 0 };
+      if (l.cal_max !== null) spec.cal_max = l.cal_max;
+      return spec;
+    });
+    await nv.loadMeshes([{
+      url: m.name, buffer: toBuffer(m.base64),
+      rgba255: [205, 205, 205, 255], layers }]);
+    const id = nv.meshes[0].id;
+    nv.setMeshShader(id, "Phong");
+    // Post-load property fixes (loadLayer forwards only some options, and
+    // its readLayer treats cal_min 0 as UNSET, substituting the data min —
+    // which is the -1 mask sentinel, un-hiding every masked vertex):
+    m.layers.forEach((l, i) => {
+      nv.setMeshLayerProperty(id, i, "colorbarVisible", 0);
+      nv.setMeshLayerProperty(id, i, "colormapNegative", "");  // else a
+      // spurious negative colorbar is drawn beside the active layer's
+      nv.setMeshLayerProperty(id, i, "cal_min",
+                              l.cal_min === null ? 0 : l.cal_min);
+    });
+    nv.setSliceType(nv.sliceTypeRender);
+    // view presets; azimuth convention verified against rendered anatomy
+    // (lh az 270 faces the medial wall — corpus callosum check)
+    const lh = m.name.startsWith("lh");
+    const views = { lateral: lh ? 90 : 270, medial: lh ? 270 : 90,
+                    posterior: 180, anterior: 0 };
+    $("views").style.display = "block";
+    for (const [label, az] of Object.entries(views)) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.addEventListener("click", () => nv.setRenderAzimuthElevation(az, 0));
+      $("viewbtns").append(b);
+    }
+    nv.setRenderAzimuthElevation(views.medial, 0);
+  }
+  const first = toggleables().find(t => t.visible);
+  active = first ? first.i : -1;
+  $("alpha").value = first ? first.opacity : 0.8;
+  buildControls();
+  applyActive();
+  drawWheel();
+  $("notes").textContent = CONFIG.notes || "(none)";
+  status("NiiVue " + (nv.version || "") + " — " + CONFIG.mode + " mode, " +
+    (CONFIG.mode === "volume"
+      ? nv.volumes.length + " volumes"
+      : "1 mesh, " + CONFIG.meshes[0].layers.length + " layers"));
+}
+$("alpha").addEventListener("input", applyActive);
+$("savenvd").addEventListener("click", async () => {
+  try { await nv.saveDocument((CONFIG.title || "viewer") + ".nvd"); }
+  catch (e) { status("Save .nvd failed: " + e.message, true); }
+});
+init().catch(e => status("INIT ERROR: " + e.message, true));
+</script>
+</body>
+</html>

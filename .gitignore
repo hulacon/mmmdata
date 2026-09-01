@@ -4,6 +4,8 @@
 # Ruby / Bundler
 .bundle/
 vendor/
+# ...but the viewer's pinned NiiVue + template are deliberate
+!src/python/neuroimaging/vendor/
 
 # Jekyll (root-level, in case of accidental builds)
 _site/
