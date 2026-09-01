@@ -33,4 +33,6 @@ $search-background-color: #ffffff;         // White
 $search-result-preview-color: #666666;     // Medium gray
 
 // Import syntax highlighting (light theme)
-@import "./vendor/OneLightJekyll/syntax";
+// Theme 0.11+ replaced its vendored OneLightJekyll with accessible-pygments;
+// this tracks the same rename the theme's own light scheme made.
+@import "./vendor/accessible-pygments/github-light";
