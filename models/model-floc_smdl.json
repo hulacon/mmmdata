@@ -1,0 +1,79 @@
+{
+  "Name": "floc",
+  "BIDSModelVersion": "1.0.0",
+  "Description": "Stanford fLoc category localizer: condition-level contrast maps for category-selective ROI definition. Block-level events (converter: src/python/raw2bids_converters/floc_events.py); the ten category conditions are modelled, the `baseline` blocks are the implicit baseline. Contrasts follow the archived plan (mmmdata-agents docs/archive/localizer-analysis-plan.md §1), each domain against the object domain. Estimator and fixed-effects policy are the runner's (neuroimaging.glm), not this file's.",
+  "Input": {
+    "task": ["floc"]
+  },
+  "Nodes": [
+    {
+      "Level": "Run",
+      "Name": "run",
+      "GroupBy": ["run", "session", "subject"],
+      "Transformations": {
+        "Transformer": "pybids-transforms-v1",
+        "Instructions": [
+          {"Name": "Factor", "Input": ["trial_type"]},
+          {
+            "Name": "Convolve",
+            "Model": "spm",
+            "Input": [
+              "trial_type.word", "trial_type.number",
+              "trial_type.body", "trial_type.limb",
+              "trial_type.adult", "trial_type.child",
+              "trial_type.corridor", "trial_type.house",
+              "trial_type.car", "trial_type.instrument"
+            ]
+          }
+        ]
+      },
+      "Model": {
+        "Type": "glm",
+        "X": [
+          "trial_type.word", "trial_type.number",
+          "trial_type.body", "trial_type.limb",
+          "trial_type.adult", "trial_type.child",
+          "trial_type.corridor", "trial_type.house",
+          "trial_type.car", "trial_type.instrument",
+          1
+        ]
+      },
+      "Contrasts": [
+        {
+          "Name": "faceVsObject",
+          "ConditionList": ["trial_type.adult", "trial_type.child", "trial_type.car", "trial_type.instrument"],
+          "Weights": [0.5, 0.5, -0.5, -0.5],
+          "Test": "t"
+        },
+        {
+          "Name": "placeVsObject",
+          "ConditionList": ["trial_type.house", "trial_type.corridor", "trial_type.car", "trial_type.instrument"],
+          "Weights": [0.5, 0.5, -0.5, -0.5],
+          "Test": "t"
+        },
+        {
+          "Name": "bodyVsObject",
+          "ConditionList": ["trial_type.body", "trial_type.limb", "trial_type.car", "trial_type.instrument"],
+          "Weights": [0.5, 0.5, -0.5, -0.5],
+          "Test": "t"
+        },
+        {
+          "Name": "characterVsObject",
+          "ConditionList": ["trial_type.word", "trial_type.number", "trial_type.car", "trial_type.instrument"],
+          "Weights": [0.5, 0.5, -0.5, -0.5],
+          "Test": "t"
+        }
+      ]
+    },
+    {
+      "Level": "Subject",
+      "Name": "subject",
+      "GroupBy": ["subject", "contrast"],
+      "Model": {"Type": "meta", "X": [1]},
+      "DummyContrasts": {"Test": "t"}
+    }
+  ],
+  "Edges": [
+    {"Source": "run", "Destination": "subject"}
+  ]
+}
