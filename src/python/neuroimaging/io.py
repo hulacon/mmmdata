@@ -33,6 +33,8 @@ from .constants import (
     EVENTFILES_DIR,
     FMRIPREP_VARIANTS,
     MOTION_24,
+    MixedLocalizerDesignError,
+    check_single_design,
 )
 
 
@@ -165,6 +167,7 @@ def find_fmriprep_runs(
     variant: str = DEFAULT_VARIANT,
     space: str = DEFAULT_SPACE,
     bids_root: Optional[Path] = None,
+    allow_mixed_designs: bool = False,
 ) -> list[FmriprepRun]:
     """Discover preprocessed BOLD runs matching filters.
 
@@ -183,12 +186,25 @@ def find_fmriprep_runs(
         Volumetric template and resolution (e.g., "MNI152NLin2009cAsym_res-2").
     bids_root : Path, optional
         BIDS root. If None, resolved via config.
+    allow_mixed_designs : bool
+        Some localizer task labels (``LOCALIZER_DESIGNS`` in constants) cover
+        two different protocols acquired in different sessions by different
+        cohorts. When ``task`` names one of them and the matched runs span
+        both, this raises ``MixedLocalizerDesignError`` unless set to True.
+        Pass True only when pooling is intended and the analysis accounts
+        for it; the usual fix is a ``session`` filter.
 
     Returns
     -------
     list[FmriprepRun]
         Sorted by (subject, session, task, run). Missing optional files
         are None. Runs with no confounds TSV are not included.
+
+    Raises
+    ------
+    MixedLocalizerDesignError
+        See ``allow_mixed_designs``. Only when ``task`` is given; an
+        unfiltered sweep is not a design selection.
     """
     if variant not in FMRIPREP_VARIANTS:
         raise ValueError(
@@ -227,6 +243,17 @@ def find_fmriprep_runs(
                 bids_root=bids_root,
             )
         )
+
+    if task is not None and not allow_mixed_designs:
+        try:
+            check_single_design(task, (r.session for r in runs))
+        except MixedLocalizerDesignError as exc:
+            by_subject = sorted({(r.subject, r.session) for r in runs})
+            who = ", ".join(f"sub-{s} ses-{ss}" for s, ss in by_subject)
+            raise MixedLocalizerDesignError(
+                f"{exc} Matched: {who}. Add a session= filter, or pass "
+                "allow_mixed_designs=True to pool deliberately."
+            ) from None
 
     return runs
 
