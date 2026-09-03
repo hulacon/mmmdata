@@ -13,4 +13,8 @@ plotting
     Plotly-based visualization helpers (brain maps, carpet plots, motion).
 atlas
     Schaefer parcellation loader.
+glm
+    Condition-level GLM: BIDS Stats Models specs, design construction, the
+    estimator interface (nilearn first), fixed effects, Contract A-keyed
+    outputs, split-half reliability.
 """

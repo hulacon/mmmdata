@@ -1,0 +1,46 @@
+{
+  "Name": "motor",
+  "BIDSModelVersion": "1.0.0",
+  "Description": "Motor localizer: each effector block against the explicit `rest` blocks (20 s block design; converter: src/python/raw2bids_converters/localizer_events.py). `task-motor` covers TWO protocols under one label, split by session group and confounded with subject (mmmdata-agents docs/results/task-instructions-provenance.md): the `mouth` condition is a silent lip movement in one and spoken nonsense syllables in the other. This spec fits either; it must not be fitted across both. The runner enforces that through neuroimaging.io.find_fmriprep_runs, which refuses a task-motor selection spanning both session groups unless told otherwise.",
+  "Input": {
+    "task": ["motor"]
+  },
+  "Nodes": [
+    {
+      "Level": "Run",
+      "Name": "run",
+      "GroupBy": ["run", "session", "subject"],
+      "Transformations": {
+        "Transformer": "pybids-transforms-v1",
+        "Instructions": [
+          {"Name": "Factor", "Input": ["trial_type"]},
+          {
+            "Name": "Convolve",
+            "Model": "spm",
+            "Input": ["trial_type.hand", "trial_type.foot", "trial_type.mouth", "trial_type.saccade", "trial_type.rest"]
+          }
+        ]
+      },
+      "Model": {
+        "Type": "glm",
+        "X": ["trial_type.hand", "trial_type.foot", "trial_type.mouth", "trial_type.saccade", "trial_type.rest", 1]
+      },
+      "Contrasts": [
+        {"Name": "handVsRest", "ConditionList": ["trial_type.hand", "trial_type.rest"], "Weights": [1, -1], "Test": "t"},
+        {"Name": "footVsRest", "ConditionList": ["trial_type.foot", "trial_type.rest"], "Weights": [1, -1], "Test": "t"},
+        {"Name": "mouthVsRest", "ConditionList": ["trial_type.mouth", "trial_type.rest"], "Weights": [1, -1], "Test": "t"},
+        {"Name": "saccadeVsRest", "ConditionList": ["trial_type.saccade", "trial_type.rest"], "Weights": [1, -1], "Test": "t"}
+      ]
+    },
+    {
+      "Level": "Subject",
+      "Name": "subject",
+      "GroupBy": ["subject", "contrast"],
+      "Model": {"Type": "meta", "X": [1]},
+      "DummyContrasts": {"Test": "t"}
+    }
+  ],
+  "Edges": [
+    {"Source": "run", "Destination": "subject"}
+  ]
+}
