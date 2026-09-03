@@ -5,9 +5,13 @@ Walks sourcedata/{subject}/{session}/behavioral/ and eyetracking/ directories,
 classifies each file, and maps it to a BIDS destination with the correct
 prefixed task names (TBencoding, NATencoding, FINretrieval, etc.).
 
-If edf_triage.csv exists alongside this script, EDF files are cross-referenced
-against it: files with decision='exclude' are marked conversion_type='edf_excluded'
-and their description updated with the reason.
+Two generated triage tables beside this script feed it, and neither is
+tracked in git (data, not code -- see .gitignore): edf_triage.csv marks EDF
+files with decision='exclude' as conversion_type='edf_excluded'; physio_triage.csv
+gates which scanner PhysioLog recordings become physio_dcm rows. A missing
+table raises rather than silently thinning the inventory; --no-triage and
+--no-physio-triage are the deliberate opt-outs. Regenerate with
+scripts/edf_triage.sbatch and scripts/physio_triage.sbatch respectively.
 
 Usage:
     python generate_inventory.py [--output file_inventory.csv]
@@ -21,7 +25,10 @@ import sys
 from pathlib import Path
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(SCRIPT_DIR))
+# Guarded: under pytest the repo conftest has already put src/python on the
+# path, and a second copy trips the portability guard that keeps it unique.
+if os.path.dirname(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, os.path.dirname(SCRIPT_DIR))
 
 # Roots come from config (paths.bids_project_dir / paths.source_dir). The raw
 # data moved out of <bids_root>/sourcedata to the sibling mmmsourcedata tree,
@@ -670,10 +677,18 @@ def _physio_series_to_bids(series_name):
     return None
 
 
-def load_physio_triage(subjects=None):
+def load_physio_triage(subjects=None, required=True):
     """Load physio_triage.csv and generate inventory rows for convertible files.
 
     Only COMPLETE and PARTIAL files are included.
+
+    The table is generated data, not code, so it is not tracked in git --
+    which means "absent" is a normal state on a fresh checkout and must not
+    be a silent one. Without it every scanner physio recording disappears
+    from the inventory and the run still looks clean, so absence raises by
+    default. Pass ``required=False`` to build an inventory deliberately
+    without scanner physio. A table that is present but has no convertible
+    rows returns an empty list: that is data, not absence.
 
     Returns
     -------
@@ -682,6 +697,17 @@ def load_physio_triage(subjects=None):
         conversion_type='physio_dcm'.
     """
     if not os.path.isfile(PHYSIO_TRIAGE_CSV):
+        if required:
+            raise FileNotFoundError(
+                f"No scanner-physio triage table at {PHYSIO_TRIAGE_CSV}. "
+                "Without it every PhysioLog recording is silently dropped "
+                "from the inventory. Regenerate it with "
+                "`sbatch scripts/physio_triage.sbatch` (it writes to that "
+                "path; the generator needs pydicom, which the shared stimfeat "
+                "env carries and mmmdata's own .venv does not), or pass "
+                "required=False to build an inventory without scanner physio "
+                "on purpose."
+            )
         return []
 
     rows = []
@@ -757,6 +783,12 @@ def main():
              "so state it deliberately rather than reaching this state by a "
              "missing file.",
     )
+    parser.add_argument(
+        "--no-physio-triage", action="store_true",
+        help="Build the inventory without scanner physio. No PhysioLog row is "
+             "then emitted at all -- so state it deliberately rather than "
+             "reaching this state by a missing physio_triage.csv.",
+    )
     args = parser.parse_args()
 
     if args.subjects:
@@ -785,13 +817,20 @@ def main():
     else:
         print("EDF triage SKIPPED (--no-triage): no EDF run is excluded")
 
-    # Add scanner physio rows from physio_triage.csv
-    physio_rows = load_physio_triage({bids_sub(n) for n in subjects})
+    # Add scanner physio rows from physio_triage.csv. Same shape as the EDF
+    # triage above: a missing table raises inside the loader, and only
+    # --no-physio-triage reaches the skip.
+    physio_rows = load_physio_triage(
+        {bids_sub(n) for n in subjects}, required=not args.no_physio_triage
+    )
     if physio_rows:
         all_rows.extend(physio_rows)
         print(f"Scanner physio: {len(physio_rows)} convertible PhysioLog files added")
+    elif args.no_physio_triage:
+        print("Scanner physio SKIPPED (--no-physio-triage): no PhysioLog row emitted")
     else:
-        print(f"WARNING: {PHYSIO_TRIAGE_CSV} not found or empty, skipping scanner physio")
+        print("Scanner physio: triage table present but holds no COMPLETE/PARTIAL "
+              "row for these subjects")
 
     # Write CSV
     fieldnames = ["source_file", "description", "bids_destination", "conversion_type"]
