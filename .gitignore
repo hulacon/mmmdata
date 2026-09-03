@@ -48,11 +48,15 @@ work_*/
 # Generated reports
 validation_report.tsv
 
-# Generated conversion tables — data, not code. They are keyed on raw source
-# filenames (which embed acquisition date-times), and this repo is public.
-# Regenerate: scripts/edf_triage.sbatch, then generate_inventory.py.
+# Generated conversion tables — data, not code. The first two are keyed on
+# raw source filenames (which embed acquisition date-times), and this repo is
+# public; the third carries no date-times but is the same category, and the
+# loader that reads it raises when it is missing rather than thinning the
+# inventory silently. Regenerate: scripts/edf_triage.sbatch and
+# scripts/physio_triage.sbatch, then generate_inventory.py.
 src/python/raw2bids_converters/edf_triage.csv
 src/python/raw2bids_converters/file_inventory.csv
+src/python/raw2bids_converters/physio_triage.csv
 
 # Per-operator config overrides. Untracked so one operator's settings do not
 # apply to everyone; config/local.toml.example is the tracked template.

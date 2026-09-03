@@ -7,6 +7,7 @@ Parallel to behavioral/constants.py.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Iterable, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -132,4 +133,75 @@ ALL_SESSIONS: tuple[str, ...] = tuple(
 
 TB_SESSIONS: tuple[str, ...] = tuple(f"{s:02d}" for s in range(4, 19))
 NAT_SESSIONS: tuple[str, ...] = tuple(f"{s:02d}" for s in range(19, 29))
-LOCALIZER_SESSIONS: tuple[str, ...] = ("02", "03")
+
+# Sessions in which functional localizers were acquired. There are two
+# groups, acquired by different cohorts: the dedicated localizer sessions
+# (ses-02/03) and the final session (ses-30). This used to be ("02", "03"),
+# which silently excluded every ses-30 localizer run.
+LOCALIZER_SESSION_GROUPS: dict[str, tuple[str, ...]] = {
+    "ses-02/03": ("02", "03"),
+    "ses-30": ("30",),
+}
+LOCALIZER_SESSIONS: tuple[str, ...] = tuple(
+    s for group in LOCALIZER_SESSION_GROUPS.values() for s in group
+)
+
+# Task labels that cover two different protocols, one per session group,
+# perfectly confounded with subject (no subject ran both). The root
+# task-*_bold.json sidecars carry both instruction texts labelled by session;
+# nothing else in BIDS marks the split. Selecting on one of these tasks across
+# session groups pools two designs: `motor` cued a silent lip movement in one
+# and spoken nonsense syllables in the other, so a shared `mouth` regressor
+# means different things. Record and source map: mmmdata-agents
+# docs/results/task-instructions-provenance.md.
+LOCALIZER_DESIGNS: dict[str, dict[str, tuple[str, ...]]] = {
+    "motor": dict(LOCALIZER_SESSION_GROUPS),
+    "auditory": dict(LOCALIZER_SESSION_GROUPS),
+}
+
+
+class MixedLocalizerDesignError(ValueError):
+    """A selection spans more than one design of a split localizer task."""
+
+
+def localizer_design(task: str, session: str) -> Optional[str]:
+    """Design label for ``(task, session)``, or None if ``task`` has one design.
+
+    Raises ValueError if ``task`` is a split task and ``session`` is not one
+    where it was acquired — a filter typo, not a third design.
+    """
+    designs = LOCALIZER_DESIGNS.get(task)
+    if designs is None:
+        return None
+    for label, sessions in designs.items():
+        if session in sessions:
+            return label
+    known = sorted(s for group in designs.values() for s in group)
+    raise ValueError(
+        f"task-{task} was not acquired in ses-{session}; "
+        f"known sessions: {', '.join(f'ses-{s}' for s in known)}"
+    )
+
+
+def check_single_design(task: str, sessions: Iterable[str]) -> None:
+    """Raise MixedLocalizerDesignError if ``sessions`` span >1 design of ``task``.
+
+    No-op for tasks with a single design. Callers that mean to pool must say
+    so explicitly rather than catching this.
+    """
+    if task not in LOCALIZER_DESIGNS:
+        return
+    by_design: dict[str, set[str]] = {}
+    for s in sessions:
+        by_design.setdefault(localizer_design(task, s), set()).add(s)
+    if len(by_design) <= 1:
+        return
+    parts = ", ".join(
+        f"{label} ({', '.join(f'ses-{s}' for s in sorted(ss))})"
+        for label, ss in sorted(by_design.items())
+    )
+    raise MixedLocalizerDesignError(
+        f"task-{task} selection spans {len(by_design)} designs: {parts}. "
+        "These are different protocols under one label and cannot be pooled "
+        "without saying so; filter by session, or opt in explicitly."
+    )

@@ -19,6 +19,14 @@ comes from the volume count and TR recorded in the log's own ACQUISITION_INFO.
 
 Run with --check to verify the rule reproduces the existing table rather than
 rewriting it; that is what licences trusting it on a new cohort.
+
+Interpreter: this script reads DICOMs and needs **pydicom**, which mmmdata's
+own .venv does not carry (measured 2026-08-22). The shared Talapas envs
+stimfeat, duckbrain and mmmdata-agents do. `scripts/physio_triage.sbatch` runs
+it under stimfeat and is the recorded way to regenerate the table; a bare
+`python generate_physio_triage.py` under the wrong interpreter exits with a
+message saying so before touching any file. The output, physio_triage.csv, is
+generated data and is not tracked in git.
 """
 
 from __future__ import annotations
@@ -30,10 +38,28 @@ import re
 import sys
 from statistics import median
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_SRC_PYTHON = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _SRC_PYTHON not in sys.path:  # guarded: see generate_inventory.py
+    sys.path.insert(0, _SRC_PYTHON)
 
 from raw2bids_converters.common import SOURCE_DIR  # noqa: E402
 from raw2bids_converters.physio_dcm import parse_pmu_text, _find_section_pos  # noqa: E402
+
+PYDICOM_HINT = (
+    "generate_physio_triage.py needs pydicom, which this interpreter does not "
+    "have (mmmdata's own .venv does not carry it). Regenerate the table with "
+    "`sbatch scripts/physio_triage.sbatch`, which runs under the shared stimfeat "
+    "env, or run this script with an interpreter that has pydicom."
+)
+
+
+def _require_pydicom():
+    """Fail up front, naming the fix, rather than on the first DICOM read."""
+    try:
+        import pydicom  # noqa: F401
+    except ImportError as exc:
+        raise SystemExit(PYDICOM_HINT) from exc
+
 
 TIC_MS = 2.5          # Siemens PMU tick
 WAVE_SECTIONS = ("ECG", "EXT", "PULS", "RESP")
@@ -143,6 +169,7 @@ def main(argv=None):
     p.add_argument("--append", action="store_true",
                    help="Keep existing rows, add only subjects absent from the table")
     args = p.parse_args(argv)
+    _require_pydicom()
 
     source_root = SOURCE_DIR
     if args.subjects:
