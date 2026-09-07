@@ -2,13 +2,17 @@
 #SBATCH --job-name=glm_contrast_maps
 #SBATCH --account=hulacon
 #SBATCH --partition=compute
-#SBATCH --time=04:00:00
+#SBATCH --time=01:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --mem=16G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/glm_contrast_maps_%j.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/glm_contrast_maps_%j.err
+# Sizing (seff, 2026-09-07, MNI res-2, 5 mm FWHM, AR(1)): motor 2 runs x 400 vol
+# = 5.3 G peak / 1 min 15 s; fLoc 6 runs x 208 vol across two sessions = 3.7 G /
+# 2 min 03 s. 16 G / 1 h is ~3x headroom, not 1.1x - MaxRSS undercounts the
+# cgroup. Auditory (2 runs) and multi-session pools sit inside the same envelope.
 
 #==============================================================================
 # Condition-level GLM contrast maps — one subject, one BIDS Stats Model
