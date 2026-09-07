@@ -40,6 +40,14 @@
 
 set -u
 
+# Array mode: UNIT_LIST is a file of "<sub> <ses>" lines (bare labels); task N
+# takes line N. Submit with e.g.
+#   sbatch --array=1-100%6 --output=.../fmriprep_t1w_%A_%a.out \
+#          --export=ALL,UNIT_LIST=<file>,OUT_ROOT=<tree> fmriprep_t1w_backfill.sbatch
+if [ -n "${UNIT_LIST:-}" ] && [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then
+    read -r SUBJECT SESSION < <(sed -n "${SLURM_ARRAY_TASK_ID}p" "$UNIT_LIST")
+fi
+
 echo "=== fMRIPrep T1w backfill: sub-${SUBJECT:?} ses-${SESSION:?} ==="
 echo "Job: ${SLURM_JOB_ID}  Node: $(hostname)  Started: $(date)"
 

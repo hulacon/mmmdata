@@ -68,22 +68,40 @@ def check_grid(tree: Path, backfill: Path, sub: str, ses: str, task: str) -> dic
 
 def check_reuse(log: Path) -> dict:
     text = log.read_text(errors="replace")
-    pats = {"hmc_nodes": r"bold_hmc_wf", "bbreg_nodes": r"bbreg_wf|bold_reg_wf|coreg", "fmap_est": r"fmap_preproc_wf|sdcflows",
-            "precomputed_msgs": r"[Pp]recomputed", "resample_nodes": r"bold_volumetric_resample_wf|resample", "errors": r"Error|Traceback|crash"}
+    # Node names, not workflow names: the log mentions "coreg"/"hmc" in every
+    # "Found ... skipping Stage N" line and in reused filenames, so only an
+    # executed-node line proves a fit step actually ran. anat_fit_wf.bbreg is
+    # the T2w->T1w registration, which --derivatives does not cover; it is
+    # counted separately because it reruns (and rewrites the T2w) every time.
+    pats = {"hmc_nodes": r'Executing "(mcflirt|hmc)"', "bold_coreg_nodes": r'Executing "(bbregister|mri_coreg)"',
+            "fmap_est_nodes": r'Executing "(topup|phdiff2fmap|fmap2coeff|mag2coeff)"',
+            "anat_t2w_bbreg_nodes": r'anat_fit_wf\.bbreg" in', "stage_skips": r"skipping Stage",
+            "resample_nodes": r'Executing "(resample|boldref_bold)"', "errors": r"Traceback|crash-|Errors occurred"}
     counts = {k: len(re.findall(p, text)) for k, p in pats.items()}
     m = re.search(r"Exit code: (\d+)", text)
     counts["exit_code"] = int(m.group(1)) if m else None
-    counts["ok"] = counts["hmc_nodes"] == 0 and counts["bbreg_nodes"] == 0 and counts["exit_code"] == 0
+    counts["ok"] = (counts["hmc_nodes"] == 0 and counts["bold_coreg_nodes"] == 0
+                    and counts["fmap_est_nodes"] == 0 and counts["errors"] == 0 and counts["exit_code"] == 0)
     return counts
 
 
 def check_confounds(tree: Path, backfill: Path, sub: str, ses: str) -> dict:
+    """Byte-identical is the in-place-safe answer; value-identical after a
+    column reorder is the expected one (fMRIPrep's column order is not stable
+    across runs — the pilot swapped two ``*_power2`` columns and nothing else)."""
+    import pandas as pd
     out = {"runs": []}
     for new in sorted((backfill / f"sub-{sub}" / f"ses-{ses}" / "func").glob("*_desc-confounds_timeseries.tsv")):
         old = tree / f"sub-{sub}" / f"ses-{ses}" / "func" / new.name
-        same = old.exists() and _md5(old) == _md5(new)
-        out["runs"].append({"file": new.name, "identical": bool(same)})
-    out["ok"] = bool(out["runs"]) and all(r["identical"] for r in out["runs"])
+        rec = {"file": new.name, "byte_identical": old.exists() and _md5(old) == _md5(new)}
+        if old.exists():
+            a, b = pd.read_csv(old, sep="\t"), pd.read_csv(new, sep="\t")
+            rec["same_columns"] = sorted(a.columns) == sorted(b.columns)
+            rec["same_order"] = list(a.columns) == list(b.columns)
+            rec["values_identical"] = bool(rec["same_columns"] and a.equals(b[list(a.columns)]))
+        out["runs"].append(rec)
+    out["byte_identical_all"] = bool(out["runs"]) and all(r["byte_identical"] for r in out["runs"])
+    out["ok"] = bool(out["runs"]) and all(r.get("values_identical") for r in out["runs"])
     return out
 
 
@@ -95,7 +113,8 @@ def check_maps(tree: Path, backfill: Path, glm_dir: Path, sub: str, ses: str, ta
     func = tree / f"sub-{sub}" / f"ses-{ses}" / "func"
     xfm_path = sorted(func.glob(f"sub-{sub}_ses-{ses}_task-{task}_run-01_from-boldref_to-T1w_mode-image_desc-coreg_xfm.txt"))[0]
     xfm = nt.linear.load(xfm_path, fmt="itk")
-    carried = xfm.apply(z_func, reference=z_t1w, order=3)
+    from nitransforms.resampling import apply as nt_apply
+    carried = nt_apply(xfm, z_func, reference=z_t1w, order=3)
     mask_path = sorted((backfill / f"sub-{sub}" / f"ses-{ses}" / "func").glob(f"sub-{sub}_ses-{ses}_task-{task}_run-01_space-T1w_desc-brain_mask.nii.gz"))[0]
     m = np.asanyarray(nib.load(mask_path).dataobj) > 0
     a, b = np.asanyarray(z_t1w.dataobj)[m], np.asanyarray(carried.dataobj)[m]
