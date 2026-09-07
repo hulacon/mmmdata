@@ -45,7 +45,8 @@ MODE="${1:?mode: shared1000 | movies}"
 
 PY=/gpfs/projects/hulacon/shared/envs/stimfeat/bin/python
 STORE=/gpfs/projects/hulacon/shared/mmmdata/derivatives/stimuli_features/psytwill
-OUTDIR=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata-agents/docs/workbench/feature-space-geometry/out
+# Override with --export=ALL,OUTDIR=<dir> to write into another workbench.
+OUTDIR="${OUTDIR:-/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata-agents/docs/workbench/feature-space-geometry/out}"
 
 echo "host      : $(hostname)"
 echo "cpus      : ${SLURM_CPUS_PER_TASK:-?}"
