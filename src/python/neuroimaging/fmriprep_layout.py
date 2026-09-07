@@ -24,10 +24,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Union
 
-from .constants import DEFAULT_SPACE
+from .constants import DEFAULT_SPACE, NATIVE_SPACE
 
 __all__ = [
     "DEFAULT_SPACE",
+    "NATIVE_SPACE",
+    "space_part",
     "run_prefix",
     "func_dir",
     "bold_path",
@@ -66,6 +68,16 @@ def run_prefix(
     return f"sub-{subject}_ses-{session}_task-{task}{run_part}"
 
 
+def space_part(space: str) -> str:
+    """Filename fragment for the space entity (``"_space-S"`` or ``""``).
+
+    fMRIPrep writes its native-grid outputs (``--output-spaces func``,
+    :data:`NATIVE_SPACE`) with no ``space-`` entity at all, so the fragment
+    is empty for that label and ``_space-<label>`` for every other one.
+    """
+    return "" if space == NATIVE_SPACE else f"_space-{space}"
+
+
 def func_dir(fmriprep_dir: PathLike, subject: str, session: str) -> Path:
     """Functional derivatives directory for one subject/session."""
     return Path(fmriprep_dir) / f"sub-{subject}" / f"ses-{session}" / "func"
@@ -90,11 +102,12 @@ def bold_path(
         BIDS entities; see :func:`run_prefix`.
     space : str
         Volumetric template and resolution string as it appears in the
-        filename (e.g., ``"MNI152NLin2009cAsym_res-2"``).
+        filename (e.g., ``"MNI152NLin2009cAsym_res-2"``), or
+        :data:`NATIVE_SPACE` for the space-less native-grid file.
     """
     return func_dir(fmriprep_dir, subject, session) / (
         f"{run_prefix(subject, session, task, run)}"
-        f"_space-{space}_desc-preproc_bold.nii.gz"
+        f"{space_part(space)}_desc-preproc_bold.nii.gz"
     )
 
 
@@ -110,7 +123,7 @@ def mask_path(
     :func:`bold_path` in the same space."""
     return func_dir(fmriprep_dir, subject, session) / (
         f"{run_prefix(subject, session, task, run)}"
-        f"_space-{space}_desc-brain_mask.nii.gz"
+        f"{space_part(space)}_desc-brain_mask.nii.gz"
     )
 
 

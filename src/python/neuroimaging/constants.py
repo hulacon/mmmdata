@@ -28,6 +28,11 @@ FMRIPREP_VARIANTS: tuple[str, ...] = ("fmriprep", "fmriprep_nordic")
 # check coverage before subject-level analyses.
 DEFAULT_VARIANT: str = "fmriprep"
 DEFAULT_SPACE: str = "MNI152NLin2009cAsym_res-2"
+# fMRIPrep's own label (``--output-spaces func``) for the run's native BOLD
+# grid. Those files carry NO ``space-`` entity on disk
+# (``*_desc-preproc_bold.nii.gz``); the catalog stores them with a null
+# ``space``. Grids match within a session and differ across sessions.
+NATIVE_SPACE: str = "func"
 
 # Derivatives directories (relative to bids_root)
 DERIVATIVES_DIRS: dict[str, str] = {

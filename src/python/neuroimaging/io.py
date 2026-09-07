@@ -23,6 +23,7 @@ from typing import Any, Optional, Sequence
 
 import pandas as pd
 
+from .fmriprep_layout import space_part
 from .constants import (
     ACOMPCOR_6,
     COSINE_PREFIX,
@@ -82,13 +83,17 @@ class FmriprepRun:
     variant : str
         Either "fmriprep" or "fmriprep_nordic".
     space : str
-        Volumetric template and resolution (e.g., "MNI152NLin2009cAsym_res-2").
+        Volumetric template and resolution (e.g., "MNI152NLin2009cAsym_res-2"),
+        or ``NATIVE_SPACE`` ("func") for the run's own grid.
     bold : Path | None
         Preprocessed BOLD NIfTI (*_desc-preproc_bold.nii.gz).
     mask : Path | None
         Brain mask in the same space as BOLD.
     boldref : Path | None
-        BOLD reference image in the same space.
+        BOLD reference image in the same space. For ``NATIVE_SPACE`` this
+        is the coregistered reference (``*_desc-coreg_boldref.nii.gz``),
+        the one fMRIPrep aligned to T1w, not the pre-coregistration
+        ``desc-hmc`` one.
     confounds : Path | None
         Confounds timeseries TSV.
     confounds_json : Path | None
@@ -183,7 +188,10 @@ def find_fmriprep_runs(
     variant : str
         Either "fmriprep" or "fmriprep_nordic".
     space : str
-        Volumetric template and resolution (e.g., "MNI152NLin2009cAsym_res-2").
+        Volumetric template and resolution (e.g., "MNI152NLin2009cAsym_res-2"),
+        or ``NATIVE_SPACE`` ("func") for the space-less native-grid files.
+        Native grids differ across sessions: pool native runs only within
+        one session, or resample to a common reference first.
     bids_root : Path, optional
         BIDS root. If None, resolved via config.
     allow_mixed_designs : bool
@@ -274,17 +282,21 @@ def _build_fmriprep_run(
     run_part = f"_run-{run}" if run else ""
     prefix = f"sub-{subject}_ses-{session}_task-{task}{run_part}"
 
-    def _path(suffix: str) -> Optional[Path]:
-        p = func_dir / f"{prefix}_{suffix}"
+    def _path(tail: str) -> Optional[Path]:
+        p = func_dir / f"{prefix}{tail}"
         return p if p.exists() else None
 
-    bold = _path(f"space-{space}_desc-preproc_bold.nii.gz")
-    mask = _path(f"space-{space}_desc-brain_mask.nii.gz")
-    boldref = _path(f"space-{space}_boldref.nii.gz")
-    confounds = _path("desc-confounds_timeseries.tsv")
-    confounds_json = _path("desc-confounds_timeseries.json")
-    surface_L = _path("hemi-L_space-fsaverage6_bold.func.gii")
-    surface_R = _path("hemi-R_space-fsaverage6_bold.func.gii")
+    # "" for NATIVE_SPACE (fMRIPrep writes those files with no space entity),
+    # "_space-<label>" otherwise. See fmriprep_layout.space_part.
+    sp = space_part(space)
+    bold = _path(f"{sp}_desc-preproc_bold.nii.gz")
+    mask = _path(f"{sp}_desc-brain_mask.nii.gz")
+    # Native has no bare boldref; the coregistered one is the T1w-aligned reference.
+    boldref = _path(f"{sp}_boldref.nii.gz") if sp else _path("_desc-coreg_boldref.nii.gz")
+    confounds = _path("_desc-confounds_timeseries.tsv")
+    confounds_json = _path("_desc-confounds_timeseries.json")
+    surface_L = _path("_hemi-L_space-fsaverage6_bold.func.gii")
+    surface_R = _path("_hemi-R_space-fsaverage6_bold.func.gii")
 
     events = find_events_file(
         subject=subject,
