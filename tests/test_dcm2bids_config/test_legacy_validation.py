@@ -41,40 +41,11 @@ def _skip_if_no_legacy():
 # ---------------------------------------------------------------------------
 
 # Maps (subject, session) → dict of known issues in legacy config.
-# Used to adjust comparisons so tests pass despite legacy bugs.
-KNOWN_LEGACY_BUGS: dict[tuple[str, str], dict] = {
-    # All _confedit configs use task-encoding instead of task-TBencoding, etc.
-    # and are missing TaskName in sidecar_changes.
-    ("sub-03", "ses-10"): {
-        "task_prefix_missing": True,
-        "missing_taskname": True,
-        "extra_fmap_groups": True,  # 3 groups instead of 2 (re-entry)
-        "note": "Hand-edited; CR prefix, 3 fmap pairs from scanner re-entry",
-    },
-    ("sub-04", "ses-05"): {
-        "task_prefix_missing": True,
-        "missing_taskname": True,
-        "note": "confdeletemath variant; CR prefix, missing TaskName",
-    },
-    ("sub-03", "ses-02"): {
-        "task_prefix_missing": True,
-        "missing_taskname": True,
-        "note": "Localizer session; custom task set",
-    },
-    ("sub-03", "ses-30"): {
-        "task_prefix_missing": True,
-        "missing_taskname": True,
-        "note": "Final session; custom task set, T1w + misc tasks",
-    },
-}
-
-# Task label corrections: legacy label → correct label
-TASK_LABEL_CORRECTIONS = {
-    "encoding": "TBencoding",
-    "math": "TBmath",
-    "resting": "TBresting",
-    "retrieval": "TBretrieval",
-}
+# Empty since 2026-09: the buggy `_confedit`/`_confdeletemath` variants
+# (bare task labels, missing TaskName) no longer exist in the legacy dir —
+# only clean `_conf.json` files remain, so the four entries documenting
+# those variants came out, as the doc-guard tests below prescribe.
+KNOWN_LEGACY_BUGS: dict[tuple[str, str], dict] = {}
 
 
 # ---------------------------------------------------------------------------
