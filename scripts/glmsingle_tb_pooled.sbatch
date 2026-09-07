@@ -2,11 +2,11 @@
 #SBATCH --job-name=glmsingle_tb_pooled
 #SBATCH --account=hulacon
 #SBATCH --partition=memorylong
-#SBATCH --time=72:00:00
+#SBATCH --time=96:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=500G
+#SBATCH --mem=600G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/glmsingle_tb_pooled_%A_%a.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/glmsingle_tb_pooled_%A_%a.err
 
@@ -16,18 +16,20 @@
 # Workbench: mmmdata-agents/docs/workbench/retrieval-modeling/ (3x2 redesign,
 # 2026-08-26). Siloed arms run separately: glmsingle_tb_siloed.sbatch.
 #
-# Sizing: ~98 runs x ~150-207 vols = ~17k volumes and ~3,000 design columns —
-# roughly 2x the 24.1.1 encoding fit that peaked at 200 GB / 18.3 h on 8 CPUs
-# (job 43272306). Extrapolated ~400 GB / ~36 h, hence memorylong at
-# 500 G / 72 h. UNMEASURED until the first pooled fit; revise from seff before
-# submitting the remaining subjects.
+# Sizing: MEASURED on the sub-03 pilot (98 runs x 150/210 vols, 3,000 design
+# columns, 8 CPUs): seff peak 411.77 GB, wall 68.8 h of the 72 h asked. The
+# header is 600 G / 96 h because seff's MaxRSS undercounts the cgroup — the
+# siloed enc arms measured ~190-203 G yet OOM'd under a 220 G header — so a
+# ~1.1x-seff margin is not enough; ~1.45x memory and ~1.4x wall is the floor.
+# Wall also carries up to ~2x node-to-node variance (siloed arms, same design,
+# 5.8 vs 11.7 h). memorylong nodes carry 1-4 TB, so 600 G costs nothing extra.
 #
 # Array task mapping:
 #   1: sub-03/pooled   2: sub-04/pooled   3: sub-05/pooled
 #
 # Usage:
 #   sbatch --array=1 glmsingle_tb_pooled.sbatch      # pooled pilot: sub-03
-#   sbatch --array=2-3 glmsingle_tb_pooled.sbatch    # after seff review
+#   sbatch --array=2-3 glmsingle_tb_pooled.sbatch    # sub-04, sub-05 (Gate B passed)
 #==============================================================================
 
 SUBJECTS=(sub-03 sub-04 sub-05)
