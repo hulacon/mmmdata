@@ -21,6 +21,7 @@ mmmdata-agents docs/cluster-reentry.md R15.
 
 Usage:
     python glm_contrast_maps.py --subject sub-03 --model motor --sessions ses-30 --dry-run
+    python glm_contrast_maps.py --subject sub-03 --model tbrepetition   # adapter needs all 42 runs
     python glm_contrast_maps.py --subject sub-03 --model floc
     python glm_contrast_maps.py --subject sub-03 --model floc --estimator nilearn --noise-model ols
 """
@@ -40,6 +41,7 @@ if str(_REPO / "src" / "python") not in sys.path:
     sys.path.insert(0, str(_REPO / "src" / "python"))
 
 from neuroimaging.constants import DERIVATIVES_DIRS  # noqa: E402
+from neuroimaging.glm.adapters import adapt_events  # noqa: E402
 from neuroimaging.glm.config import DEFAULT_CONFIG, GlmConfig, repetition_time  # noqa: E402
 from neuroimaging.glm.design import build_design_matrix, contrast_vectors  # noqa: E402
 from neuroimaging.glm.estimators import fixed_effects, get_estimator  # noqa: E402
@@ -148,11 +150,13 @@ def main(argv: list[str] | None = None) -> int:
     # whole job here rather than after an hour of estimation.
     import nibabel as nib
 
+    # A model's events adapter needs every run's events at once (anchors,
+    # presentation order), so events are read for all runs before any design.
+    all_events = adapt_events(model.adapter, [pd.read_csv(r.events, sep="\t", na_values=["n/a"]) for r in runs])
     designs = []
-    for run in runs:
+    for run, events in zip(runs, all_events):
         t_r = repetition_time(run, bids_root)
         n_scans = nib.load(str(run.bold)).shape[-1]
-        events = pd.read_csv(run.events, sep="\t", na_values=["n/a"])
         confounds = load_confounds(run)
         dm = build_design_matrix(events, confounds, t_r, n_scans, model, cfg)
         vectors = contrast_vectors(model, list(dm.columns))

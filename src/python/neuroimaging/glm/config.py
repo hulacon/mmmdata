@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from ..constants import COSINE_PREFIX, DEFAULT_SPACE, DEFAULT_VARIANT, MOTION_6
+from ..constants import ACOMPCOR_6, COSINE_PREFIX, DEFAULT_SPACE, DEFAULT_VARIANT, MOTION_6, MOTION_24
 from ..io import FmriprepRun
 
 
@@ -32,9 +32,15 @@ class GlmConfig:
         BIDS Stats Models declare. Derivatives are off by default: block
         designs with 4–20 s blocks gain little, and a derivative column per
         condition doubles the design width for the fLoc's ten conditions.
+        ``"glmsingle:<k>"`` (k in 0..19) is kernel k of GLMsingle's canonical
+        HRF library (:mod:`.hrf`); the bake-off's per-voxel HRF arm fits one
+        design per kernel over the voxels whose ``HRFindex`` chose it
+        (:mod:`.voxelwise_hrf`).
     noise_model
         ``"ar1"`` is nilearn's AR(1) prewhitening — the fixed-effects
-        production candidate. ``"ols"`` is the iid control arm.
+        production candidate. ``"ols"`` is the iid control arm. ``"arma11"``
+        is AFNI 3dREMLfit's ARMA(1,1) and only the ``remlfit`` estimator
+        accepts it.
     smoothing_fwhm
         Applied by the estimator. ``None`` disables it; the archived plan used
         5 mm for ROI definition.
@@ -46,7 +52,11 @@ class GlmConfig:
         when ``include_cosine`` is set. Six motion parameters is the
         deliberate default for a localizer: aCompCor and the 24-parameter
         expansion eat degrees of freedom that a 300 s run does not have to
-        spare.
+        spare. The bake-off's confound factor is the three
+        :data:`CONFOUND_PRESETS`; ``with_confounds`` applies one.
+    acompcor_n
+        How many aCompCor components to append (``a_comp_cor_00`` upward,
+        fMRIPrep's variance order over the combined WM+CSF mask). 0 is none.
     output_tree
         Derivative directory name under ``<bids_root>/derivatives``.
     """
@@ -60,6 +70,7 @@ class GlmConfig:
     high_pass: float = 0.01
     confounds: tuple[str, ...] = tuple(MOTION_6)
     include_cosine: bool = True
+    acompcor_n: int = 0
     output_tree: str = "glm_localizer"
 
     def confound_columns(self, available: list[str]) -> list[str]:
@@ -76,15 +87,43 @@ class GlmConfig:
                 f"Available: {available[:12]}..."
             )
         cols = list(self.confounds)
+        if self.acompcor_n:
+            wanted = [f"{ACOMPCOR_PREFIX}{i:02d}" for i in range(self.acompcor_n)]
+            absent = [c for c in wanted if c not in available]
+            if absent:
+                raise KeyError(
+                    f"aCompCor columns not in the confounds TSV: {absent}. fMRIPrep writes "
+                    "them only when its aCompCor step ran; check the confounds sidecar."
+                )
+            cols.extend(wanted)
         if self.include_cosine:
             cols.extend(c for c in available if c.startswith(COSINE_PREFIX))
         return cols
+
+    def with_confounds(self, preset: str) -> "GlmConfig":
+        """A copy using one of :data:`CONFOUND_PRESETS`."""
+        try:
+            columns, n_acompcor = CONFOUND_PRESETS[preset]
+        except KeyError:
+            raise KeyError(f"Unknown confound preset {preset!r}; available: {sorted(CONFOUND_PRESETS)}") from None
+        return dataclasses.replace(self, confounds=columns, acompcor_n=n_acompcor)
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
 
 
 DEFAULT_CONFIG = GlmConfig()
+
+ACOMPCOR_PREFIX = "a_comp_cor_"
+
+#: The bake-off's confound factor (glm-strategy log, DECIDED 2026-09-08):
+#: preset -> (motion columns, number of aCompCor components). Cosines ride
+#: along in every preset via ``include_cosine``.
+CONFOUND_PRESETS: dict[str, tuple[tuple[str, ...], int]] = {
+    "motion6": (tuple(MOTION_6), 0),
+    "motion24": (tuple(MOTION_24), 0),
+    "acompcor": (tuple(MOTION_6), len(ACOMPCOR_6)),
+}
 
 
 def repetition_time(run: FmriprepRun, bids_root: Optional[Path] = None) -> float:

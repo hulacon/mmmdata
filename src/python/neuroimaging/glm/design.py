@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from .config import GlmConfig
+from .hrf import resolve_hrf_model
 from .models import Contrast, StatsModel
 
 
@@ -90,15 +91,22 @@ def build_design_matrix(
             )
         add_regs = regs.to_numpy()
         add_reg_names = list(regs.columns)
+    hrf = resolve_hrf_model(cfg.hrf_model)
     dm = make_first_level_design_matrix(
         frame_times,
         events=ev,
-        hrf_model=model.hrf_model if cfg.hrf_model == model.hrf_model else cfg.hrf_model,
+        hrf_model=hrf,
         drift_model=cfg.drift_model,
         high_pass=cfg.high_pass,
         add_regs=add_regs,
         add_reg_names=add_reg_names,
     )
+    if callable(hrf):
+        # nilearn names a custom-kernel regressor "<condition>_<kernel.__name__>";
+        # the condition columns must keep their declared names so contrasts
+        # and every other HRF level address the same columns.
+        suffix = f"_{hrf.__name__}"
+        dm = dm.rename(columns={c: c[: -len(suffix)] for c in dm.columns if c.endswith(suffix)})
     return dm
 
 

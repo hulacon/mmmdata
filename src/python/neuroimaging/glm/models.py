@@ -18,7 +18,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 MODELS_DIR = Path(__file__).resolve().parents[4] / "models"
 FACTOR_PREFIX_SEP = "."
@@ -54,6 +54,8 @@ class StatsModel:
     #: True when the Subject node pools runs as fixed effects
     fixed_effects: bool
     path: Path
+    #: events adapter applied before Factor (``neuroimaging.glm.adapters``), or None
+    adapter: Optional[str] = None
 
     @property
     def task(self) -> str:
@@ -134,16 +136,28 @@ def parse_model(spec: dict, path: Path = Path("<memory>")) -> StatsModel:
 
     # --- Transformations: Factor(one variable) + Convolve(levels) ---------
     instructions = run.get("Transformations", {}).get("Instructions", [])
+    adapters = [i for i in instructions if i.get("Name") == "Adapter"]
+    adapter: Optional[str] = None
+    if adapters:
+        if len(adapters) > 1 or instructions[0] is not adapters[0] or len(adapters[0].get("Input", [])) != 1:
+            raise ModelSpecError(
+                f"{where}: at most one Adapter instruction, first in the list, naming one adapter"
+            )
+        adapter = str(adapters[0]["Input"][0])
+        from .adapters import ADAPTERS
+
+        if adapter not in ADAPTERS:
+            raise ModelSpecError(f"{where}: unknown events adapter {adapter!r}; available: {sorted(ADAPTERS)}")
     factors = [i for i in instructions if i.get("Name") == "Factor"]
     convolves = [i for i in instructions if i.get("Name") == "Convolve"]
-    unknown = [i.get("Name") for i in instructions if i.get("Name") not in ("Factor", "Convolve")]
+    unknown = [i.get("Name") for i in instructions if i.get("Name") not in ("Adapter", "Factor", "Convolve")]
     if len(factors) != 1 or len(factors[0].get("Input", [])) != 1:
         raise ModelSpecError(f"{where}: Run node needs exactly one Factor over exactly one variable")
     if len(convolves) != 1:
         raise ModelSpecError(f"{where}: Run node needs exactly one Convolve instruction")
     if unknown:
         raise ModelSpecError(
-            f"{where}: transformations {unknown} are not implemented (only Factor and Convolve)"
+            f"{where}: transformations {unknown} are not implemented (only Adapter, Factor and Convolve)"
         )
     factor = factors[0]["Input"][0]
     hrf_model = convolves[0].get("Model", "spm")
@@ -221,4 +235,5 @@ def parse_model(spec: dict, path: Path = Path("<memory>")) -> StatsModel:
         contrasts=tuple(contrasts),
         fixed_effects=fixed_effects,
         path=path,
+        adapter=adapter,
     )

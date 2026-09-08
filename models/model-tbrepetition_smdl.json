@@ -1,0 +1,40 @@
+{
+  "Name": "tbrepetition",
+  "BIDSModelVersion": "1.0.0",
+  "Description": "TBencoding repetition contrast for the GLM bake-off (mmmdata-agents docs/workbench/glm-strategy/, DECIDED 2026-09-08): first presentation vs any later presentation of the same items, pooled over encoding conditions 2 and 3, matched stimuli. The `tbrepetition` adapter (neuroimaging.glm.adapters) derives the trial_type column from every run of the subject: `first`/`later` for non-anchor repeated items ordered by (run, onset) within a session, `once` for items shown a single time, `anchor` for the six items shown in every session, which the contrast excludes. Each trial is one 3 s event (the image row; the word row shares its onset). Event-related, 42 runs over 14 sessions per subject; the runner needs all of them prepared at once.",
+  "Input": {
+    "task": ["TBencoding"]
+  },
+  "Nodes": [
+    {
+      "Level": "Run",
+      "Name": "run",
+      "GroupBy": ["run", "session", "subject"],
+      "Transformations": {
+        "Transformer": "mmmdata-adapters-v1",
+        "Instructions": [
+          {"Name": "Adapter", "Input": ["tbrepetition"]},
+          {"Name": "Factor", "Input": ["trial_type"]},
+          {"Name": "Convolve", "Model": "spm", "Input": ["trial_type.first", "trial_type.later", "trial_type.once", "trial_type.anchor"]}
+        ]
+      },
+      "Model": {
+        "Type": "glm",
+        "X": ["trial_type.first", "trial_type.later", "trial_type.once", "trial_type.anchor", 1]
+      },
+      "Contrasts": [
+        {"Name": "firstVsLater", "ConditionList": ["trial_type.first", "trial_type.later"], "Weights": [1, -1], "Test": "t"}
+      ]
+    },
+    {
+      "Level": "Subject",
+      "Name": "subject",
+      "GroupBy": ["subject", "contrast"],
+      "Model": {"Type": "meta", "X": [1]},
+      "DummyContrasts": {"Test": "t"}
+    }
+  ],
+  "Edges": [
+    {"Source": "run", "Destination": "subject"}
+  ]
+}
