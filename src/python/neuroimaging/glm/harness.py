@@ -223,3 +223,40 @@ def collect_scores(out_base: Path) -> list[dict[str, Any]]:
                     "contrast": contrast, "metric": metric, "value": value,
                 })
     return rows
+
+
+def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Marginal means per factor level, the best cell per model and metric, and rank stability.
+
+    Pure pandas over :func:`collect_scores` rows. ``dice_family`` is the mean
+    of every ``dice@N`` column (the pre-registered N set) — a cell's Dice
+    score is the family mean, not one N. Rank stability is Spearman between
+    the cell ranking by ``dice_family`` and by ``r`` within a model; a low
+    value flags a ranking that the two metrics disagree on.
+    """
+    import pandas as pd
+
+    df = pd.DataFrame(rows)
+    df = df[df["hrf"].isin(HRF_LEVELS)]  # factorial cells only; standalone arms are reported apart
+    is_dice_n = df["metric"].str.match(r"dice@\d+$")
+    fam = (df[is_dice_n].groupby(["subject", "model", "contrast", "cell", "hrf", "confounds", "engine"])["value"]
+           .mean().rename("dice_family").reset_index())
+    other = df[~is_dice_n].pivot_table(index=["subject", "model", "contrast", "cell", "hrf", "confounds", "engine"],
+                                        columns="metric", values="value").reset_index()
+    wide = fam.merge(other, on=["subject", "model", "contrast", "cell", "hrf", "confounds", "engine"])
+    metrics = ["dice_family", f"dice@z{Z_THRESHOLD}", "r"]
+    cell_means = wide.groupby(["model", "cell", "hrf", "confounds", "engine"])[metrics].mean().reset_index()
+    marginals = {
+        factor: cell_means.groupby(["model", factor])[metrics].mean().round(3)
+        for factor in ("hrf", "confounds", "engine")
+    }
+    best = {m: cell_means.loc[cell_means.groupby("model")[m].idxmax(), ["model", "cell", m]].set_index("model")
+            for m in metrics}
+    stability = {}
+    for model, g in cell_means.groupby("model"):
+        stability[model] = {
+            "spearman_dice_vs_r": float(g["dice_family"].rank().corr(g["r"].rank())),
+            f"spearman_dice_vs_z": float(g["dice_family"].rank().corr(g[f"dice@z{Z_THRESHOLD}"].rank())),
+            "n_cells": int(len(g)),
+        }
+    return {"wide": wide, "cell_means": cell_means, "marginals": marginals, "best": best, "stability": stability}

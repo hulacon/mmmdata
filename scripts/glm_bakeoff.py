@@ -356,10 +356,25 @@ def cmd_collect(args: argparse.Namespace) -> int:
     path = out_base / "scores.tsv"
     df.to_csv(path, sep="\t", index=False)
     print(f"{len(df)} score rows from {df['cell'].nunique()} cells x subjects -> {path}")
-    summary = (df[df["metric"].isin(["r"]) | df["metric"].str.startswith("dice")]
-               .groupby(["model", "hrf", "confounds", "engine", "metric"])["value"].mean().unstack("metric"))
+    summ = harness.summarize(rows)
+    summ["cell_means"].round(3).to_csv(out_base / "cell_means.tsv", sep="\t", index=False)
     with pd.option_context("display.width", 200, "display.max_rows", 500):
-        print(summary.round(3))
+        for factor, table in summ["marginals"].items():
+            print(f"\n== marginal means by {factor} (over subjects, contrasts, other factors) ==")
+            print(table)
+        print("\n== best cell per model ==")
+        for metric, table in summ["best"].items():
+            print(f"-- by {metric}:")
+            print(table.round(3))
+        print("\n== rank stability (Spearman across cells within a model) ==")
+        for model, st in summ["stability"].items():
+            print(f"  {model}: dice_family vs r {st['spearman_dice_vs_r']:.2f}, dice_family vs dice@z "
+                  f"{st['spearman_dice_vs_z']:.2f} ({st['n_cells']} cells)")
+        arms = df[~df["hrf"].isin(harness.HRF_LEVELS)]
+        if len(arms):
+            print("\n== standalone arms (mean over subjects and contrasts) ==")
+            print(arms.groupby(["model", "hrf", "metric"])["value"].mean().unstack("metric").round(3))
+    print(f"cell means -> {out_base / 'cell_means.tsv'}")
     return 0
 
 
