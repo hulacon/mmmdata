@@ -43,7 +43,7 @@ if str(_REPO / "src" / "python") not in sys.path:
 from neuroimaging.constants import DERIVATIVES_DIRS  # noqa: E402
 from neuroimaging.glm.adapters import adapt_events  # noqa: E402
 from neuroimaging.glm.config import DEFAULT_CONFIG, GlmConfig, repetition_time  # noqa: E402
-from neuroimaging.glm.design import build_design_matrix, contrast_vectors  # noqa: E402
+from neuroimaging.glm.design import available_contrast_vectors, build_design_matrix, strict_for  # noqa: E402
 from neuroimaging.glm.estimators import fixed_effects, get_estimator  # noqa: E402
 from neuroimaging.glm.models import list_models, load_model  # noqa: E402
 from neuroimaging.glm.outputs import (  # noqa: E402
@@ -158,8 +158,12 @@ def main(argv: list[str] | None = None) -> int:
         t_r = repetition_time(run, bids_root)
         n_scans = nib.load(str(run.bold)).shape[-1]
         confounds = load_confounds(run)
-        dm = build_design_matrix(events, confounds, t_r, n_scans, model, cfg)
-        vectors = contrast_vectors(model, list(dm.columns))
+        dm = build_design_matrix(events, confounds, t_r, n_scans, model, cfg, strict=strict_for(model))
+        # Adapter-derived levels may be absent from a run (a TBencoding run with
+        # no first presentation); such a run is skipped for that contrast only.
+        vectors, skipped = available_contrast_vectors(model, list(dm.columns))
+        if skipped:
+            print(f"  {run.entity_prefix}: cannot estimate {skipped} (conditions absent); skipped for those")
         designs.append((run, t_r, dm, vectors))
         print(f"  {run.entity_prefix}: TR {t_r} s, {n_scans} volumes, "
               f"{dm.shape[1]} design columns ({len(model.conditions)} conditions, "
@@ -199,6 +203,8 @@ def main(argv: list[str] | None = None) -> int:
     mask_img = nib.load(str(runs[0].mask))
     written = []
     for name, estimates in per_contrast.items():
+        if not estimates:
+            sys.exit(f"ERROR: no run could estimate contrast {name}; its conditions are absent everywhere")
         fx = fixed_effects(estimates, mask=mask_img) if model.fixed_effects or len(estimates) > 1 else None
         maps = (
             (("effect", fx.effect), ("variance", fx.variance), ("t", fx.stat), ("z", fx.z))

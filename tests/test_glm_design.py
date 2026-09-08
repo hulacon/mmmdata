@@ -107,3 +107,16 @@ def test_build_design_matrix_refuses_confound_length_mismatch():
     conf = pd.DataFrame(np.zeros((10, 6)), columns=MOTION_6)
     with pytest.raises(DesignError, match="rows"):
         build_design_matrix(_motor_events(), conf, 1.5, 140, m, GlmConfig())
+
+
+def test_available_contrasts_skip_what_a_run_lacks_and_strictness_follows_the_adapter():
+    from neuroimaging.glm.design import available_contrast_vectors, strict_for
+
+    motor = load_model("motor")
+    assert strict_for(motor) is True
+    tb = load_model("tbrepetition")
+    assert strict_for(tb) is False  # adapter levels may be absent from a run by construction
+    vectors, skipped = available_contrast_vectors(tb, ["later", "once", "anchor", "trans_x", "constant"])
+    assert vectors == {} and skipped == ["firstVsLater"]
+    vectors, skipped = available_contrast_vectors(tb, ["first", "later", "once", "constant"])
+    assert skipped == [] and list(vectors["firstVsLater"][:2]) == [1.0, -1.0]

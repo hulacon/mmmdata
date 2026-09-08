@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 from .config import GlmConfig
-from .design import build_design_matrix, contrast_vectors
+from .design import available_contrast_vectors, build_design_matrix, strict_for
 from .estimators import ContrastEstimate, Estimator
 from .hrf import GLMSINGLE_PREFIX, LIBRARY_SIZE
 from .models import StatsModel
@@ -73,8 +73,10 @@ def fit_run_voxelwise(
         if group.sum() < min_group_voxels:
             continue
         kcfg = dataclasses.replace(group_cfg, hrf_model=f"{GLMSINGLE_PREFIX}{k}")
-        dm = build_design_matrix(events, confounds, t_r, n_scans, model, kcfg)
-        vectors = contrast_vectors(model, list(dm.columns))
+        dm = build_design_matrix(events, confounds, t_r, n_scans, model, kcfg, strict=strict_for(model))
+        vectors, _skipped = available_contrast_vectors(model, list(dm.columns))
+        if not vectors:
+            return {}  # no contrast is estimable from this run; the caller skips it
         gmask = nib.Nifti1Image(group.astype(np.uint8), mask.affine)
         est = estimator.fit_run(img, dm, vectors, t_r=t_r, mask=gmask, cfg=kcfg)
         fitted_groups += 1

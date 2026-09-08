@@ -54,7 +54,7 @@ from neuroimaging.constants import DEFAULT_SPACE, DEFAULT_VARIANT  # noqa: E402
 from neuroimaging.glm import harness  # noqa: E402
 from neuroimaging.glm.adapters import adapt_events  # noqa: E402
 from neuroimaging.glm.config import DEFAULT_CONFIG, repetition_time  # noqa: E402
-from neuroimaging.glm.design import build_design_matrix, contrast_vectors  # noqa: E402
+from neuroimaging.glm.design import available_contrast_vectors, build_design_matrix, strict_for  # noqa: E402
 from neuroimaging.glm.estimators import ENGINES, ContrastEstimate, fixed_effects, get_estimator  # noqa: E402
 from neuroimaging.glm.glmsingle_arm import (  # noqa: E402
     block_design,
@@ -294,6 +294,7 @@ def cmd_fit(args: argparse.Namespace) -> int:
                 raise SystemExit(f"ERROR: {hp} missing; run `glm_bakeoff.py prep --subject sub-{subject}` first")
             hrfindex = load_hrfindex(hp, reference=mask_img)
         per_run: list[dict[str, ContrastEstimate]] = []
+        skipped: dict[str, list[str]] = {}
         for i, r in enumerate(runs):
             t_r = repetition_time(r, bids_root)
             bold = nib.load(str(r.bold))
@@ -301,19 +302,34 @@ def cmd_fit(args: argparse.Namespace) -> int:
             tt = time.time()
             if hrfindex is not None:
                 est = fit_run_voxelwise(estimator, bold, adapted[i], confounds, t_r, model, cfg, hrfindex, mask_img)
+                for c in model.contrasts:
+                    if c.name not in est:
+                        skipped.setdefault(c.name, []).append(r.entity_prefix)
             else:
-                dm = build_design_matrix(adapted[i], confounds, t_r, bold.shape[-1], model, cfg)
-                est = estimator.fit_run(bold, dm, contrast_vectors(model, list(dm.columns)),
-                                        t_r=t_r, mask=mask_img, cfg=cfg)
+                dm = build_design_matrix(adapted[i], confounds, t_r, bold.shape[-1], model, cfg,
+                                         strict=strict_for(model))
+                vectors, missing = available_contrast_vectors(model, list(dm.columns))
+                for name in missing:
+                    skipped.setdefault(name, []).append(r.entity_prefix)
+                est = estimator.fit_run(bold, dm, vectors, t_r=t_r, mask=mask_img, cfg=cfg) if vectors else {}
             timings.append(time.time() - tt)
             per_run.append(est)
-            print(f"  {r.entity_prefix}: {timings[-1]:.0f} s", flush=True)
+            note = f" (no {', '.join(n for n, v in skipped.items() if r.entity_prefix in v)})" if any(
+                r.entity_prefix in v for v in skipped.values()) else ""
+            print(f"  {r.entity_prefix}: {timings[-1]:.0f} s{note}", flush=True)
         halves = []
         for h, idx in ((1, h1), (2, h2)):
-            pooled = {c.name: _pool([per_run[i][c.name] for i in idx], mask_img) for c in model.contrasts}
+            pooled = {}
+            for c in model.contrasts:
+                have = [per_run[i][c.name] for i in idx if c.name in per_run[i]]
+                if not have:
+                    raise SystemExit(f"ERROR: half {h} has no run estimating {c.name}; nothing to score")
+                pooled[c.name] = _pool(have, mask_img)
             _write_half_maps(out_dir, subject, model.task, args.space, h, pooled)
             halves.append(pooled)
         cfg_dict = cfg.to_dict()
+        if skipped:
+            cfg_dict["runs_skipped_per_contrast"] = skipped
 
     scores = _score((halves[0], halves[1]), mask_arr, n_set)
     record = {

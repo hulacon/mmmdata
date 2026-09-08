@@ -133,3 +133,30 @@ def contrast_vector(contrast: Contrast, design_columns: list[str]) -> np.ndarray
 
 def contrast_vectors(model: StatsModel, design_columns: list[str]) -> dict[str, np.ndarray]:
     return {c.name: contrast_vector(c, design_columns) for c in model.contrasts}
+
+
+def available_contrast_vectors(
+    model: StatsModel, design_columns: list[str]
+) -> tuple[dict[str, np.ndarray], list[str]]:
+    """Contrast vectors for the contrasts this run *can* estimate, plus the names it cannot.
+
+    For a design built with ``strict=False`` some condition columns may be
+    absent — legitimately so for adapter-derived levels (a TBencoding run in
+    which every repeated item was already seen earlier in the session has no
+    ``first`` trial). Such a run contributes nothing to that contrast; the
+    caller pools the runs that have it and records the skip.
+    """
+    vectors: dict[str, np.ndarray] = {}
+    skipped: list[str] = []
+    for c in model.contrasts:
+        if all(cond in design_columns for cond in c.weights):
+            vectors[c.name] = contrast_vector(c, design_columns)
+        else:
+            skipped.append(c.name)
+    return vectors, skipped
+
+
+def strict_for(model: StatsModel) -> bool:
+    """Raw events levels must all be present (a missing one means a truncated
+    run); adapter-derived levels may be absent from a run by construction."""
+    return model.adapter is None

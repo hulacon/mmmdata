@@ -21,6 +21,7 @@ scores them identically.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional, Sequence
 
 import numpy as np
@@ -166,7 +167,22 @@ def fit_glmsingle_half(
     # No brainexclude: the Python port tests it with `if not params[...]`,
     # which raises on an array. GLMsingle picks its own noise pool; the
     # harness mask is applied to the contrast maps below.
-    results = GLM_single(params).fit(design=list(designs), data=data, stimdur=stimdur, tr=t_r, outputdir=workdir)
+    #
+    # outputdir must be private: with None, GLMsingle writes DESIGNINFO and
+    # RUNWISEFIR into <cwd>/GLMestimatesingletrialoutputs regardless of
+    # wantfileoutputs, after rmtree-ing whatever is there — two array tasks
+    # sharing a cwd would clobber each other.
+    import shutil
+    import tempfile
+
+    own_workdir = workdir is None
+    if own_workdir:
+        workdir = tempfile.mkdtemp(prefix="glmsingle_", dir=os.environ.get("TMPDIR"))
+    try:
+        results = GLM_single(params).fit(design=list(designs), data=data, stimdur=stimdur, tr=t_r, outputdir=workdir)
+    finally:
+        if own_workdir:
+            shutil.rmtree(workdir, ignore_errors=True)
     betas = np.asarray(results["typed"]["betasmd"])
     cond_index = trial_conditions(designs)
     out = {}

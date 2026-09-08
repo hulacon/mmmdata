@@ -17,14 +17,27 @@ archived GLM plan. Per-trial image identity is not copied here; it stays
 recoverable from the source .mat.
 
 Two properties of the source were measured before writing this converter
-(see docs/workbench/localizer-glm/log.md, 2026-08-21):
+(see docs/workbench/localizer-glm/log.md, 2026-08-21), the first of them
+CORRECTED 2026-09-08 (glm-strategy log):
 
-  1. Timing origin. The scanner trigger is logged as an ordinary keypress
-     (`'`). Its median inter-pulse interval is 1.504 s (the TR) and the pulse
-     train extrapolates back to t = 0, so the experiment clock starts on a
-     trigger and block onsets need no shift. Onsets below come from the
-     measured `theSubject.timePerTrial`, not the nominal schedule; the two
-     differ by at most 22 ms over a run.
+  1. Timing origin. The experiment clock (`theSubject.timePerTrial`) starts
+     at the end of fLoc's pre-experiment countdown, COUNTDOWN_S = 12 s
+     (`functions/et_run_fLoc.m`: `countDown = 12`; runme.m: "Run duration:
+     5 min + countdown"; the fLoc README: "stimulus parameter files begin at
+     the end of the countdown", clip countdown/TR volumes). The scanner
+     trigger is logged as an ordinary keypress (`'`) at a fixed phase of that
+     clock in every run (-0.02 s mod TR, spread 4 ms), so the program was
+     started on a pulse, the countdown spans exactly 8 TRs, and the BOLD's
+     first volume precedes the first block by 12 s: 208 volumes x 1.5 s =
+     312 s = 12 s + 300 s. The 2026-08-21 measurement saw the pulse train
+     extrapolate to t = 0 and concluded "no shift" -- it does, but so does
+     t = -12 s, which a whole-TR countdown cannot distinguish. An onset-shift
+     scan on the BOLD (six runs, three subjects) peaks at +10-11.5 s with SPM's
+     canonical HRF; the maps at 0 s are noise (faceVsObject peak z 5 in
+     medial temporal white matter), at 12 s textbook (z 17 stimulus vs
+     baseline, face > object in lateral occipito-temporal cortex).
+     Onsets below are the measured presentation times plus COUNTDOWN_S; they
+     differ from the nominal schedule by at most 22 ms over a run.
 
   2. Response key. `theData.falseAlarms` is not usable -- it counts the
      trigger pulses, which is why it sits near 190 in every run. The real
@@ -58,6 +71,9 @@ from common import (
 
 TASK = "floc"
 TRIAL_DUR = 0.5
+# Pre-experiment countdown: the experiment clock starts when it ends, the
+# scanner when it starts (docstring item 1). Whole TRs (8 x 1.5 s).
+COUNTDOWN_S = 12.0
 BLOCK_TRIALS = 8
 RESPONSE_KEY = "6^"
 
@@ -240,7 +256,7 @@ def build_events(mat_path, subj, ses, run):
             duration = total_time - start
 
         rows.append({
-            "onset": round(start, 3),
+            "onset": round(start + COUNTDOWN_S, 3),
             "duration": round(duration, 3),
             "subj_num": subj,
             "ses_num": ses,
@@ -262,9 +278,10 @@ def sidecar(mat_path):
     return {
         "onset": {
             "Description": (
-                "Block onset, measured from theSubject.timePerTrial. The "
-                "experiment clock starts on a scanner trigger, so this is "
-                "relative to the first volume with no shift applied."
+                "Block onset relative to the first BOLD volume: the measured "
+                "theSubject.timePerTrial plus the 12 s pre-experiment countdown "
+                "(8 TRs) that separates the pulse-locked program start from "
+                "the first block (fLoc et_run_fLoc.m countDown = 12)."
             ),
             "Units": "s",
         },
@@ -320,9 +337,12 @@ def sidecar(mat_path):
             "oddball. Collapsed to block level from the run's Psychtoolbox "
             "workspace by mmmdata raw2bids_converters/floc_events.py; "
             "per-trial image identity remains in the source .mat. Onsets are "
-            "measured presentation times and are already relative to the "
-            "first volume -- the logged scanner-trigger train (median 1.504 s "
-            "interval) extrapolates back to t=0, so no shift is applied."
+            "measured presentation times shifted by the 12 s countdown that "
+            "precedes the first block (the program starts on a scanner pulse, "
+            "counts down 12 s = 8 TRs, then starts its clock; the logged "
+            "trigger train sits at a fixed phase of that clock, which is why "
+            "an earlier version of this converter applied no shift). Corrected "
+            "2026-09-08 after an onset-shift scan on the BOLD."
         ),
         "StimulusPresentation": {
             "SoftwareName": "Psychtoolbox-3 (Stanford VPNL fLoc)",
