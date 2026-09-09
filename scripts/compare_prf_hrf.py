@@ -10,7 +10,7 @@ The fits differ in exactly one component: the HRF kernel (`fit_prf.py --hrf`).
                                         cheap to reconstruct with --hrf spm)
 The 2026-08-27 comparison that settled the default ran under the older naming
 (spm unmarked, kay marked) and is recorded in
-derivatives/prf/hrf-comparison.json.
+derivatives/prf_unpooled/hrf-comparison.json.
 Everything else — stimulus, mask, nuisance projection, grid, refinement — is
 identical, so a per-voxel R² difference is attributable to the kernel alone.
 

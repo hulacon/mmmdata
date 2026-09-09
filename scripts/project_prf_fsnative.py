@@ -2,29 +2,35 @@
 """
 project_prf_fsnative.py — project fitted pRF parameter volumes to fsnative.
 
-Stage 1 of the projection -> test-retest leg (workbench prf-retinotopy,
-HANDOFF 2026-08-27). The fits live in the native functional volume
-(`fit_prf.py`, one session = one fit unit); this script samples those
-parameter volumes at the subject's FreeSurfer surface vertices, NSD-style
-(`cvnlab/nsddatapaper` `analysis_prf_maps.m`: fit in the volume, project the
-parameters, never the timeseries).
+Samples fitted pRF parameter volumes at the subject's FreeSurfer surface
+vertices, NSD-style (`cvnlab/nsddatapaper` `analysis_prf_maps.m`: fit in the
+volume, project the parameters, never the timeseries).
 
-Per session the chain, applied to VERTEX COORDINATES (so images are never
-resampled):
+TWO FIT UNITS, matching `fit_prf.py`, and the chain differs by one step:
 
-    fsnative surface (tkr-RAS)
-      -> fsnative scanner-RAS      via orig.mgz vox2ras / vox2ras-tkr
-      -> T1w RAS                   via fMRIPrep from-T1w_to-fsnative ITK xfm
-      -> native func (boldref) RAS via fMRIPrep from-boldref_to-T1w ITK xfm
-      -> func voxel ijk            via the parameter volume's affine
+  POOLED (the product)        derivatives/prf/sub-XX/, space-T1w, 6 runs
+      fsnative surface (tkr-RAS)
+        -> fsnative scanner-RAS  via orig.mgz vox2ras / vox2ras-tkr
+        -> T1w RAS               via fMRIPrep from-T1w_to-fsnative ITK xfm
+        -> T1w voxel ijk         via the parameter volume's affine
 
-The two ITK affines are used in the direction they map POINTS: an fMRIPrep
+  UNPOOLED (the evidence)     derivatives/prf_unpooled/sub-XX/ses-0Y/, func
+      ... as above, then additionally
+        -> native func (boldref) RAS via fMRIPrep from-boldref_to-T1w ITK xfm
+        -> func voxel ijk            via the parameter volume's affine
+
+The extra hop exists only because the per-session maps live in native func
+space. It is also the only SESSION-specific transform in the chain
+(`from-boldref_to-T1w` is written per run), which is why the pooled unit —
+whose every transform is subject-level — needs nothing session-shaped here.
+
+The ITK affines are used in the direction they map POINTS: an fMRIPrep
 `from-A_to-B` transform resamples images A->B, which is exactly the map of
 coordinates B->A. nitransforms handles the ITK LPS convention; do not replace
 it with hand-rolled affine algebra. A built-in check verifies the chain
-end-to-end every run: mid-depth vertices sampled against the run's func
-brain mask must land inside it almost always — an inverted or misordered
-chain sends vertices into space and fails loudly.
+end-to-end every run: mid-depth vertices sampled against the matching brain
+mask must land inside it almost always — an inverted or misordered chain
+sends vertices into space and fails loudly.
 
 Sampling: each parameter volume is sampled at three cortical depths
 (white->pial fractions 0.25 / 0.5 / 0.75, NSD-style depth average) with
@@ -42,14 +48,18 @@ Outputs, one GIFTI shape file per parameter x hemisphere x polarity
 (format DECIDED here: .shape.gii — viewable in freeview/NiiVue, carries the
 anatomical-structure tag, and stays paired with the fsnative surfaces):
 
-    derivatives/prf/sub-XX/ses-0Y/
+    derivatives/prf/sub-XX/
+      sub-XX_task-prf_space-fsnative_hemi-{L,R}_desc-<param>_{prf,negprf}.shape.gii
+      sub-XX_task-prf_space-fsnative_{prf,negprf}.json
+    derivatives/prf_unpooled/sub-XX/ses-0Y/
       sub-XX_ses-0Y_task-prf_space-fsnative_hemi-{L,R}_desc-<param>_{prf,negprf}.shape.gii
       sub-XX_ses-0Y_task-prf_space-fsnative_{prf,negprf}.json
 
 Usage:
-    python project_prf_fsnative.py --subject 03 --session 02
-    python project_prf_fsnative.py --all            # every fitted session x polarity
-    python project_prf_fsnative.py --subject 03 --session 02 --polarity negprf
+    python project_prf_fsnative.py --subject 03                  # pooled
+    python project_prf_fsnative.py --subject 03 --session 02     # one session
+    python project_prf_fsnative.py --all            # every fitted unit x polarity
+    python project_prf_fsnative.py --subject 03 --polarity negprf
 """
 
 import argparse
@@ -112,11 +122,28 @@ def coreg_xfm(subject, session):
     return p
 
 
-def func_brain_mask(subject, session):
-    p = (DERIV_ROOT / "fmriprep" / f"sub-{subject}" / f"ses-{session}" / "func"
-         / f"sub-{subject}_ses-{session}_task-prf_run-01_desc-brain_mask.nii.gz")
+def reference_mask(unit):
+    """The brain mask the fitted volumes live on, for the chain check.
+
+    For an unpooled unit that is the session's native func mask. For a pooled
+    unit it is the T1w mask of the run the fit used as its grid reference,
+    which the volume sidecar records rather than this script guessing.
+    """
+    if unit["space"] == "func":
+        p = (DERIV_ROOT / "fmriprep" / f"sub-{unit['subject']}" / f"ses-{unit['session']}"
+             / "func" / f"sub-{unit['subject']}_ses-{unit['session']}"
+                        "_task-prf_run-01_desc-brain_mask.nii.gz")
+    else:
+        ref = unit_sidecar(unit, "prf").get("GridReference")
+        if not ref:
+            sys.exit(f"ERROR: {unit['label']} sidecar has no GridReference; "
+                     "it was written by an older fit_prf.py and cannot be projected.")
+        ses, run = ref.split("_")            # e.g. "ses-03_run-01"
+        p = (DERIV_ROOT / "fmriprep" / f"sub-{unit['subject']}" / ses / "func"
+             / f"sub-{unit['subject']}_{ses}_task-prf_{run}"
+               f"_space-{unit['space']}_desc-brain_mask.nii.gz")
     if not p.exists():
-        sys.exit(f"ERROR: no func brain mask at {p}")
+        sys.exit(f"ERROR: no reference brain mask at {p}")
     return p
 
 
@@ -127,13 +154,44 @@ def freesurfer_dir(subject):
     return d
 
 
-def param_volume(subject, session, param, polarity):
-    p = (DERIV_ROOT / "prf" / f"sub-{subject}" / f"ses-{session}"
-         / f"sub-{subject}_ses-{session}_task-prf_space-func"
-           f"_desc-{param}_{polarity}.nii.gz")
+#: The two fitted products. Keys mirror fit_prf.py's OUTPUT_TREE constants.
+TREES = {"pooled": ("prf", "T1w"), "unpooled": ("prf_unpooled", "func")}
+
+
+def make_unit(subject, session=None):
+    """Resolve one fit unit: where its volumes are and how to reach them.
+
+    `session=None` means the pooled subject-level fit. Everything downstream
+    keys off this rather than re-deriving paths, so the two products differ in
+    exactly one place.
+    """
+    kind = "unpooled" if session else "pooled"
+    tree, space = TREES[kind]
+    entities = (f"sub-{subject}" if session is None
+                else f"sub-{subject}_ses-{session}")
+    return {
+        "kind": kind, "subject": subject, "session": session,
+        "tree": tree, "space": space, "entities": entities,
+        "label": (f"sub-{subject}" if session is None
+                  else f"sub-{subject} ses-{session}"),
+        "dir": (DERIV_ROOT / tree / f"sub-{subject}" if session is None
+                else DERIV_ROOT / tree / f"sub-{subject}" / f"ses-{session}"),
+    }
+
+
+def param_volume(unit, param, polarity):
+    p = unit["dir"] / (f"{unit['entities']}_task-prf_space-{unit['space']}"
+                       f"_desc-{param}_{polarity}.nii.gz")
     if not p.exists():
         sys.exit(f"ERROR: no parameter volume at {p}")
     return p
+
+
+def unit_sidecar(unit, polarity):
+    p = unit["dir"] / f"{unit['entities']}_task-prf_space-{unit['space']}_{polarity}.json"
+    if not p.exists():
+        sys.exit(f"ERROR: no fit sidecar at {p}")
+    return json.loads(p.read_text())
 
 
 # ---------------------------------------------------------------------------
@@ -167,11 +225,12 @@ def apply_affine(mat, pts):
     return pts @ mat[:3, :3].T + mat[:3, 3]
 
 
-def vertex_voxel_coords(subject, session, fs_hemi):
-    """(n_depth, n_vert, 3) voxel ijk in the session's native func grid."""
+def vertex_voxel_coords(unit, fs_hemi):
+    """(n_depth, n_vert, 3) voxel ijk in the unit's fitted grid."""
     import nibabel as nib
     import nitransforms as nt
 
+    subject = unit["subject"]
     fs_dir = freesurfer_dir(subject)
     coords, n_vert = depth_coords(fs_dir, fs_hemi)
     flat = coords.reshape(-1, 3)
@@ -180,9 +239,13 @@ def vertex_voxel_coords(subject, session, fs_hemi):
     # from-T1w_to-fsnative maps points fsnative -> T1w; from-boldref_to-T1w
     # maps points T1w -> boldref (the image-resampling direction, reversed).
     flat = nt.linear.load(str(fsnative_xfm(subject)), fmt="itk").map(flat)
-    flat = nt.linear.load(str(coreg_xfm(subject, session)), fmt="itk").map(flat)
+    if unit["space"] == "func":
+        # Only the native-space maps need the extra hop out of T1w, and it is
+        # the one transform in this chain that is session-specific.
+        flat = nt.linear.load(str(coreg_xfm(subject, unit["session"])),
+                              fmt="itk").map(flat)
 
-    ref = nib.load(str(param_volume(subject, session, "R2", "prf")))
+    ref = nib.load(str(param_volume(unit, "R2", "prf")))
     ijk = apply_affine(np.linalg.inv(ref.affine), flat)
     return ijk.reshape(len(DEPTHS), n_vert, 3), ref
 
@@ -215,12 +278,12 @@ def sample_volume(vol, ijk_depths):
     return out
 
 
-def chain_check(subject, session, ijk_depths):
-    """End-to-end transform verification: mid-depth vertices vs the func
-    brain mask. See module docstring."""
+def chain_check(unit, ijk_depths):
+    """End-to-end transform verification: mid-depth vertices vs the unit's
+    reference brain mask. See module docstring."""
     import nibabel as nib
     from scipy.ndimage import map_coordinates
-    mask = np.asarray(nib.load(str(func_brain_mask(subject, session))).dataobj,
+    mask = np.asarray(nib.load(str(reference_mask(unit))).dataobj,
                       dtype=np.float64)
     mid = ijk_depths[len(DEPTHS) // 2].T
     hit = map_coordinates(mask, mid, order=1, mode="constant", cval=0.0)
@@ -228,7 +291,7 @@ def chain_check(subject, session, ijk_depths):
     if frac < MASK_HIT_FLOOR:
         sys.exit(
             f"ERROR: only {100 * frac:.1f}% of mid-depth vertices land in the "
-            f"func brain mask (floor {100 * MASK_HIT_FLOOR:.0f}%).\n"
+            f"{unit['space']} brain mask (floor {100 * MASK_HIT_FLOOR:.0f}%).\n"
             "       The transform chain is inverted or misordered — re-read the\n"
             "       direction note in the module docstring before touching the\n"
             "       affine algebra.")
@@ -250,21 +313,21 @@ def write_shape_gii(path, values, hemi):
     nib.save(img, str(path))
 
 
-def project_session(subject, session, polarity):
-    out_dir = DERIV_ROOT / "prf" / f"sub-{subject}" / f"ses-{session}"
-    base = f"sub-{subject}_ses-{session}_task-prf_space-fsnative"
+def project_unit(unit, polarity):
+    out_dir = unit["dir"]
+    base = f"{unit['entities']}_task-prf_space-fsnative"
     written = []
     stats = {}
 
     for hemi, fs_hemi in HEMIS.items():
-        ijk, _ = vertex_voxel_coords(subject, session, fs_hemi)
-        frac = chain_check(subject, session, ijk)
+        ijk, _ = vertex_voxel_coords(unit, fs_hemi)
+        frac = chain_check(unit, ijk)
         print(f"  hemi-{hemi}: {ijk.shape[1]} vertices, "
-              f"{100 * frac:.1f}% in func brain mask")
+              f"{100 * frac:.1f}% in {unit['space']} brain mask")
 
         import nibabel as nib
         vols = {p: np.asarray(
-                    nib.load(str(param_volume(subject, session, p, polarity))).dataobj,
+                    nib.load(str(param_volume(unit, p, polarity))).dataobj,
                     dtype=np.float64)
                 for p in PARAMS}
 
@@ -293,16 +356,18 @@ def project_session(subject, session, polarity):
         }
         print(f"           vertices with R2 > 10%: {n_good}")
 
-    vol_sidecar = json.loads(
-        (out_dir / f"sub-{subject}_ses-{session}_task-prf_space-func_{polarity}.json"
-         ).read_text())
+    vol_sidecar = unit_sidecar(unit, polarity)
+    chain = ("fsnative->T1w->boldref" if unit["space"] == "func"
+             else "fsnative->T1w")
     meta = {
-        "Description": ("pRF parameters projected from the native functional "
-                        "volume to the subject's fsnative surface."),
-        "Subject": f"sub-{subject}", "Session": f"ses-{session}",
+        "Description": (f"pRF parameters projected from {unit['space']} to the "
+                        "subject's fsnative surface."),
+        "Subject": f"sub-{unit['subject']}",
+        "FitUnit": vol_sidecar.get("FitUnit"),
+        "Sessions": vol_sidecar.get("Sessions"),
         "Space": "fsnative (fMRIPrep FreeSurfer surfaces)",
-        "SourceSpace": "func (native boldref; fit_prf.py outputs)",
-        "Method": ("Vertex coordinates mapped fsnative->T1w->boldref via the "
+        "SourceSpace": f"{unit['space']} (fit_prf.py outputs, derivatives/{unit['tree']})",
+        "Method": (f"Vertex coordinates mapped {chain} via the "
                    "fMRIPrep ITK affines (nitransforms); parameter volumes "
                    "sampled trilinearly at cortical depths "
                    f"{list(DEPTHS)} (white->pial fractions) and depth-averaged; "
@@ -314,6 +379,9 @@ def project_session(subject, session, polarity):
         "AngleConvention": vol_sidecar.get("AngleConvention"),
         "HRFKind": vol_sidecar.get("HRFKind"),
         "FieldOfViewDeg": vol_sidecar.get("FieldOfViewDeg"),
+        "StimulusRadiusDeg": vol_sidecar.get("StimulusRadiusDeg"),
+        "Thresholded": vol_sidecar.get("Thresholded", False),
+        "PoolingMethod": vol_sidecar.get("PoolingMethod"),
         "ChainCheck": stats,
         "Provenance": "mmmdata/scripts/project_prf_fsnative.py; workbench prf-retinotopy",
         "Maps": written,
@@ -323,41 +391,50 @@ def project_session(subject, session, polarity):
     print(f"  wrote {len(written)} shape.gii + {sidecar.name}")
 
 
-def discover_sessions():
-    """Every (subject, session) with a fitted prf sidecar on disk."""
-    pairs = []
-    for sc in sorted((DERIV_ROOT / "prf").glob(
-            "sub-*/ses-*/sub-*_ses-*_task-prf_space-func_prf.json")):
-        sub = sc.name.split("_")[0].split("-")[1]
-        ses = sc.name.split("_")[1].split("-")[1]
-        pairs.append((sub, ses))
-    if not pairs:
-        sys.exit(f"ERROR: no fitted pRF sessions under {DERIV_ROOT / 'prf'}")
-    return pairs
+def discover_units():
+    """Every fitted unit on disk, pooled first, then per-session."""
+    units = []
+    tree, space = TREES["pooled"]
+    for sc in sorted((DERIV_ROOT / tree).glob(
+            f"sub-*/sub-*_task-prf_space-{space}_prf.json")):
+        units.append(make_unit(sc.name.split("_")[0].split("-")[1]))
+    tree, space = TREES["unpooled"]
+    for sc in sorted((DERIV_ROOT / tree).glob(
+            f"sub-*/ses-*/sub-*_ses-*_task-prf_space-{space}_prf.json")):
+        units.append(make_unit(sc.name.split("_")[0].split("-")[1],
+                               sc.name.split("_")[1].split("-")[1]))
+    if not units:
+        sys.exit("ERROR: no fitted pRF units under "
+                 f"{DERIV_ROOT / TREES['pooled'][0]} or "
+                 f"{DERIV_ROOT / TREES['unpooled'][0]}")
+    return units
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--subject", help="bare label, e.g. 03")
-    ap.add_argument("--session", help="bare label, e.g. 02")
+    ap.add_argument("--session",
+                    help="bare label, e.g. 02. Omit to project that subject's "
+                         "POOLED fit; give it to project one session")
     ap.add_argument("--polarity", choices=("prf", "negprf", "both"), default="both")
     ap.add_argument("--all", action="store_true",
-                    help="project every fitted session found on disk")
+                    help="project every fitted unit found on disk, pooled and "
+                         "per-session")
     args = ap.parse_args()
 
     if args.all:
-        pairs = discover_sessions()
-    elif args.subject and args.session:
-        pairs = [(args.subject, args.session)]
+        units = discover_units()
+    elif args.subject:
+        units = [make_unit(args.subject, args.session)]
     else:
-        ap.error("--subject and --session are required (or use --all)")
+        ap.error("--subject is required (or use --all)")
 
     polarities = ("prf", "negprf") if args.polarity == "both" else (args.polarity,)
-    for sub, ses in pairs:
+    for unit in units:
         for pol in polarities:
-            print(f"sub-{sub} ses-{ses} {pol}")
-            project_session(sub, ses, pol)
+            print(f"{unit['label']} [{unit['kind']}, {unit['space']}] {pol}")
+            project_unit(unit, pol)
     return 0
 
 

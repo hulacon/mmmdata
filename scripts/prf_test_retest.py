@@ -17,7 +17,7 @@ Criterion, PRE-REGISTERED 2026-08-27 before any number existed:
 per subject x hemisphere x polarity.
 
 Prints the table and writes it as JSON beside the maps
-(derivatives/prf/test-retest.json). The numbers themselves are findings and
+(derivatives/prf_unpooled/test-retest.json). The numbers themselves are findings and
 belong in the workbench log, not in this script.
 
 Usage:
@@ -60,7 +60,7 @@ def circ_corr(a_deg, b_deg):
 
 def load_shape(subject, session, hemi, param, polarity):
     import nibabel as nib
-    p = (DERIV_ROOT / "prf" / f"sub-{subject}" / f"ses-{session}"
+    p = (DERIV_ROOT / "prf_unpooled" / f"sub-{subject}" / f"ses-{session}"
          / f"sub-{subject}_ses-{session}_task-prf_space-fsnative"
            f"_hemi-{hemi}_desc-{param}_{polarity}.shape.gii")
     if not p.exists():
@@ -139,7 +139,7 @@ def main():
                           f"{ang:>12.3f} {ecc:>7.3f} {size:>7.3f}")
                 results.append(row)
 
-    out = DERIV_ROOT / "prf" / "test-retest.json"
+    out = DERIV_ROOT / "prf_unpooled" / "test-retest.json"
     out.write_text(json.dumps({
         "Description": ("Session-to-session reliability of projected pRF "
                         "parameters on the shared fsnative surface."),

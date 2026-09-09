@@ -152,7 +152,7 @@ def cmd_surface(args):
 
 
 def _prf_dir(root, subject, session):
-    d = root / "prf" / f"sub-{subject}" / f"ses-{session}"
+    d = root / "prf_unpooled" / f"sub-{subject}" / f"ses-{session}"
     if not d.is_dir():
         sys.exit(f"ERROR: no pRF session directory at {d}")
     return d
