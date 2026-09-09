@@ -2,26 +2,49 @@
 """
 fit_prf.py — CSS population-receptive-field fits for the pRF localizer.
 
-Fits in the NATIVE functional volume (fMRIPrep's `func` space: the
-`desc-preproc_bold` with no `space-` entity, 1.702 mm iso, TR 1.5 s, 200 TRs).
-Design record and the reasoning behind that choice:
-mmmdata-agents/docs/workbench/prf-retinotopy/ (fit space DECIDED 2026-08-26).
-
-Why the volume and not the surface, in one line: pRF is a nonlinear per-unit
-fit, so interpolating TIMESERIES mixes neighbouring pRFs before the fit and
-biases size upward, while interpolating fitted PARAMETERS afterwards only
-smooths the displayed map. NSD did the same -- `cvnlab/nsddatapaper`
+Fits a pRF in a volume, always -- never on the surface. pRF is a nonlinear
+per-unit fit, so interpolating TIMESERIES mixes neighbouring pRFs before the
+fit and biases size upward, while interpolating fitted PARAMETERS afterwards
+only smooths the displayed map. NSD did the same -- `cvnlab/nsddatapaper`
 `main/analysis_prf.m` fits analyzePRF in func1mm/func1pt8mm and never on the
 surface; `main/analysis_prf_maps.m` projects the parameter volumes afterwards.
+Design record: mmmdata-agents/docs/workbench/prf-retinotopy/.
 
-ONE FIT UNIT = ONE SESSION (measured, not assumed). Within a session all three
-pRF runs share the native grid exactly (max |affine difference| = 0.000 for
-every subject); across sessions they never do (5.7-14.5 mm). So three runs
-concatenate with no resampling at all, and a combined six-run fit would need a
-cross-session resample -- a separate stage this script deliberately does not
-fake. Three runs x 200 TRs = 600 TRs = 15 min of retinotopy, which is ample for
-polar-angle reversals, and per-session fits ARE the test-retest units the
-charter's Settles-when 3 asks for.
+TWO FIT UNITS, and which one you get follows from the space:
+
+  --session 02              one session, `func` space  (the original unit)
+  --sessions 02 03 --space T1w   one SUBJECT, 6 runs pooled  (the final product)
+
+Per-session `func` fits were the only option until the T1w backfill landed:
+within a session all three pRF runs share the native grid exactly (max |affine
+difference| = 0.000 for every subject) but across sessions they never do
+(5.7-14.5 mm), so a six-run fit needed a cross-session resample this script
+refused to fake. In `space-T1w` that resample is already done, exactly, by
+fMRIPrep -- the T1w BOLD is a single composed interpolation from raw (its
+`Sources` are the raw BOLD plus the hmc/fmap/coreg transforms), not a resample
+of the native preproc, so it costs no interpolation over fitting in `func`.
+For sub-04/05/06/07 the two sessions land on a bit-identical T1w grid. sub-03
+is the exception and the reason is acquisition, not registration: its ses-01
+and ses-02 were collected with a smaller FOV (211x211x117.3 mm vs the
+223x223x138 every other session in the study uses), so fMRIPrep wrote them on
+a different T1w grid and this script resamples them onto the target session's
+grid, reporting every run it touches.
+
+Per-session fits remain the test-retest units the charter's Settles-when 3
+asks for, and are NOT superseded by the pooled fit -- reliability across
+sessions is the evidence that licenses pooling in the first place.
+
+POOLING FOLLOWS NSD: average the reps of each stimulus type, do not
+concatenate them. `glm_prf.m` says so in its header ("average the 3 reps of
+each stimulus type up front") and does it in three lines, passing two averaged
+pseudo-runs to analyzePRF with the two apertures. Parameters are identical
+either way -- least squares decomposes exactly over same-design runs -- but R2
+is not, and NSD's 10.1% `findtailthreshold` was derived on averaged-run fits,
+so averaging is what keeps our R2 on the same footing as theirs. It is also 3x
+cheaper (400 TRs, not 1200). One deviation from NSD, forced by our design and
+recorded here: our runs span two sessions, so each run is converted to percent
+signal change and detrended BEFORE it enters the average. Averaging raw
+timeseries across sessions would pool different scanner scalings.
 
 Model (analyzePRF's CSS, so the numbers are comparable to NSD's):
 
@@ -37,9 +60,17 @@ that the aperture sidecars pin down.
 
 Usage:
     python fit_prf.py --self-test                       # synthetic recovery, no data
+
+    # the final product: one subject, 6 runs, T1w space, both polarities
+    python fit_prf.py --subject 03 --sessions 02 03 --space T1w
+    python fit_prf.py --subject 03 --sessions 02 03 --space T1w --negate
+
+    # confound sensitivity arm (one subject; suffix marks the arm)
+    python fit_prf.py --subject 03 --sessions 02 03 --space T1w --confounds motion6
+    python fit_prf.py --subject 03 --sessions 02 03 --space T1w --confounds acompcor
+
+    # per-session fits (the test-retest units)
     python fit_prf.py --subject 03 --session 02 --dry-run
-    python fit_prf.py --subject 03 --session 02
-    python fit_prf.py --subject 03 --session 02 --occipital-only --jobs 28
     python fit_prf.py --subject 03 --session 02 --hrf spm   # SPM comparison arm
 """
 
@@ -56,6 +87,12 @@ sys.path.insert(0, str(_REPO_ROOT / "src" / "python"))
 sys.path.insert(0, str(_SCRIPT_DIR))
 
 try:
+    from neuroimaging.constants import ACOMPCOR_6, MOTION_6
+except Exception:  # pragma: no cover - keeps --self-test runnable off-tree
+    MOTION_6 = ["trans_x", "trans_y", "trans_z", "rot_x", "rot_y", "rot_z"]
+    ACOMPCOR_6 = [f"a_comp_cor_{i:02d}" for i in range(6)]
+
+try:
     from core.config import load_config
     _config = load_config(config_dir=_REPO_ROOT / "config")
     BIDS_ROOT = Path(_config["paths"]["bids_project_dir"])
@@ -69,11 +106,31 @@ except Exception:  # pragma: no cover
 TR = 1.5
 N_TR = 200
 APERTURE_RES = 100
+APERTURE_MATCH_R = 0.999   # correlation floor for "these runs saw one aperture";
+                           # measured same-setnum >= 0.9999998, wrong-setnum -0.004
 FOV_DEG = 15.0          # design geometry from root task-prf_bold.json; the true
                         # subtended angle was never recorded, so eccentricity
                         # and size scale linearly with this. Angle does not.
-OUTPUT_TREE = "prf"
-POLY_DEGREE = 3         # 1 + floor(300 s / 120 s), the usual analyzePRF choice
+#: Two derivative trees, because there are two products. The pooled subject-level
+#: fits are what downstream analysis should use; the per-session fits are their
+#: cross-session reliability evidence and are kept, separately, for that reason.
+OUTPUT_TREE = "prf"                 # pooled, subject-level, space-T1w
+OUTPUT_TREE_UNPOOLED = "prf_unpooled"   # per-session, space-func
+POLY_DEGREE = 3         # matches analyzePRF at our 300 s run length. Their rule
+                        # is round(L_min / 2), which also gives 3 here; the two
+                        # diverge at 10 min, so do not reuse this constant blind.
+
+#: Confound arms. "none" is the default and the released product: analyzePRF,
+#: NSD, Klink et al. 2021 and Steel et al. all regress nothing, and our pRF runs
+#: are quiet (median mean-FD 0.133 mm, 24/30 runs with no frame over 0.5 mm).
+#: The other two exist so that claim is checked in our own data rather than only
+#: cited -- see the workbench's confound sensitivity arm. Columns are reused
+#: from the GLM bake-off rather than redefined here.
+CONFOUND_PRESETS = {
+    "none": (),
+    "motion6": tuple(MOTION_6),
+    "acompcor": tuple(MOTION_6) + tuple(ACOMPCOR_6),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -253,19 +310,21 @@ def load_aperture(setnum, aperture_dir):
     return a
 
 
-def build_design(subject, session, runs, aperture_dir, jobs=1):
-    """Concatenated TR-resolution stimulus for the given runs of one session.
+def build_run_designs(subject, units, aperture_dir):
+    """One TR-resolution aperture block per (session, run), in the given order.
 
-    Returns (S, run_index, setnums) with S of shape (n_tr * n_runs, res, res)
-    in 0-1, and run_index labelling each TR with its run for the per-run
-    polynomial nuisance.
+    Returns a list of dicts with `session`, `run`, `setnum` and `block`
+    (N_TR, res, res) in 0-1. Kept per-run rather than pre-concatenated because
+    the pooling step groups runs by setnum, and grouping needs the seam.
     """
     from prf_alignment_gate import run_mats_for
     import scipy.io as sio
 
-    mats = run_mats_for(subject, session)
-    blocks, run_index, setnums = [], [], []
-    for k, run in enumerate(runs):
+    mats_by_session, designs = {}, []
+    for session, run in units:
+        if session not in mats_by_session:
+            mats_by_session[session] = run_mats_for(subject, session)
+        mats = mats_by_session[session]
         if run not in mats:
             sys.exit(f"ERROR: no source mat for sub-{subject} ses-{session} "
                      f"run-{run:02d} (have runs {sorted(mats)})")
@@ -274,19 +333,63 @@ def build_design(subject, session, runs, aperture_dir, jobs=1):
         timeframes = np.asarray(sio.loadmat(str(mat_path))["timeframes"]).ravel()
         flat = (aperture.reshape(len(aperture), -1).astype(np.float32) / 255.0)
         binned = bin_frames_to_tr(flat, timeframes)
-        blocks.append(binned.reshape(N_TR, APERTURE_RES, APERTURE_RES))
-        run_index.extend([k] * N_TR)
-        setnums.append(setnum)
-        print(f"    run-{run:02d}  set-{setnum}  {len(aperture)} frames -> {N_TR} TRs "
-              f"(mean lit {binned.mean():.4f})")
+        designs.append({"session": session, "run": run, "setnum": setnum,
+                        "block": binned.reshape(N_TR, APERTURE_RES, APERTURE_RES)})
+        print(f"    ses-{session} run-{run:02d}  set-{setnum}  {len(aperture)} frames "
+              f"-> {N_TR} TRs (mean lit {binned.mean():.4f})")
+    return designs
 
-    # The two setnums are DIFFERENT stimuli (93 = bars, 94 = wedge + ring).
-    # Pairing a run with the wrong aperture is exactly the class of error the
-    # alignment gate exists to catch, so assert rather than trust the loop.
-    if len(set(setnums)) == 1:
-        print(f"    NOTE: all runs share setnum {setnums[0]}")
-    return (np.concatenate(blocks, axis=0).astype(np.float32),
-            np.asarray(run_index), setnums)
+
+def group_designs(designs, pool):
+    """Assemble the fitting design, and say which runs feed each fitted block.
+
+    `pool="average"` is NSD's route (`glm_prf.m`): one block per setnum, fed by
+    the average of that setnum's runs. `pool="concat"` keeps every run as its
+    own block. Returns (S, run_index, groups, setnums) where `groups[i]` lists
+    the indices into `designs` that make block i.
+    """
+    if pool == "concat":
+        groups = [[i] for i in range(len(designs))]
+    else:
+        order = []
+        for d in designs:
+            if d["setnum"] not in order:
+                order.append(d["setnum"])
+        groups = [[i for i, d in enumerate(designs) if d["setnum"] == s] for s in order]
+
+        # Averaging runs is only legitimate if they saw the SAME aperture. The
+        # mask sequence IS byte-identical across runs of a setnum (workbench,
+        # 2026-08-26) -- but the binned design is not, because binning uses each
+        # run's own `timeframes` and presentation spans differ by ~1.6 ms over
+        # 300 s. That jitter is real and tiny: same-setnum blocks correlate at
+        # >= 0.9999998 with max |difference| 1e-3 on a 0-1 design. A run paired
+        # with the WRONG aperture -- the error the alignment gate exists to
+        # catch -- correlates at -0.004. So the check is a correlation floor set
+        # six orders of magnitude away from both, not an equality test.
+        for g in groups:
+            ref = designs[g[0]]
+            for i in g[1:]:
+                r = float(np.corrcoef(designs[i]["block"].ravel(),
+                                      ref["block"].ravel())[0, 1])
+                if r < APERTURE_MATCH_R:
+                    sys.exit(
+                        f"ERROR: ses-{designs[i]['session']} run-{designs[i]['run']:02d} "
+                        f"and ses-{ref['session']} run-{ref['run']:02d} are both labelled "
+                        f"set-{ref['setnum']}, but their binned apertures correlate at "
+                        f"only r = {r:.6f} (floor {APERTURE_MATCH_R}).\n"
+                        "       Runs of one setnum must share the aperture for averaging\n"
+                        "       to be valid; this looks like a run paired with the wrong\n"
+                        "       stimulus. Refusing to average them.")
+
+    # The block for an averaged group is the average of its runs' binned
+    # designs, matching what is done to the data. Taking one run's design
+    # instead would misdate the others by their timing jitter.
+    S = np.concatenate(
+        [np.mean([designs[i]["block"] for i in g], axis=0) for g in groups],
+        axis=0).astype(np.float32)
+    run_index = np.repeat(np.arange(len(groups)), N_TR)
+    setnums = [designs[g[0]]["setnum"] for g in groups]
+    return S, run_index, groups, setnums
 
 
 def nuisance_projector(run_index, degree=POLY_DEGREE):
@@ -302,6 +405,20 @@ def nuisance_projector(run_index, degree=POLY_DEGREE):
     X = np.column_stack(cols)
     Q, _ = np.linalg.qr(X)
     return Q  # residualise as y - Q @ (Q.T @ y)
+
+
+def run_projector(confounds=None, n_tr=N_TR, degree=POLY_DEGREE):
+    """Residual-forming basis for ONE run: Legendre trends plus any confounds.
+
+    Applied per run before averaging, which is this script's one deviation from
+    NSD: they averaged raw timeseries within a single session, we pool across
+    two, so per-run scaling and drift have to go first.
+    """
+    t = np.linspace(-1, 1, n_tr)
+    cols = [np.polynomial.legendre.legval(t, [0] * d + [1]) for d in range(degree + 1)]
+    X = np.column_stack(cols if confounds is None else cols + [confounds])
+    Q, _ = np.linalg.qr(X)
+    return Q
 
 
 def residualise(y, Q):
@@ -529,7 +646,7 @@ def self_test(aperture_dir):
     import scipy.io as sio
     from prf_alignment_gate import run_mats_for
 
-    print("[self-test] 1/3  binning agrees with the alignment gate")
+    print("[self-test] 1/4  binning agrees with the alignment gate")
     mats = run_mats_for("03", "02")
     mat_path, setnum = mats[1]
     aperture = load_aperture(setnum, aperture_dir)
@@ -542,7 +659,7 @@ def self_test(aperture_dir):
     print(f"           max |mine - gate| on the lit regressor = {d:.3e}")
     assert d < 1e-9, f"binning drifted from the alignment gate ({d:.3e})"
 
-    print("[self-test] 2/3  Kay HRF construction (getcanonicalhrf mirror)")
+    print("[self-test] 2/4  Kay HRF construction (getcanonicalhrf mirror)")
     hk = kay_hrf()
     # conv(490, 15) = 504 samples at 0.1 s -> t 0..50.3 s -> 34 points at 1.5 s
     assert len(hk) == 34, f"kay HRF has {len(hk)} points, expected 34"
@@ -552,7 +669,7 @@ def self_test(aperture_dir):
     print(f"           34 points, peak 1.0 at t = {peak_t:.1f} s, "
           f"undershoot min {hk.min():.4f}")
 
-    print("[self-test] 3/3  synthetic parameter recovery")
+    print("[self-test] 3/4  synthetic parameter recovery")
     S = mine.reshape(N_TR, APERTURE_RES, APERTURE_RES)
     S = np.concatenate([S, S], axis=0).astype(np.float32)
     run_index = np.repeat([0, 1], N_TR)
@@ -604,45 +721,195 @@ def self_test(aperture_dir):
     assert keep.sum() >= n_vox // 2, "too few voxels recovered at SNR 1.0"
     assert ca > 0.9, f"polar angle recovery failed (r={ca:.3f})"
     assert ce > 0.9, f"eccentricity recovery failed (r={ce:.3f})"
+
+    # ---- 4: averaging and concatenation recover the SAME pRF ---------------
+    # The pooling decision (workbench, DECIDED 2026-09-09) rests on this: for
+    # runs sharing a design, least squares decomposes as
+    #     sum_r ||y_r - m||^2 = N ||ybar - m||^2 + sum_r ||y_r - ybar||^2
+    # whose second term does not depend on the parameters. So NSD's route
+    # (average the reps, fit once) and concatenation must agree on x0, y0,
+    # sigma and n -- while R2 does NOT transfer, because averaging removes
+    # noise before the fit sees it. That asymmetry is the whole reason a
+    # threshold calibrated on one route cannot be quoted for the other, so it
+    # is asserted here rather than left as a claim in a docstring.
+    print("[self-test] 4/4  averaging == concatenating (parameters), not (R2)")
+    rng = np.random.default_rng(0)
+    n_tr, n_rep = 80, 3
+    S4 = np.zeros((n_tr, APERTURE_RES, APERTURE_RES), np.float32)
+    half = n_tr // 2
+    for t in range(half):        # vertical bar sweeping left to right
+        c = int(APERTURE_RES * (t + 0.5) / half)
+        S4[t, :, max(0, c - 5):c + 5] = 1.0
+    for t in range(half, n_tr):  # horizontal bar sweeping top to bottom
+        c = int(APERTURE_RES * (t - half + 0.5) / half)
+        S4[t, max(0, c - 5):c + 5, :] = 1.0
+    # Both axes must be driven. A single full-height sweeping bar leaves y0
+    # unconstrained, and two routes then land on different arbitrary y0 -- a
+    # degenerate stimulus, not a broken equivalence.
+
+    truth4 = (55.0, 42.0, 7.0, 0.6)
+    pred4 = predict(S4, *truth4, h)
+    pred4 = (pred4 - pred4.mean()) / pred4.std()
+    reps = [3.0 * pred4 + rng.normal(0, 1.0, n_tr) for _ in range(n_rep)]
+
+    def _fit_one(design, y, n_blocks):
+        Qd = nuisance_projector(np.repeat(np.arange(n_blocks), n_tr))
+        yr = y - Qd @ (Qd.T @ y)
+        g = build_grid()
+        bi, _ = grid_search(design, (yr / np.linalg.norm(yr))[:, None], Qd, h, g,
+                            verbose=False)
+        return refine_voxel(yr, design, Qd, h, g[bi[0]])
+
+    avg = _fit_one(S4, np.mean(reps, axis=0), 1)
+    cat = _fit_one(np.concatenate([S4] * n_rep), np.concatenate(reps), n_rep)
+    shift_px = float(np.hypot(avg[0] - cat[0], avg[1] - cat[1]))
+    shift_deg = shift_px * FOV_DEG / APERTURE_RES
+    print(f"           centre agreement {shift_deg:.5f} deg "
+          f"(sigma {abs(avg[2] - cat[2]):.4f} px, n {abs(avg[3] - cat[3]):.5f})")
+    print(f"           R2 {avg[5]:.1f}% averaged vs {cat[5]:.1f}% concatenated "
+          f"-- {avg[5] - cat[5]:.1f} pp apart, and NOT interchangeable")
+    assert shift_deg < 0.01, f"pooling routes disagree on centre by {shift_deg:.4f} deg"
+    assert abs(avg[2] - cat[2]) < 0.1, "pooling routes disagree on sigma"
+    assert avg[5] - cat[5] > 1.0, (
+        "averaging did not raise R2 -- if this fails the threshold caveat in the "
+        "docstring and sidecar is wrong and both need revisiting")
+
     print("[self-test] PASS")
 
 
 # ---------------------------------------------------------------------------
 
-def native_bold(subject, session, run):
-    return (DERIV_ROOT / "fmriprep" / f"sub-{subject}" / f"ses-{session}" / "func"
-            / f"sub-{subject}_ses-{session}_task-prf_run-{run:02d}"
-              "_desc-preproc_bold.nii.gz")
+def _func_dir(subject, session):
+    return DERIV_ROOT / "fmriprep" / f"sub-{subject}" / f"ses-{session}" / "func"
 
 
-def native_mask(subject, session, run):
-    return (DERIV_ROOT / "fmriprep" / f"sub-{subject}" / f"ses-{session}" / "func"
-            / f"sub-{subject}_ses-{session}_task-prf_run-{run:02d}"
-              "_desc-brain_mask.nii.gz")
+def _stem(subject, session, run):
+    return f"sub-{subject}_ses-{session}_task-prf_run-{run:02d}"
 
 
-def detect_runs(subject, session):
-    d = DERIV_ROOT / "fmriprep" / f"sub-{subject}" / f"ses-{session}" / "func"
+def bold_path(subject, session, run, space=None):
+    sp = f"_space-{space}" if space else ""
+    return _func_dir(subject, session) / f"{_stem(subject, session, run)}{sp}_desc-preproc_bold.nii.gz"
+
+
+def mask_path(subject, session, run, space=None):
+    sp = f"_space-{space}" if space else ""
+    return _func_dir(subject, session) / f"{_stem(subject, session, run)}{sp}_desc-brain_mask.nii.gz"
+
+
+def confounds_path(subject, session, run):
+    # Confounds are space-agnostic: one table per run, no space- entity.
+    return _func_dir(subject, session) / f"{_stem(subject, session, run)}_desc-confounds_timeseries.tsv"
+
+
+def detect_runs(subject, session, space=None):
+    d = _func_dir(subject, session)
     if not d.is_dir():
         sys.exit(f"ERROR: no fMRIPrep func dir at {d}")
     runs = []
     for p in sorted(d.glob(f"sub-{subject}_ses-{session}_task-prf_run-*_desc-preproc_bold.nii.gz")):
-        if "space-" in p.name:
+        has_space = "_space-" in p.name
+        if space is None and has_space:
+            continue
+        if space is not None and f"_space-{space}_" not in p.name:
             continue
         runs.append(int(p.name.split("run-")[1][:2]))
     if not runs:
-        sys.exit(f"ERROR: no native-space (no space- entity) pRF BOLD in {d}")
+        what = "native-space (no space- entity)" if space is None else f"space-{space}"
+        sys.exit(f"ERROR: no {what} pRF BOLD in {d}")
     return sorted(runs)
+
+
+def load_confounds(subject, session, run, preset):
+    """The preset's confound columns for one run, NaN-free, as (N_TR, k)."""
+    if preset == "none":
+        return None
+    import pandas as pd
+
+    path = confounds_path(subject, session, run)
+    if not path.exists():
+        sys.exit(f"ERROR: --confounds {preset} needs {path}, which does not exist")
+    frame = pd.read_csv(path, sep="\t")
+    columns = CONFOUND_PRESETS[preset]
+    missing = [c for c in columns if c not in frame.columns]
+    if missing:
+        sys.exit(f"ERROR: {path.name} lacks {missing} (needed for --confounds {preset})")
+    # fMRIPrep writes n/a in the first row of derivative columns; zero is the
+    # right fill for a regressor's undefined first sample.
+    values = frame[list(columns)].astype(float).fillna(0.0).to_numpy()
+    if len(values) != N_TR:
+        sys.exit(f"ERROR: {path.name} has {len(values)} rows, expected {N_TR}")
+    return values
+
+
+def resample_to_grid(img, reference, interpolation):
+    """One resample onto the reference grid, for runs that do not share it.
+
+    Needed for exactly one subject in this dataset. sub-03's ses-01/ses-02 were
+    acquired with a smaller FOV (211x211x117.3 mm against the 223x223x138 every
+    other session uses), so fMRIPrep wrote them on a different T1w grid. This
+    is a pure grid change within one space -- no registration, no transform
+    beyond interpolation. Workbench log, 2026-09-09.
+    """
+    from nilearn.image import resample_to_img
+
+    return resample_to_img(img, reference, interpolation=interpolation,
+                           force_resample=True, copy_header=True)
+
+
+def _same_grid(a, b, tol=1e-4):
+    return a.shape[:3] == b.shape[:3] and np.abs(a.affine - b.affine).max() <= tol
+
+
+def load_run_psc(subject, session, run, space, mask, reference):
+    """One run as percent signal change, (N_TR, n_vox), on the reference grid."""
+    import nibabel as nib
+
+    img = nib.load(str(bold_path(subject, session, run, space)))
+    if not _same_grid(img, reference):
+        img = resample_to_grid(img, reference, "continuous")
+    data = np.asarray(img.dataobj, dtype=np.float32)[mask]      # (n_vox, N_TR)
+    if data.shape[1] != N_TR:
+        sys.exit(f"ERROR: ses-{session} run-{run:02d} has {data.shape[1]} volumes, "
+                 f"expected {N_TR}")
+    mean = data.mean(axis=1, keepdims=True)
+    mean[mean == 0] = 1.0
+    return (100.0 * (data - mean) / mean).T                      # (N_TR, n_vox)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--subject", help="bare label, e.g. 03")
-    ap.add_argument("--session", help="bare label, e.g. 02")
-    ap.add_argument("--runs", type=int, nargs="+", help="default: all pRF runs found")
+    ap.add_argument("--session", help="one session, bare label, e.g. 02")
+    ap.add_argument("--sessions", nargs="+", metavar="SES",
+                    help="pool these sessions into ONE subject-level fit "
+                         "(requires --space T1w; the native grids never agree)")
+    ap.add_argument("--space", default=None,
+                    help="fMRIPrep output space, e.g. T1w. Default: native `func` "
+                         "(the space-less desc-preproc_bold)")
+    ap.add_argument("--pool", choices=("average", "concat"), default=None,
+                    help="how runs of one setnum combine. Default depends on the "
+                         "fit unit: `average` when pooling sessions (NSD's route, "
+                         "and the reps are balanced 3+3), `concat` for a single "
+                         "session (whose 3 runs are 2+1 by setnum, so averaging "
+                         "would build two pseudo-runs of unequal noise -- and the "
+                         "per-session maps on disk were fit that way)")
+    ap.add_argument("--grid-session", default=None,
+                    help="when pooling, the session whose grid every run is "
+                         "resampled onto. Default: the last session given")
+    ap.add_argument("--confounds", choices=tuple(CONFOUND_PRESETS), default="none",
+                    help="nuisance regressors removed per run before averaging. "
+                         "Default none, matching analyzePRF/NSD/Klink/Steel; the "
+                         "others exist for the sensitivity arm and mark the output "
+                         "suffix")
+    ap.add_argument("--runs", type=int, nargs="+",
+                    help="default: all pRF runs found. With --sessions the same "
+                         "run numbers are taken from every session")
     ap.add_argument("--aperture-dir", default=str(BIDS_ROOT / "stimuli" / "prf"))
-    ap.add_argument("--out-root", default=str(DERIV_ROOT / OUTPUT_TREE))
+    ap.add_argument("--out-root", default=None,
+                    help=f"default: derivatives/{OUTPUT_TREE} for a pooled fit, "
+                         f"derivatives/{OUTPUT_TREE_UNPOOLED} for a single session")
     ap.add_argument("--fov-deg", type=float, default=FOV_DEG)
     ap.add_argument("--refine-threshold", type=float, default=5.0,
                     help="grid R2%% below which a voxel is not refined (default 5)")
@@ -667,39 +934,98 @@ def main():
         self_test(args.aperture_dir)
         return 0
 
-    if not (args.subject and args.session):
-        ap.error("--subject and --session are required (or use --self-test)")
+    if not args.subject:
+        ap.error("--subject is required (or use --self-test)")
+    if bool(args.session) == bool(args.sessions):
+        ap.error("give exactly one of --session (one session) or --sessions (pooled)")
 
     import nibabel as nib
     from joblib import Parallel, delayed
 
-    subject, session = args.subject, args.session
-    runs = args.runs or detect_runs(subject, session)
-    print(f"sub-{subject} ses-{session}: runs {runs}")
+    subject = args.subject
+    sessions = args.sessions or [args.session]
+    pooled = len(sessions) > 1
+    space = args.space
 
-    # Native grids agree within a session and never across; refuse to fake it.
-    affines = [nib.load(str(native_bold(subject, session, r))).affine for r in runs]
-    for r, a in zip(runs[1:], affines[1:]):
-        d = np.abs(a - affines[0]).max()
-        if d > 1e-4:
-            sys.exit(
-                f"ERROR: run-{r:02d} does not share run-{runs[0]:02d}'s native grid "
-                f"(max |affine diff| = {d:.3f} mm).\n"
-                "       Native-space runs concatenate only on a common grid. Within a\n"
-                "       session they always do; across sessions they never do (5.7-14.5 mm).\n"
-                "       Fit one session at a time, or resample onto a common subject grid\n"
-                "       first (see scripts/resample_bold_to_func.py for the container route).")
+    # Native grids agree within a session and never across (5.7-14.5 mm), so a
+    # pooled native fit would silently mix grids. In space-T1w the sessions
+    # already share a grid for every subject but sub-03, whose ses-01/ses-02
+    # were acquired at a different FOV and are resampled below.
+    if pooled and space is None:
+        ap.error("--sessions needs --space T1w: native grids never agree across "
+                 "sessions, and this script does not fake the resample")
+
+    # Resolved, not silently defaulted: the per-session fits already on disk are
+    # 3-run concatenations and are the charter's test-retest evidence, so
+    # re-running this script for one session must reproduce them.
+    pool = args.pool or ("average" if pooled else "concat")
+    out_root = Path(args.out_root) if args.out_root else (
+        DERIV_ROOT / (OUTPUT_TREE if pooled else OUTPUT_TREE_UNPOOLED))
+
+    units = []
+    for ses in sessions:
+        runs = args.runs or detect_runs(subject, ses, space)
+        units.extend((ses, r) for r in runs)
+    label = ("ses-" + "+".join(sessions)) if pooled else f"ses-{sessions[0]}"
+    print(f"sub-{subject} {label} in {space or 'func'} space: "
+          f"{len(units)} runs {[f'{s}/{r:02d}' for s, r in units]}")
 
     print("  building design")
-    S, run_index, setnums = build_design(subject, session, runs, args.aperture_dir)
-    if S.shape[0] != N_TR * len(runs):
-        sys.exit(f"ERROR: design has {S.shape[0]} TRs, expected {N_TR * len(runs)}")
+    designs = build_run_designs(subject, units, args.aperture_dir)
+    S, run_index, groups, setnums = group_designs(designs, pool)
+    n_blocks = len(groups)
+    if S.shape[0] != N_TR * n_blocks:
+        sys.exit(f"ERROR: design has {S.shape[0]} TRs, expected {N_TR * n_blocks}")
+    print(f"    pooling: {pool}"
+          f"{'' if args.pool else ' (default for a ' + ('pooled' if pooled else 'single-session') + ' fit)'}")
+    if pool == "average":
+        sizes = {len(g) for g in groups}
+        if len(sizes) > 1:
+            print(f"    WARNING: setnum groups are unequal ({[len(g) for g in groups]}); "
+                  "the pseudo-runs will carry different noise levels")
+        for g, setnum in zip(groups, setnums):
+            members = ", ".join(f"ses-{designs[i]['session']}/run-{designs[i]['run']:02d}"
+                                for i in g)
+            print(f"    set-{setnum}: averaging {len(g)} runs ({members})")
 
-    print("  loading BOLD")
-    mask_img = nib.load(str(native_mask(subject, session, runs[0])))
-    mask = np.asarray(mask_img.dataobj) > 0
-    for r in runs[1:]:
-        mask &= np.asarray(nib.load(str(native_mask(subject, session, r))).dataobj) > 0
+    # The grid every run lands on. For a single session that is its own first
+    # run; when pooling it is --grid-session's, defaulting to the last session
+    # given, which is the study-standard geometry for sub-03.
+    grid_session = args.grid_session or sessions[-1]
+    if grid_session not in sessions:
+        ap.error(f"--grid-session {grid_session} is not among {sessions}")
+    grid_run = next(r for s, r in units if s == grid_session)
+    reference = nib.load(str(mask_path(subject, grid_session, grid_run, space)))
+
+    print(f"  loading BOLD (grid: ses-{grid_session} run-{grid_run:02d}, "
+          f"{reference.shape[:3]} @ {np.round(reference.header.get_zooms()[:3], 3)})")
+    mask = np.asarray(reference.dataobj) > 0
+    resampled = []
+    for ses, run in units:
+        img = nib.load(str(mask_path(subject, ses, run, space)))
+        if not _same_grid(img, reference):
+            # In an fMRIPrep OUTPUT space a grid difference is expected and
+            # meaningful (sub-03's FOV), and resampling onto the reference is
+            # the documented fix. In NATIVE space it is not: runs of a session
+            # share the native grid exactly for every subject, so a mismatch
+            # here means the wrong file was picked up. Resampling would paper
+            # over that, so refuse instead -- this is the guard the pre-pooling
+            # version of this script carried, kept for the path it protects.
+            if space is None:
+                sys.exit(
+                    f"ERROR: ses-{ses} run-{run:02d} does not share the native grid of "
+                    f"ses-{grid_session} run-{grid_run:02d} "
+                    f"({img.shape[:3]} vs {reference.shape[:3]}, max |affine diff| = "
+                    f"{np.abs(img.affine - reference.affine).max():.3f} mm).\n"
+                    "       Within a session native grids always agree; across sessions\n"
+                    "       they never do. Fit one session at a time, or pass\n"
+                    "       --sessions with --space T1w to pool on a common grid.")
+            resampled.append(f"ses-{ses}/run-{run:02d}")
+            print(f"    NOTE: ses-{ses} run-{run:02d} is on a different grid "
+                  f"({img.shape[:3]} @ {np.round(img.header.get_zooms()[:3], 3)}); "
+                  "resampling onto the reference")
+            img = resample_to_grid(img, reference, "nearest")
+        mask &= np.asarray(img.dataobj) > 0
     if args.occipital_only:
         # posterior third along the second axis; a pilot convenience, and the
         # sidecar records that the map is not whole-brain.
@@ -709,13 +1035,21 @@ def main():
         mask &= keep
     print(f"    mask: {int(mask.sum())} voxels")
 
-    blocks = []
-    for r in runs:
-        d = np.asarray(nib.load(str(native_bold(subject, session, r))).dataobj,
-                       dtype=np.float32)[mask]          # (n_vox, N_TR)
-        mu = d.mean(axis=1, keepdims=True)
-        mu[mu == 0] = 1.0
-        blocks.append((100.0 * (d - mu) / mu).T)        # PSC, (N_TR, n_vox)
+    # Per run: PSC, then project out that run's drift (and confounds, if an arm
+    # asked for them), then accumulate into its setnum's average. Cleaning
+    # before averaging is the deviation from NSD that pooling across sessions
+    # forces -- see the module docstring. Accumulating in place keeps only the
+    # pooled blocks in memory, not all six runs.
+    n_vox = int(mask.sum())
+    blocks = [np.zeros((N_TR, n_vox), dtype=np.float32) for _ in groups]
+    for bi, g in enumerate(groups):
+        for i in g:
+            d = designs[i]
+            y = load_run_psc(subject, d["session"], d["run"], space, mask, reference)
+            confounds = load_confounds(subject, d["session"], d["run"], args.confounds)
+            Qr = run_projector(confounds)
+            blocks[bi] += y - Qr @ (Qr.T @ y)
+        blocks[bi] /= len(g)
     Y = np.concatenate(blocks, axis=0)
     del blocks
 
@@ -727,6 +1061,9 @@ def main():
         print("  --negate: sign-flipping PSC BOLD (negative-pRF fit)")
         Y = -Y
 
+    # Applied to the fitted blocks, and to the predictors, so R2 is computed in
+    # one residual space. On already-cleaned data this removes little; its real
+    # job is detrending the predictors identically.
     Q = nuisance_projector(run_index)
     h = hrf_kernel(kind=args.hrf)
     Y_r = residualise(Y, Q)
@@ -735,11 +1072,44 @@ def main():
     Y_n = np.zeros_like(Y_r)
     Y_n[:, live] = Y_r[:, live] / norms[live]
 
+    runs_by_setnum = {
+        str(setnum): [f"ses-{designs[i]['session']}_run-{designs[i]['run']:02d}" for i in g]
+        for g, setnum in zip(groups, setnums)
+    }
+    where = f"space-{space}" if space else "the native functional volume (fMRIPrep `func`)"
     meta = {
-        "Description": "CSS pRF fit in the native functional volume (fMRIPrep `func`).",
-        "Subject": f"sub-{subject}", "Session": f"ses-{session}",
-        "Runs": runs, "SetNumbers": setnums,
-        "Space": "func (native boldref; no space- entity)",
+        "Description": f"CSS pRF fit in {where}.",
+        "Subject": f"sub-{subject}",
+        "Sessions": [f"ses-{x}" for x in sessions],
+        "FitUnit": ("subject (sessions pooled)" if pooled else "session"),
+        "Runs": [f"ses-{s_}_run-{r_:02d}" for s_, r_ in units],
+        "SetNumbers": setnums,
+        "RunsBySetNumber": runs_by_setnum,
+        "PoolingMethod": (
+            "average the runs of each setnum after per-run PSC and detrend, then "
+            "fit the resulting pseudo-runs jointly -- NSD's route "
+            "(cvnlab/nsddatapaper main/glm_prf.m: 'average the 3 reps of each "
+            "stimulus type up front'). Cleaning precedes averaging because our "
+            "runs span sessions, which NSD's did not."
+            if pool == "average" else
+            "concatenate every run; no averaging"),
+        "Space": (f"{space} (fMRIPrep output space)" if space
+                  else "func (native boldref; no space- entity)"),
+        "GridReference": f"ses-{grid_session}_run-{grid_run:02d}",
+        "ResampledRuns": resampled,
+        "ResampledRunsNote": (
+            "Runs whose grid differed from the reference and were resampled onto "
+            "it (pure grid change within one space; no registration). Expected "
+            "only for sub-03, whose ses-01/ses-02 used a smaller FOV." ),
+        "ConfoundModel": args.confounds,
+        "ConfoundColumns": list(CONFOUND_PRESETS[args.confounds]),
+        "ConfoundNote": (
+            "No confound regression, matching analyzePRF, NSD (glm_prf.m applies "
+            "none), Klink et al. 2021 and Steel et al. Per-run Legendre trends "
+            "are removed and are in the model either way."
+            if args.confounds == "none" else
+            "Sensitivity arm, not the released product: the default is no "
+            "confound regression."),
         "Model": "analyzePRF CSS: gain * conv((S.g)^n, HRF) + baseline",
         "HRF": ("nilearn SPM canonical at TR (deviation from analyzePRF's "
                 "default getcanonicalhrf)" if args.hrf == "spm" else
@@ -752,7 +1122,19 @@ def main():
         "FieldOfViewCaveat": ("Design geometry only; the subtended angle at the "
                               "scanner was never recorded. Eccentricity and size "
                               "scale LINEARLY with this value. Polar angle does not."),
-        "SizeDefinition": "sigma/sqrt(n), matching NSD prf_size",
+        "SizeDefinition": (
+            "sigma/sqrt(n), matching NSD prf_size. NOT the raw sigma that most "
+            "published size ranges report -- compare `sigma` to those and `size` "
+            "to NSD. NSD's stimulus was 8.4 deg in diameter against our "
+            f"{args.fov_deg} deg, and pRF size grows with eccentricity, so a "
+            "size comparison to NSD also needs an eccentricity-matched cut."),
+        "StimulusRadiusDeg": args.fov_deg / 2.0,
+        "StimulusRadiusNote": (
+            "Fitted pRF centres beyond this radius are extrapolations: the "
+            "stimulus never reached them. Maps are emitted UNMASKED (NSD "
+            "releases unthresholded maps too); apply this radius in any "
+            "summary, figure or ROI drawn from them."),
+        "Thresholded": False,
         "AngleConvention": "degrees CCW from right horizontal meridian, 0-360",
         "PolynomialDegreePerRun": POLY_DEGREE,
         "RefineThresholdR2Pct": args.refine_threshold,
@@ -807,14 +1189,25 @@ def main():
                "size": size, "sigma": sigma_deg, "exponent": px[:, 3],
                "gain": gain}
 
-    out_dir = Path(args.out_root) / f"sub-{subject}" / f"ses-{session}"
-    base = f"sub-{subject}_ses-{session}_task-prf_space-func"
+    # A pooled fit is a subject-level result, so it carries no ses- entity and
+    # sits above the per-session fits rather than beside them.
+    if pooled:
+        out_dir = out_root / f"sub-{subject}"
+        base = f"sub-{subject}_task-prf_space-{space}"
+    else:
+        out_dir = out_root / f"sub-{subject}" / f"ses-{sessions[0]}"
+        base = (f"sub-{subject}_ses-{sessions[0]}_task-prf"
+                f"_space-{space if space else 'func'}")
     # Suffix scheme: the default (Kay) arm is unmarked -- prf / negprf -- and
     # the SPM comparison arm is marked spmprf / negspmprf. The Kay arm won the
-    # per-voxel R2 comparison (2026-08-27, derivatives/prf/hrf-comparison.json)
+    # per-voxel R2 comparison (2026-08-27, derivatives/prf_unpooled/hrf-comparison.json)
     # and the SPM outputs were deleted as cheap to reconstruct with --hrf spm.
+    # Confound arms mark the suffix the same way, so a sensitivity run can never
+    # overwrite the released product.
     suffix = (("neg" if args.negate else "")
-              + ("spm" if args.hrf == "spm" else "") + "prf")
+              + ("spm" if args.hrf == "spm" else "")
+              + ("" if args.confounds == "none" else args.confounds)
+              + "prf")
     written, sidecar = write_maps(results, mask_img, mask, out_dir, base, meta,
                                   suffix=suffix)
 

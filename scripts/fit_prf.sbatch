@@ -16,6 +16,11 @@
 # Workbench: mmmdata-agents/docs/workbench/prf-retinotopy/
 #   (fit space DECIDED 2026-08-26: native volume, projected to fsnative after).
 #
+# NOT the released product since 2026-09-09. The final maps are subject-level,
+# T1w, six runs pooled -- see fit_prf_pooled.sbatch. This array remains the
+# source of the per-session fits, which are the test-retest evidence
+# (Settles-when 3) that licenses pooling in the first place, so it stays.
+#
 # One session = one fit unit, and that is measured rather than stylistic: within
 # a session all three pRF runs share the native grid exactly (max |affine diff|
 # 0.000, every subject), across sessions they never do (5.7-14.5 mm). Three runs
@@ -44,7 +49,7 @@
 #   sbatch --job-name=fit_spmprf --export=ALL,PRF_HRF=spm --array=1-10 fit_prf.sbatch
 #       # SPM-canonical comparison arm, `spmprf` suffix (default HRF is Kay,
 #       # analyzePRF's getcanonicalhrf -- DECIDED 2026-08-27 after it won the
-#       # per-voxel R2 comparison; see derivatives/prf/hrf-comparison.json)
+#       # per-voxel R2 comparison; see derivatives/prf_unpooled/hrf-comparison.json)
 #==============================================================================
 
 SUBJECTS=(03 03 04 04 05 05 06 06 07 07)
