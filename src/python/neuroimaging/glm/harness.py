@@ -62,6 +62,19 @@ STANDALONE_ARMS: dict[str, tuple[str, ...]] = {
 }
 MODELS: tuple[str, ...] = ("floc", "motor", "tbrepetition")
 
+#: What a model's split-half does and does not measure. Documentation, not a
+#: scoring rule — deliberately outside ``harness_spec`` so the frozen hash is
+#: untouched. Printed by ``collect`` beside the marginals.
+MODEL_NOTES: dict[str, str] = {
+    "motor": "the motor program shuffles its 30 blocks under a hardcoded seed, so every motor run "
+             "has the same block order (6/6 runs, 1 order; fLoc 18 runs, 10 orders): run-01 vs "
+             "run-02 is 'same design, different noise'. The within-task estimator ranking is "
+             "unaffected (every cell shares it); do not compare motor's absolute Dice/r to fLoc's "
+             "or pool them as one kind of reliability (localizer-events, 2026-09-08).",
+    "tbrepetition": "halves alternate runs across all 14 sessions; the voxelwise and glmsingle-betas "
+                    "arms reuse quantities fitted on all 42 runs, so their halves are not independent.",
+}
+
 
 @dataclasses.dataclass(frozen=True)
 class Cell:

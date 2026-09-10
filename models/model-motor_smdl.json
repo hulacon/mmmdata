@@ -1,7 +1,7 @@
 {
   "Name": "motor",
   "BIDSModelVersion": "1.0.0",
-  "Description": "Motor localizer: each effector block against the explicit `rest` blocks (20 s block design; converter: src/python/raw2bids_converters/localizer_events.py). `task-motor` covers TWO protocols under one label, split by session group and confounded with subject (mmmdata-agents docs/results/task-instructions-provenance.md): the `mouth` condition is a silent lip movement in one and spoken nonsense syllables in the other. This spec fits either; it must not be fitted across both. The runner enforces that through neuroimaging.io.find_fmriprep_runs, which refuses a task-motor selection spanning both session groups unless told otherwise.",
+  "Description": "Motor localizer: each effector block against the explicit `rest` blocks (20 s block design; converter: src/python/raw2bids_converters/localizer_events.py). Every motor run presents the same seeded 30-block order (localizer-events, 2026-09-08), so a two-run split-half is 'same design, different noise'. The earlier claim that `task-motor` covers two protocols split by session group (task-instructions-provenance.md, 2026-08-26) was WITHDRAWN 2026-09-08 — no run-level evidence; what was said aloud is OPEN-QUESTIONS Q19. The runner's session-group guard (neuroimaging.io.find_fmriprep_runs) is kept as a caution and is opt-out via --allow-mixed-designs.",
   "Input": {
     "task": ["motor"]
   },

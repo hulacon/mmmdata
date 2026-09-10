@@ -366,6 +366,9 @@ def cmd_collect(args: argparse.Namespace) -> int:
         for metric, table in summ["best"].items():
             print(f"-- by {metric}:")
             print(table.round(3))
+        print("\n== what each model's split-half measures (per-model marginals only; never pool models) ==")
+        for model, note in harness.MODEL_NOTES.items():
+            print(f"  {model}: {note}")
         print("\n== rank stability (Spearman across cells within a model) ==")
         for model, st in summ["stability"].items():
             print(f"  {model}: dice_family vs r {st['spearman_dice_vs_r']:.2f}, dice_family vs dice@z "

@@ -11,10 +11,11 @@ chosen estimator (nilearn FirstLevelModel, AR(1), by default), and pools runs
 with nilearn compute_fixed_effects. Every output filename carries Contract A
 keys plus `contrast-` and `stat-` entities.
 
-Run discovery goes through neuroimaging.io.find_fmriprep_runs, so a
-task-motor or task-auditory selection that spans both session groups is
-refused (those labels cover two protocols); pass --sessions or
---allow-mixed-designs deliberately.
+Run discovery goes through neuroimaging.io.find_fmriprep_runs, which
+refuses a task-motor or task-auditory selection spanning both session
+groups unless --sessions or --allow-mixed-designs says so. For motor the
+two-protocol claim behind that guard was withdrawn 2026-09-08
+(OPEN-QUESTIONS Q19); the guard stays as a caution.
 
 Nothing here has run on real data yet. The first real fit is a cluster step:
 mmmdata-agents docs/cluster-reentry.md R15.
