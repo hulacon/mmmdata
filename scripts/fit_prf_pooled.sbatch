@@ -2,11 +2,11 @@
 #SBATCH --job-name=fit_prf_pooled
 #SBATCH --account=hulacon
 #SBATCH --partition=compute
-#SBATCH --time=08:00:00
+#SBATCH --time=01:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=28
-#SBATCH --mem=48G
+#SBATCH --mem=16G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fit_prf_pooled_%A_%a.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fit_prf_pooled_%A_%a.err
 
@@ -30,12 +30,12 @@
 # both sessions in both pseudo-runs, so session and stimulus type come out
 # partially crossed rather than confounded.
 #
-# Sizing: the per-session pilot measured 3:54 and 8.64 G at 600 TRs. This is
-# 400 TRs on a comparable mask, so the grid search is cheaper -- but averaging
-# three runs raises SNR, so MORE voxels clear the grid-R2 gate and go to
-# refinement, which is the part that dominates. 8 h / 48 G is deliberately
-# generous for a first production run; re-size from seff before any rerun.
-# sub-03 additionally holds one resampled 4D volume in memory.
+# Sizing: the pooled sub-03 pilot (47160475, 2026-09-10) measured 6:24 wall
+# and 6.7 G peak RSS on 28 cores -- grid search dominated, refinement of
+# 15,727 voxels took 1.5 min. 1 h / 16 G leaves ~9x / 2.4x headroom for the
+# larger masks (up to ~297k voxels) and the negative arm, which refines more
+# voxels but runs the same grid stage. sub-03 additionally holds one
+# resampled 4D volume in memory and is still the peak-RSS case.
 #
 # Array task mapping (subject-major, positive then negative polarity):
 #   1: sub-03 pos   2: sub-04 pos   3: sub-05 pos   4: sub-06 pos   5: sub-07 pos

@@ -1208,7 +1208,7 @@ def main():
               + ("spm" if args.hrf == "spm" else "")
               + ("" if args.confounds == "none" else args.confounds)
               + "prf")
-    written, sidecar = write_maps(results, mask_img, mask, out_dir, base, meta,
+    written, sidecar = write_maps(results, reference, mask, out_dir, base, meta,
                                   suffix=suffix)
 
     good = r2 > 10.0

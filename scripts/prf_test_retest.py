@@ -71,14 +71,14 @@ def load_shape(subject, session, hemi, param, polarity):
 
 def discover_subjects():
     subs = defaultdict(set)
-    for sc in sorted((DERIV_ROOT / "prf").glob(
+    for sc in sorted((DERIV_ROOT / "prf_unpooled").glob(
             "sub-*/ses-*/sub-*_ses-*_task-prf_space-fsnative_prf.json")):
         subs[sc.name.split("_")[0].split("-")[1]].add(
             sc.name.split("_")[1].split("-")[1])
     pairs = {s: sorted(ss) for s, ss in subs.items() if len(ss) == 2}
     if not pairs:
         sys.exit(f"ERROR: no subject with two projected pRF sessions under "
-                 f"{DERIV_ROOT / 'prf'}")
+                 f"{DERIV_ROOT / 'prf_unpooled'}")
     for s, ss in sorted(subs.items()):
         if len(ss) != 2:
             print(f"  NOTE: sub-{s} has {len(ss)} projected session(s) "
