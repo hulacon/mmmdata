@@ -24,6 +24,20 @@
 #   sbatch --array=0-43 fitcorpus_extract.sbatch --corpus movie10
 #   sbatch --array=0-71 fitcorpus_extract.sbatch --corpus friends
 #
+# Staged audio corpora (stage.py: librispeech, gigaspeech, fma, musopen,
+# narratives, twp-unpresented) split each unit across TWO jobs, because the
+# psychoacoustic model is CPU-only (MoSQITo) and ~70 % of the audio wall time
+# (3.7x real time vs 1.8x for the other 19 models together, measured
+# 2026-09-10 on a 12 min unit) — leaving it in the GPU job wastes the slice:
+#
+#   sbatch --array=0-N%24 --cpus-per-task=4 --mem=48G \
+#          fitcorpus_extract.sbatch --corpus librispeech --skip-model psychoacoustic
+#   sbatch --array=0-N%64 --partition=compute --gres=gpu:0 --cpus-per-task=4 --mem=32G \
+#          --time=06:00:00 fitcorpus_extract.sbatch --corpus librispeech --model psychoacoustic
+#
+# (`--gres=gpu:0` on the command line overrides the header; CPU-only cells
+# on the compute partition dodge the gpu QOS's 96-CPU per-user cap.)
+#
 # Idempotent per cell (a §4.1 sidecar that passes `psytwill battery --check`
 # is the done-marker); a task that hits the wall clock is resumed by
 # resubmitting the same array index. No email flags by standing preference.
