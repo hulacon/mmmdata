@@ -83,8 +83,13 @@ import numpy as np
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent
-sys.path.insert(0, str(_REPO_ROOT / "src" / "python"))
-sys.path.insert(0, str(_SCRIPT_DIR))
+# Guarded like glm_bakeoff.py: tests import this module with src/python
+# already on sys.path, and a duplicate entry fails the conftest
+# idempotency check in tests/test_portability.py.
+if str(_REPO_ROOT / "src" / "python") not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / "src" / "python"))
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
 
 try:
     from neuroimaging.constants import ACOMPCOR_6, MOTION_6

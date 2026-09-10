@@ -35,7 +35,11 @@ import numpy as np
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent
-sys.path.insert(0, str(_REPO_ROOT / "src" / "python"))
+# Guarded like glm_bakeoff.py: tests import this module with src/python
+# already on sys.path, and a duplicate entry fails the conftest
+# idempotency check in tests/test_portability.py.
+if str(_REPO_ROOT / "src" / "python") not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / "src" / "python"))
 
 try:
     from core.config import load_config
