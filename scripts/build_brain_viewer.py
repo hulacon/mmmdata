@@ -23,6 +23,7 @@ cal_max,opacity,visible,shade,angle_legend:
 The prf subcommand knows the dataset layout (config-driven, --deriv-root to
 override off-cluster, e.g. at a checkout of the remote-cache branch):
 
+    python build_brain_viewer.py prf --subject 03                    # pooled product
     python build_brain_viewer.py prf --subject 03 --session 02 --mode volume
     python build_brain_viewer.py prf --subject 03 --session 02 --mode surface \\
         --hemi L --polarity prf
@@ -151,11 +152,36 @@ def cmd_surface(args):
     report(out, "surface")
 
 
-def _prf_dir(root, subject, session):
-    d = root / "prf_unpooled" / f"sub-{subject}" / f"ses-{session}"
+def _prf_unit(root, subject, session):
+    """Resolve the fit unit the way fit_prf.py / project_prf_fsnative.py do.
+
+    No session -> the POOLED product (derivatives/prf/sub-XX, space-T1w, no
+    ses- entity); a session -> that session's evidence fit
+    (derivatives/prf_unpooled/sub-XX/ses-YY, native func). Returns the
+    directory, the filename base, the volume space label, the underlay the
+    volume mode draws on, and a label for titles.
+    """
+    if session is None:
+        d = root / "prf" / f"sub-{subject}"
+        base = f"sub-{subject}_task-prf"
+        anat = root / "fmriprep" / f"sub-{subject}" / "anat"
+        # fMRIPrep's subject-level T1w carries an acq- entity in this dataset
+        # and no space- (it IS the T1w space); pick it without hardcoding acq.
+        cands = sorted(x for x in anat.glob(f"sub-{subject}*_desc-preproc_T1w.nii.gz")
+                       if "_space-" not in x.name)
+        underlay = cands[0] if cands else anat / f"sub-{subject}_desc-preproc_T1w.nii.gz"
+        label = f"sub-{subject} (pooled)"
+        space = "T1w"
+    else:
+        d = root / "prf_unpooled" / f"sub-{subject}" / f"ses-{session}"
+        base = f"sub-{subject}_ses-{session}_task-prf"
+        underlay = (root / "fmriprep" / f"sub-{subject}" / f"ses-{session}"
+                    / "func" / f"{base}_run-01_desc-coreg_boldref.nii.gz")
+        label = f"sub-{subject} ses-{session}"
+        space = "func"
     if not d.is_dir():
-        sys.exit(f"ERROR: no pRF session directory at {d}")
-    return d
+        sys.exit(f"ERROR: no pRF directory at {d}")
+    return d, base, space, underlay, label
 
 
 def _p99(values):
@@ -168,18 +194,14 @@ def _p99(values):
 
 def _prf_volume(args, root, out_dir):
     import nibabel as nib
-    prf = _prf_dir(root, args.subject, args.session)
-    base = f"sub-{args.subject}_ses-{args.session}_task-prf"
-    underlay = (root / "fmriprep" / f"sub-{args.subject}"
-                / f"ses-{args.session}" / "func"
-                / f"{base}_run-01_desc-coreg_boldref.nii.gz")
+    prf, base, space, underlay, label = _prf_unit(root, args.subject, args.session)
     if not underlay.exists():
-        sys.exit(f"ERROR: no boldref underlay at {underlay}")
-    r2 = prf / f"{base}_space-func_desc-R2_{args.polarity}.nii.gz"
+        sys.exit(f"ERROR: no underlay at {underlay}")
+    r2 = prf / f"{base}_space-{space}_desc-R2_{args.polarity}.nii.gz"
 
     overlays = []
     for param, disp in PRF_PARAMS.items():
-        path = prf / f"{base}_space-func_desc-{param}_{args.polarity}.nii.gz"
+        path = prf / f"{base}_space-{space}_desc-{param}_{args.polarity}.nii.gz"
         if not path.exists():
             sys.exit(f"ERROR: no parameter volume at {path}")
         img = viewer.masked_volume(path, r2, args.r2_floor)
@@ -190,17 +212,18 @@ def _prf_volume(args, root, out_dir):
             spec["cal_max"] = round(_p99(data), 2)
         overlays.append(spec)
 
-    out = out_dir / f"{base}_space-func_desc-viewer_{args.polarity}.html"
+    out = out_dir / f"{base}_space-{space}_desc-viewer_{args.polarity}.html"
     out = viewer.build_volume_viewer(
-        {"path": underlay, "label": "boldref"}, overlays, out,
-        title=f"pRF {args.polarity} sub-{args.subject} ses-{args.session} (func)",
+        {"path": underlay, "label": "T1w" if space == "T1w" else "boldref"},
+        overlays, out,
+        title=f"pRF {args.polarity} {label} ({space})",
         notes=provenance([underlay, r2],
                          f"all maps masked to R2 > {args.r2_floor}%"))
     report(out, "volume")
 
 
 def _prf_surface(args, root, out_dir, hemi):
-    prf = _prf_dir(root, args.subject, args.session)
+    prf, base, _space, _underlay, label = _prf_unit(root, args.subject, args.session)
     fs = (root / "fmriprep" / "sourcedata" / "freesurfer"
           / f"sub-{args.subject}" / "surf")
     mesh = fs / f"{HEMIS[hemi]}.{args.surf}"
@@ -208,8 +231,7 @@ def _prf_surface(args, root, out_dir, hemi):
     for p in (mesh, curv):
         if not p.exists():
             sys.exit(f"ERROR: no FreeSurfer file at {p}")
-    base = (f"sub-{args.subject}_ses-{args.session}_task-prf"
-            f"_space-fsnative_hemi-{hemi}")
+    base = f"{base}_space-fsnative_hemi-{hemi}"
     r2 = prf / f"{base}_desc-R2_{args.polarity}.shape.gii"
     if not r2.exists():
         sys.exit(f"ERROR: no projected R2 map at {r2} — run "
@@ -232,8 +254,7 @@ def _prf_surface(args, root, out_dir, hemi):
     out = out_dir / f"{base}_desc-viewer_{args.polarity}.html"
     out = viewer.build_surface_viewer(
         mesh, layers, out,
-        title=(f"pRF {args.polarity} sub-{args.subject} ses-{args.session} "
-               f"hemi-{hemi} ({args.surf})"),
+        title=f"pRF {args.polarity} {label} hemi-{hemi} ({args.surf})",
         notes=provenance([mesh, curv, r2],
                          f"vertices masked to R2 > {args.r2_floor}%"))
     report(out, "surface")
@@ -242,7 +263,7 @@ def _prf_surface(args, root, out_dir, hemi):
 def cmd_prf(args):
     root = deriv_root(args.deriv_root)
     out_dir = (Path(args.out_dir) if args.out_dir
-               else _prf_dir(root, args.subject, args.session) / "qc")
+               else _prf_unit(root, args.subject, args.session)[0] / "qc")
     if args.mode in ("volume", "both"):
         _prf_volume(args, root, out_dir)
     if args.mode in ("surface", "both"):
@@ -277,7 +298,10 @@ def main():
 
     p = sub.add_parser("prf", help="dataset-aware pRF bundles")
     p.add_argument("--subject", required=True, help="bare label, e.g. 03")
-    p.add_argument("--session", required=True, help="bare label, e.g. 02")
+    p.add_argument("--session", default=None,
+                   help="bare label, e.g. 02, for one session's evidence fit "
+                        "(derivatives/prf_unpooled). Omit for the subject's "
+                        "POOLED product (derivatives/prf, space-T1w)")
     p.add_argument("--polarity", choices=("prf", "negprf"), default="prf")
     p.add_argument("--mode", choices=("volume", "surface", "both"),
                    default="both")
@@ -286,7 +310,7 @@ def main():
                    help="FreeSurfer mesh flavor (inflated, white, pial)")
     p.add_argument("--r2-floor", type=float, default=R2_FLOOR_DEFAULT)
     p.add_argument("--deriv-root", help="override config derivatives root")
-    p.add_argument("--out-dir", help="override <prf session>/qc/")
+    p.add_argument("--out-dir", help="override <prf unit dir>/qc/")
     p.set_defaults(func=cmd_prf)
 
     args = ap.parse_args()
