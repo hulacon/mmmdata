@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# mmmview — one path in, the right interactive view out (scripts/mmmview.py).
+# Pins the repo's own venv (Python 3.11; the viewer library and nibabel live
+# there) so the command works from any shell. Add this directory to PATH:
+#     export PATH="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/bin:$PATH"
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+repo="$(dirname "$here")"
+py="$repo/.venv/bin/python"
+[ -x "$py" ] || { echo "mmmview: no venv at $py (see mmmdata README)" >&2; exit 1; }
+exec "$py" "$repo/scripts/mmmview.py" "$@"

@@ -27,6 +27,10 @@ singularity_dir = "/gpfs/projects/hulacon/shared/containers"
 # Python virtual environment directory
 venv_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/.venv"
 
+# Shared "stimfeat" conda env (viz2psy + aud2psy + word2psy + psytwill).
+# mmmview shells out to the three *2psy dashboard CLIs from its bin/.
+stimfeat_env = "/gpfs/projects/hulacon/shared/envs/stimfeat"
+
 # Output directories
 output_dir = "/gpfs/projects/hulacon/shared/mmmdata/derivatives"
 inventory_dir = "/gpfs/projects/hulacon/shared/mmmdata/inventory"
