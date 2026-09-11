@@ -73,6 +73,29 @@ python scripts/run_dcm2bids.py \
 # Capture exit status
 EXIT_STATUS=$?
 
+# Defacing guard (anat-defacing, DECIDED 2026-09-11): no faced anatomy may
+# stay under <bids_root>/sub-*/. If this session brought anat NIfTIs, deface
+# them now. A subject without fMRIPrep gets the raw-only path (pydeface on
+# each T1w, same-session T2w carried by flirt); one with fMRIPrep gets the
+# full run, which is idempotent for the volumes already done. The mirror of
+# every original lands in mmmsourcedata before the in-place write.
+if [ "${EXIT_STATUS}" -eq 0 ]; then
+    SUB_LABEL="${SUBJECT#sub-}"
+    ANAT_COUNT=$(find "${BIDS_DIR}/${SUBJECT}" -path "*/anat/*" \( -name "*_T1w.nii.gz" -o -name "*_T2w.nii.gz" \) 2>/dev/null | wc -l)
+    if [ "${ANAT_COUNT}" -gt 0 ]; then
+        DEFACE_FLAGS=""
+        if [ ! -d "${OUTPUT_DIR}/fmriprep/${SUBJECT}" ]; then
+            DEFACE_FLAGS="--raw-only"
+        fi
+        echo "Defacing guard: ${ANAT_COUNT} anat NIfTIs under ${SUBJECT}; running deface_anat.py run ${DEFACE_FLAGS}"
+        module load fsl/6.0.7.9 2>/dev/null || true
+        export FSLOUTPUTTYPE=NIFTI_GZ
+        python scripts/deface_anat.py run --subject "${SUB_LABEL}" ${DEFACE_FLAGS}
+        EXIT_STATUS=$?
+        python scripts/deface_anat.py audit || EXIT_STATUS=1
+    fi
+fi
+
 # Print completion information
 echo ""
 echo "=========================================="
