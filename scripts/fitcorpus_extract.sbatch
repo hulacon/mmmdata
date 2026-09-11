@@ -32,11 +32,25 @@
 #
 #   sbatch --array=0-N%24 --cpus-per-task=4 --mem=48G \
 #          fitcorpus_extract.sbatch --corpus librispeech --skip-model psychoacoustic
-#   sbatch --array=0-N%64 --partition=compute --gres=gpu:0 --cpus-per-task=4 --mem=32G \
-#          --time=06:00:00 fitcorpus_extract.sbatch --corpus librispeech --model psychoacoustic
+#   sbatch --array=<indices> --partition=compute --gres=gpu:0 --cpus-per-task=4 --mem=<see below> \
+#          --time=05:00:00 fitcorpus_extract.sbatch --corpus librispeech --model psychoacoustic
 #
 # (`--gres=gpu:0` on the command line overrides the header; CPU-only cells
 # on the compute partition dodge the gpu QOS's 96-CPU per-user cap.)
+#
+# MEMORY for the psychoacoustic job scales with unit LENGTH, not corpus:
+# MoSQITo's loudness_zwtv holds ~28 full-length float64 band signals plus
+# temporaries, peaking at ~2.85 GB per minute of audio at 48 kHz (measured
+# 2026-09-10: 64 G held every unit <= 21.8 min and lost every unit
+# >= 22.8 min; sacct MaxRSS undersamples that peak at ~2.2 GB/min, so size
+# from the kill threshold, not from MaxRSS). The peak lands ~40 min into a
+# 24-min unit, so an undersized task wastes that much before dying. Bucket
+# the array by `duration_sec` in `<corpus>/inputs/units.csv`:
+#     <= 12 min  44G      <= 18 min  64G
+#     <= 24 min  84G      <= 31 min  108G     (>= 20 % margin each)
+# Units longer than ~31 min (the 56-min narratives story) go to the memory
+# partition; 208G held it. The compute QOS caps one user at mem=4T, so the
+# array's own throttle is unnecessary. Runtime is ~3-4.6x real time.
 #
 # Idempotent per cell (a §4.1 sidecar that passes `psytwill battery --check`
 # is the done-marker); a task that hits the wall clock is resumed by
