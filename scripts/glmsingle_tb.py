@@ -12,9 +12,15 @@ Arms:
 
   enc        TBencoding only (ses-04..17, ~42 runs), conditions = mmmId
              (1000 columns, 664 repeated).
-  ret-image  TBretrieval image-cued runs (ses-04..18, 28 runs), conditions =
-             mmmId (1000 columns, 6 repeated — the binding scarcity).
-  ret-word   TBretrieval word-cued runs, same shape as ret-image.
+  ret-image  TBretrieval image-cued runs (ses-04..18, 28 runs) PLUS the
+             FINretrieval image-cued runs (ses-30, 2 runs), conditions =
+             mmmId (1000 columns; 6 anchors + 120 items retrieved once in TB
+             and once in ses-30 = 126 repeated). DECIDED (Ben) 2026-09-11:
+             TB + FIN is the final version.
+  ret-word   Same shape as ret-image, word-cued runs.
+  ret-image-tbonly / ret-word-tbonly
+             The TB-only retrieval fits (28 runs, 6 repeated — the binding
+             scarcity), kept on disk for the beta-ladder repetition questions.
   pooled     One fit over ALL TB runs (~98), conditions = mmmId x subgroup
              where subgroup is enc / image / word (~3000 columns; repetitions
              fall within a subgroup, never across). Retrieval borrows
@@ -35,6 +41,13 @@ Retrieval facts that drive the design (measured 2026-08-21, see workbench log):
   - ses-18 is retrieval-only and structurally different (1 run/cue, reCon all
     "across", no super repeats — data but zero CV leverage). Included by
     default and reported; --drop-ses18 excludes it.
+  - ses-30 FINretrieval (measured 2026-09-11): 4 cue-pure runs (2 per cue,
+    210 vols vs 150 for TB), 60 items each, 240 items per subject drawn from
+    the repeated-encoding pool, every one previously TB-retrieved under the
+    SAME cue and none of them anchors. So each cue arm gains 120 conditions
+    with exactly two presentations, months apart. Whether a delayed
+    retrieval is a valid GLMsingle "repeat" for CV tuning is the design
+    assumption this arm makes.
 
 Usage:
     python glmsingle_tb.py --subject sub-03 --arm ret-image --dry-run
@@ -77,10 +90,11 @@ def load_config():
 SPACE = "MNI152NLin2009cAsym_res-2"
 OUTPUT_TREE = "glmsingle_tb"
 
-# ses-18 exists for retrieval but not encoding.
+# ses-18 exists for retrieval but not encoding; ses-30 is the final cued recall.
 TASK_SESSIONS = {
     "TBencoding": [f"ses-{i:02d}" for i in range(4, 18)],
     "TBretrieval": [f"ses-{i:02d}" for i in range(4, 19)],
+    "FINretrieval": ["ses-30"],
 }
 
 TR = 1.5
@@ -93,8 +107,12 @@ CUE_LABELS = {1: "image", 2: "word"}   # cueId -> label (sidecar: 1=visual, 2=au
 # runs and the cue label for retrieval runs.
 ARM_SPECS = {
     "enc": [("TBencoding", None)],
-    "ret-image": [("TBretrieval", "image")],
-    "ret-word": [("TBretrieval", "word")],
+    "ret-image": [("TBretrieval", "image"), ("FINretrieval", "image")],
+    "ret-word": [("TBretrieval", "word"), ("FINretrieval", "word")],
+    "ret-image-tbonly": [("TBretrieval", "image")],
+    "ret-word-tbonly": [("TBretrieval", "word")],
+    # pooled predates the FIN decision and its fits were deleted 2026-09-11;
+    # kept TB-only so the deleted tree stays reproducible as it was.
     "pooled": [("TBencoding", None), ("TBretrieval", None)],
 }
 
@@ -126,9 +144,9 @@ def detect_runs(fmriprep_dir, subject, session, task):
 
 # ── discovery, with subgroup typing ──────────────────────────────────────────
 
-def run_cue_label(bids_root, subject, session, run):
+def run_cue_label(bids_root, subject, session, task, run):
     """Cue type of a retrieval run, from its events. Runs are cue-pure; assert."""
-    df = pd.read_csv(events_path(bids_root, subject, session, "TBretrieval", run),
+    df = pd.read_csv(events_path(bids_root, subject, session, task, run),
                      sep="\t")
     trials = df[df["trial_type"] != "rest"]
     ids = set(int(v) for v in trials["cueId"].dropna().unique())
@@ -165,7 +183,7 @@ def discover_sessions(bids_root, fmriprep_dir, subject, arm, sessions=None,
                 if task == "TBencoding":
                     subgroup = "enc"
                 else:
-                    subgroup = run_cue_label(bids_root, subject, ses, r)
+                    subgroup = run_cue_label(bids_root, subject, ses, task, r)
                     if cue is not None and subgroup != cue:
                         continue
                 typed.append((task, r, subgroup))
@@ -377,6 +395,11 @@ def run(bids_root, fmriprep_dir, subject, session_runs, output_dir, arm,
         n18 = sum(len(t) for s, t in session_runs if s == "ses-18")
         print(f"\n  NOTE: ses-18 included ({n18} runs) — retrieval-only, reCon "
               "all 'across', no super repeats: data but no CV leverage.")
+    has_fin = any(t == "FINretrieval" for _, typed in session_runs for t, _, _ in typed)
+    if has_fin:
+        nfin = sum(1 for _, typed in session_runs for t, _, _ in typed if t == "FINretrieval")
+        print(f"\n  NOTE: ses-30 FINretrieval included ({nfin} runs) — each item "
+              "retrieved once in TB and once here counts as a GLMsingle repeat.")
 
     print("\nResolving BOLD...")
     n_volumes_per_run, missing = [], []
@@ -417,6 +440,7 @@ def run(bids_root, fmriprep_dir, subject, session_runs, output_dir, arm,
         "repeated_condition_ids": sorted(
             condition_key.loc[condition_key["n_presentations"] > 1, "condition_id"]),
         "includes_ses18": has_ses18,
+        "includes_fin": has_fin,
         "n_volumes_per_run": n_volumes_per_run,
         "confound_strategy": ("spike_regressors_only" if use_spike_regressors
                               else "none (GLMdenoise handles denoising)"),
@@ -502,7 +526,8 @@ def parse_args():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--subject", required=True, help="e.g. sub-03")
     p.add_argument("--arm", choices=sorted(ARM_SPECS), required=True,
-                   help="enc | ret-image | ret-word (siloed fits) | pooled "
+                   help="enc | ret-image | ret-word (siloed fits, TB + FIN) | "
+                        "ret-image-tbonly | ret-word-tbonly (TB only) | pooled "
                         "(one fit, conditions = mmmId x subgroup)")
     p.add_argument("--sessions", nargs="+", default=None,
                    help="Sessions to include (default: all the arm's tasks have)")

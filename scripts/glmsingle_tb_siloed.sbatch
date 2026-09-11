@@ -16,6 +16,10 @@
 #==============================================================================
 # Workbench: mmmdata-agents/docs/workbench/retrieval-modeling/ (3x2 redesign,
 # 2026-08-26). Pooled arms run separately: glmsingle_tb_pooled.sbatch.
+# 2026-09-11 (Ben): ret-image / ret-word now include the ses-30 FINretrieval
+# runs (30 runs, ~4.6k vols; the TB-only fits peaked at 92 G / 6-12 h under
+# this header, so it is unchanged). The TB-only fits live on as the
+# ret-image-tbonly / ret-word-tbonly arms (edit ARMS below to refit those).
 #
 # Sizing reference: the 24.1.1 TB encoding fit peaked at 200 GB / 18.3 h on
 # 8 CPUs (job 43272306) over 42 runs x ~207 vols = ~8.7k volumes. The enc arm
