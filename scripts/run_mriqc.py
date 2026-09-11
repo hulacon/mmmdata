@@ -41,6 +41,7 @@ def run_mriqc(
     mriqc_version='24.0.2',
     singularity_dir=None,
     work_dir=None,
+    modalities=None,
 ):
     """
     Run MRIQC using Singularity
@@ -170,6 +171,11 @@ def run_mriqc(
         ses_id = session.replace('ses-', '')
         cmd.extend(['--session-id', ses_id])
 
+    # Restrict to modalities (e.g. T1w T2w for an anatomy-only pass)
+    if modalities:
+        cmd.append('--modalities')
+        cmd.extend(modalities)
+
     # Add FreeSurfer license if provided
     if fs_license:
         fs_license = Path(fs_license)
@@ -283,6 +289,12 @@ def main():
     )
 
     parser.add_argument(
+        '--modalities',
+        nargs='+',
+        help='Restrict MRIQC to these modalities (e.g. T1w T2w). Default: all'
+    )
+
+    parser.add_argument(
         '--bids-dir',
         help='Override BIDS directory from config'
     )
@@ -331,6 +343,7 @@ def main():
         fs_license=args.fs_license,
         mriqc_version=args.mriqc_version,
         singularity_dir=singularity_dir,
+        modalities=args.modalities,
         work_dir=work_dir,
     )
 

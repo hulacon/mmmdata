@@ -306,6 +306,11 @@ def test_report_files_selects_anat_renderers_only(tmp_path):
     for n in ("sub-01_ses-01_acq-MPR_run-01_T1w.html", "sub-01_ses-01_acq-SPC_T2w.html", "group_T1w.html",
               "sub-01_ses-02_task-rest_bold.html"):
         (mriqc / n).write_text("")
+    mfigs = mriqc / "sub-01" / "figures"
+    mfigs.mkdir(parents=True)
+    for n in ("sub-01_ses-01_acq-MPR_run-01_desc-background_T1w.svg", "sub-01_ses-01_acq-SPC_desc-zoomed_T2w.svg",
+              "sub-01_ses-02_task-rest_desc-carpet_bold.svg"):
+        (mfigs / n).write_text("")
     figs = r.fmriprep / "sub-01" / "figures"
     figs.mkdir(parents=True)
     for n in ("sub-01_acq-MPR_desc-reconall_T1w.svg", "sub-01_acq-MPR_dseg.svg",
@@ -319,8 +324,8 @@ def test_report_files_selects_anat_renderers_only(tmp_path):
     names = sorted(p.name for p in da.report_files(r, "01"))
     assert names == sorted([
         "sub-01_ses-01_acq-MPR_run-01_T1w.html", "sub-01_ses-01_acq-SPC_T2w.html",
-        "sub-01_acq-MPR_desc-reconall_T1w.svg", "sub-01_acq-MPR_dseg.svg",
-        "sub-01_acq-MPR_space-MNI152NLin2009cAsym_desc-preproc_T1w.svg",
+        "sub-01_ses-01_acq-MPR_run-01_desc-background_T1w.svg", "sub-01_ses-01_acq-SPC_desc-zoomed_T2w.svg",
+        "sub-01_acq-MPR_dseg.svg",
         "sub-01_task-prf_space-T1w_desc-viewer_prf.html",
     ])
 
@@ -391,3 +396,22 @@ def test_mirror_falls_back_when_the_session_dir_is_not_writable(tmp_path):
     finally:
         locked.chmod(0o755)
     assert r.mirror(raw) == r.source / "sub-07" / "ses-01" / "anat_faced" / "sub-07_ses-01_T1w.nii.gz"
+
+
+def test_reports_skip_files_already_recorded_as_moved(tmp_path, monkeypatch):
+    """A viewer bundle rebuilt after its faced original was moved must not be
+    moved again (its mirror holds the faced one and is never overwritten)."""
+    r = _roots(tmp_path)
+    qc = r.deriv / "prf" / "sub-01" / "qc"
+    qc.mkdir(parents=True)
+    bundle = qc / "sub-01_task-prf_space-T1w_desc-viewer_prf.html"
+    bundle.write_text("faced")
+    prov_path = r.provenance_path("01")
+    prov = da.load_provenance(prov_path)
+    monkeypatch.setattr(da, "load_roots", lambda: r)
+    class A: subject = "01"; dry_run = False
+    assert da.cmd_reports(A()) == 0
+    assert not bundle.exists() and r.mirror(bundle).read_text() == "faced"
+    bundle.write_text("defaced rebuild")
+    assert da.cmd_reports(A()) == 0            # second pass: skipped, not refused
+    assert bundle.read_text() == "defaced rebuild"

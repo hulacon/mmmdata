@@ -948,10 +948,18 @@ def report_files(roots: Roots, subject: str) -> list[Path]:
     out: list[Path] = []
     out += sorted((roots.deriv / "mriqc").glob(f"{sub}_*_T1w.html"))
     out += sorted((roots.deriv / "mriqc").glob(f"{sub}_*_T2w.html"))
+    # the HTML is a wrapper: the mosaics (a 2 mm axial stack through the whole
+    # head + sagittal profiles) are separate SVGs under <sub>/figures/
+    mriqc_figs = roots.deriv / "mriqc" / sub / "figures"
+    if mriqc_figs.is_dir():
+        out += sorted(p for p in mriqc_figs.iterdir() if p.name.endswith(("_T1w.svg", "_T2w.svg")))
+    # fMRIPrep anat figures: only the dseg ones render the face (a few
+    # sagittal profile panels). `desc-reconall_T1w.svg` draws on the
+    # brain-extracted volume and the `space-MNI…` figures sit inside the MNI
+    # bounding box — brain-only, they stay (DECIDED 2026-09-11).
     figs = roots.fmriprep / sub / "figures"
     if figs.is_dir():
-        out += sorted(p for p in figs.iterdir()
-                      if "task-" not in p.name and (p.name.endswith("_T1w.svg") or p.name.endswith("_dseg.svg")))
+        out += sorted(p for p in figs.iterdir() if "task-" not in p.name and p.name.endswith("_dseg.svg"))
     # volume viewer bundles embed a T1w or MNI underlay; surface bundles do not
     for qc in sorted(roots.deriv.glob(f"*/{sub}/qc/*_desc-viewer_*.html")):
         if "space-fsnative" not in qc.name:
@@ -964,7 +972,9 @@ def cmd_reports(args) -> int:
     prov_path = roots.provenance_path(args.subject)
     prov = load_provenance(prov_path)
     prov["subject"] = f"sub-{args.subject}"
-    files = report_files(roots, args.subject)
+    files = [f for f in report_files(roots, args.subject) if str(f) not in prov["reports"]]
+    # a file already recorded as moved and present again in the tree is a
+    # REBUILD from defaced inputs (viewer bundles): it stays
     moved = 0
     for f in files:
         mirror = roots.mirror(f)
