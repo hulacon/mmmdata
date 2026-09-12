@@ -50,6 +50,7 @@ from neuroimaging.glm.models import list_models, load_model  # noqa: E402
 from neuroimaging.glm.outputs import (  # noqa: E402
     ensure_dataset_description,
     output_dir,
+    save_statmap,
     statmap_name,
     write_run_metadata,
 )
@@ -190,8 +191,8 @@ def main(argv: list[str] | None = None) -> int:
                 d.mkdir(parents=True, exist_ok=True)
                 for stat, img in (("effect", ce.effect), ("variance", ce.variance), ("t", ce.stat), ("z", ce.z)):
                     if img is not None:
-                        img.to_filename(str(d / statmap_name(run.subject, model.task, cfg.space, name, stat,
-                                                              session=run.session, run=run.run)))
+                        save_statmap(img, d / statmap_name(run.subject, model.task, cfg.space, name, stat,
+                                                           session=run.session, run=run.run))
         print(f"  fitted {run.entity_prefix}")
 
     # Fixed effects across every run selected: sessions pool together, so the
@@ -217,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
             if img is None:
                 continue
             path = d / statmap_name(subject, model.task, cfg.space, name, stat, session=fx_session)
-            img.to_filename(str(path))
+            save_statmap(img, path)
             written.append(path.name)
 
     meta = {

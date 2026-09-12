@@ -85,3 +85,17 @@ def test_split_half_dice_is_one_for_identical_runs_and_low_for_noise():
     assert split_half_dice(noisy, n=20) < 0.5
     with pytest.raises(ValueError):
         split_half_dice([base], n=20)
+
+
+def test_save_statmap_writes_float32_even_from_a_uint8_header(tmp_path):
+    """nilearn 0.13 copies the (uint8) mask header into every stat map; the writer must not."""
+    nib = pytest.importorskip("nibabel")
+    from neuroimaging.glm.outputs import save_statmap
+    data = np.linspace(-9.7, 9.1, 3 * 4 * 5, dtype=np.float64).reshape(3, 4, 5)
+    img = nib.Nifti1Image(data, np.eye(4))
+    img.set_data_dtype(np.uint8)  # what a nilearn output built from a uint8 mask looks like
+    path = save_statmap(img, tmp_path / "x_stat-t_statmap.nii.gz")
+    back = nib.load(str(path))
+    assert back.get_data_dtype() == np.float32
+    np.testing.assert_allclose(np.asarray(back.dataobj), data.astype(np.float32), rtol=0, atol=0)
+    assert np.unique(np.asarray(back.dataobj)).size == data.size

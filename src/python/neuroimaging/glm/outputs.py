@@ -17,6 +17,28 @@ from typing import Any, Optional
 STATS = ("effect", "variance", "t", "z")
 
 
+def save_statmap(img: Any, path: Path) -> Path:
+    """Write a statistical map as float32 with a fresh header.
+
+    nilearn >= 0.13 builds every output image with ``copy_header=True`` from
+    the mask it was given, so a uint8 brain mask hands its ``uint8`` data
+    type to the effect, variance, t and z maps; ``to_filename`` then scales
+    each map onto 255 levels. In memory the arrays are exact, so anything
+    scored from the fitted objects is unaffected, but a map read back from
+    disk is not the map that was fitted (t maps written before 2026-09-12
+    carry ~230 distinct values). Every stat map goes through here.
+    """
+    import nibabel as nib
+    import numpy as np
+
+    data = np.asarray(img.dataobj, dtype=np.float32)
+    out = nib.Nifti1Image(data, img.affine)
+    out.set_data_dtype(np.float32)
+    path = Path(path)
+    out.to_filename(str(path))
+    return path
+
+
 def statmap_name(
     subject: str,
     task: str,
