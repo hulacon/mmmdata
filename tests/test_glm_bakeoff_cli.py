@@ -74,3 +74,37 @@ def test_spmderiv_cell_and_collect(tree, capsys):
     assert lines[0].split("\t")[:4] == ["subject", "model", "hrf", "confounds"]
     assert any("spmderiv" in ln and "\tr\t" in ln for ln in lines[1:])
     assert "spmderiv" in capsys.readouterr().out
+
+
+def test_keep_per_run_writes_run_maps_into_a_separate_out_base(tree):
+    """--out-base gets its own frozen harness; --keep-per-run keeps the FE inputs.
+
+    With one run per half (the motor tree) each half map IS its run map, so
+    the recombination check is exact equality.
+    """
+    base = tree / "derivatives" / "glm_bakeoff_pass2"
+    pre = ["--bids-root", str(tree), "--out-base", str(base)]
+    assert glm_bakeoff.main(pre + ["plan", "--subjects", "aa", "--models", "motor"]) == 0
+    assert (base / "harness.json").exists() and not (tree / "derivatives" / "glm_bakeoff").exists()
+    cell = "model-motor_hrf-spm_conf-motion6_engine-nilearn-ols"
+    assert glm_bakeoff.main(pre + ["fit", "--subject", "aa", "--cell", cell, "--keep-per-run"]) == 0
+    d = base / "sub-aa" / cell
+    per_run = d / "per-run"
+    maps = sorted(p.name for p in per_run.glob("*_statmap.nii.gz"))
+    n_contrasts = len(json.loads((d / "scores.json").read_text())["contrasts"])
+    assert len(maps) == 2 * n_contrasts * 3  # runs x contrasts x (effect, variance, t)
+    run1_effect = f"sub-aa_ses-30_task-motor_run-01_space-{SPACE}_contrast-handVsRest_stat-effect_statmap.nii.gz"
+    assert run1_effect in maps
+    idx = json.loads((per_run / "per-run.json").read_text())
+    assert [(r["run"], r["half"]) for r in idx["runs"]] == [("01", 1), ("02", 2)]
+    assert idx["runs"][0]["contrasts"]["handVsRest"]["dof"] > 0
+    rec = json.loads((d / "scores.json").read_text())
+    assert rec["config"]["per_run_maps"] == "per-run"
+    half1 = nib.load(str(d / f"sub-aa_task-motor_space-{SPACE}_half-1_contrast-handVsRest_stat-effect_statmap.nii.gz"))
+    run1 = nib.load(str(per_run / run1_effect))
+    np.testing.assert_allclose(half1.get_fdata(), run1.get_fdata())
+    assert half1.get_data_dtype() == np.float32 and run1.get_data_dtype() == np.float32  # not the mask's uint8
+    # the GLMsingle arm has no per-run estimates to keep
+    with pytest.raises(SystemExit, match="keep-per-run"):
+        glm_bakeoff.main(pre + ["fit", "--subject", "aa", "--cell", "model-motor_hrf-glmsingle_conf-na_engine-na",
+                                "--keep-per-run"])

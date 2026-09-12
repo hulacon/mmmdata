@@ -29,12 +29,16 @@
 #   N=$(wc -l < /gpfs/projects/hulacon/shared/mmmdata/derivatives/glm_bakeoff/units.txt)
 #   sbatch --array=1-${N}%24 scripts/glm_bakeoff.sbatch
 #   sbatch --array=5 --export=ALL,EXTRA="--force" scripts/glm_bakeoff.sbatch
+#   GLOBAL holds arguments that go BEFORE the verb (--out-base, --space ...):
+#   sbatch --array=7,61 --export=ALL,GLOBAL="--out-base ${OUT}/glm_bakeoff_pass2",EXTRA="--keep-per-run" \
+#       scripts/glm_bakeoff.sbatch
 #==============================================================================
 
 set -euo pipefail
 
 : "${SLURM_ARRAY_TASK_ID:?submit with --array; each task fits one unit of units.txt}"
 EXTRA="${EXTRA:-}"
+GLOBAL="${GLOBAL:-}"
 
 echo "=========================================="
 echo "GLM bake-off — SLURM Job Info"
@@ -54,7 +58,7 @@ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 export TMPDIR="${TMPDIR:-/tmp}"
 
 # shellcheck disable=SC2086
-python "${REPO_ROOT}/scripts/glm_bakeoff.py" fit --unit "${SLURM_ARRAY_TASK_ID}" ${EXTRA}
+python "${REPO_ROOT}/scripts/glm_bakeoff.py" ${GLOBAL} fit --unit "${SLURM_ARRAY_TASK_ID}" ${EXTRA}
 
 echo ""
 echo "End Time: $(date)"

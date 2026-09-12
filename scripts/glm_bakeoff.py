@@ -19,8 +19,15 @@ Verbs:
               from the encoding GLMsingle fit as a NIfTI (the per-voxel HRF
               arm reads it) and score the glmsingle-betas arm from the same
               load (TBencoding per-trial betas, first vs later per half)
-    fit       one cell for one subject (--cell, or --unit N from units.txt)
+    fit       one cell for one subject (--cell, or --unit N from units.txt);
+              --keep-per-run also writes every run's effect / variance / t
+              map under <cell>/per-run/ (the fixed-effects inputs the
+              scoring otherwise discards; Track C of the pass-2 design)
     collect   gather every scores.json into scores.tsv and print a summary
+
+The output tree defaults to <derivatives>/glm_bakeoff; --out-base (before the
+verb) points every verb at another tree, e.g. a pass-2 tree frozen beside the
+pass-1 one so scored pass-1 cells are never rewritten.
 
 Usage:
     python glm_bakeoff.py plan
@@ -28,6 +35,8 @@ Usage:
     python glm_bakeoff.py fit --subject sub-03 --cell model-floc_hrf-spm_conf-motion6_engine-nilearn-ar1
     python glm_bakeoff.py fit --unit 17
     python glm_bakeoff.py collect
+    python glm_bakeoff.py --out-base <derivatives>/glm_bakeoff_pass2 plan
+    python glm_bakeoff.py --out-base <derivatives>/glm_bakeoff_pass2 fit --unit 7 --keep-per-run
 """
 
 from __future__ import annotations
@@ -64,7 +73,7 @@ from neuroimaging.glm.glmsingle_arm import (  # noqa: E402
 )
 from neuroimaging.glm.hrf import hrfindex_to_image, load_hrfindex  # noqa: E402
 from neuroimaging.glm.models import load_model  # noqa: E402
-from neuroimaging.glm.outputs import write_run_metadata  # noqa: E402
+from neuroimaging.glm.outputs import save_statmap, write_run_metadata  # noqa: E402
 from neuroimaging.glm.voxelwise_hrf import VOXELWISE, fit_run_voxelwise  # noqa: E402
 from neuroimaging.io import FmriprepRun, load_confounds  # noqa: E402
 
@@ -83,7 +92,8 @@ def _paths(args: argparse.Namespace) -> tuple[Path, Path, Path]:
         bids_root, derivatives = _config_paths()
         if args.derivatives_dir is not None:
             derivatives = args.derivatives_dir
-    return bids_root, derivatives, derivatives / OUTPUT_TREE
+    out_base = args.out_base if getattr(args, "out_base", None) is not None else derivatives / OUTPUT_TREE
+    return bids_root, derivatives, out_base
 
 
 def hrfindex_path(derivatives: Path, subject: str, space: str) -> Path:
@@ -124,9 +134,45 @@ def _write_half_maps(out_dir: Path, subject: str, task: str, space: str, half: i
             if img is None:
                 continue
             fn = harness.half_name(_bare(subject, "sub"), task, space, half, name, stat)
-            img.to_filename(str(out_dir / fn))
+            save_statmap(img, out_dir / fn)
             written.append(fn)
     return written
+
+
+def run_map_name(entity_prefix: str, space: str, contrast: str, stat: str) -> str:
+    """One run's map: the run's own BIDS prefix, then space, contrast and stat."""
+    return f"{entity_prefix}_space-{space}_contrast-{contrast}_stat-{stat}_statmap.nii.gz"
+
+
+def _write_per_run(out_dir: Path, space: str, runs: list[FmriprepRun], per_run: list[dict[str, ContrastEstimate]],
+                   halves: tuple[list[int], list[int]], timings: list[float]) -> Path:
+    """Write every run's effect / variance / t map and a per-run.json index.
+
+    These are the fixed-effects inputs; keeping them lets the halves be
+    recombined by session (or any other rule) without a refit.
+    """
+    d = out_dir / "per-run"
+    d.mkdir(parents=True, exist_ok=True)
+    half_of = {i: 1 for i in halves[0]} | {i: 2 for i in halves[1]}
+    index = []
+    for i, (r, est) in enumerate(zip(runs, per_run)):
+        entry = {"entity_prefix": r.entity_prefix, "session": r.session, "run": r.run, "half": half_of[i],
+                 "fit_seconds": round(timings[i], 1), "contrasts": {}}
+        for name, ce in est.items():
+            files = {}
+            for stat, img in (("effect", ce.effect), ("variance", ce.variance), ("t", ce.stat)):
+                if img is None:
+                    continue
+                fn = run_map_name(r.entity_prefix, space, name, stat)
+                save_statmap(img, d / fn)
+                files[stat] = fn
+            entry["contrasts"][name] = {"dof": ce.dof, "files": files}
+        index.append(entry)
+    (d / "per-run.json").write_text(json.dumps({
+        "note": "per-run first-level estimates; the half maps are precision-weighted fixed effects of these",
+        "halves": "half 1 = odd positions, half 2 = even, runs sorted by (session, run)",
+        "runs": index}, indent=2))
+    return d
 
 
 def _score(halves: tuple[dict, dict], mask_arr: np.ndarray, n_set) -> dict[str, Any]:
@@ -261,7 +307,10 @@ def cmd_fit(args: argparse.Namespace) -> int:
     adapted = adapt_events(model.adapter, events)
     timings: list[float] = []
 
+    keep_per_run = bool(getattr(args, "keep_per_run", False))
     if cell.hrf == "glmsingle":
+        if keep_per_run:
+            raise SystemExit("ERROR: --keep-per-run needs per-run estimates; the GLMsingle arm fits a half at once")
         halves = []
         for h, idx in ((1, h1), (2, h2)):
             bolds, designs, t_r = [], [], None
@@ -317,6 +366,9 @@ def cmd_fit(args: argparse.Namespace) -> int:
             note = f" (no {', '.join(n for n, v in skipped.items() if r.entity_prefix in v)})" if any(
                 r.entity_prefix in v for v in skipped.values()) else ""
             print(f"  {r.entity_prefix}: {timings[-1]:.0f} s{note}", flush=True)
+        per_run_dir = _write_per_run(out_dir, args.space, runs, per_run, (h1, h2), timings) if keep_per_run else None
+        if per_run_dir is not None:
+            print(f"  per-run maps -> {per_run_dir}")
         halves = []
         for h, idx in ((1, h1), (2, h2)):
             pooled = {}
@@ -330,6 +382,8 @@ def cmd_fit(args: argparse.Namespace) -> int:
         cfg_dict = cfg.to_dict()
         if skipped:
             cfg_dict["runs_skipped_per_contrast"] = skipped
+        if per_run_dir is not None:
+            cfg_dict["per_run_maps"] = str(per_run_dir.relative_to(out_dir))
 
     scores = _score((halves[0], halves[1]), mask_arr, n_set)
     record = {
@@ -389,12 +443,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--sessions", nargs="*", default=None, help="override the model's session selection")
     p.add_argument("--bids-root", type=Path, default=None)
     p.add_argument("--derivatives-dir", type=Path, default=None)
+    p.add_argument("--out-base", type=Path, default=None,
+                   help=f"output tree (default <derivatives>/{OUTPUT_TREE}); a different tree gets its own frozen harness")
     sub = p.add_subparsers(dest="verb", required=True)
     s = sub.add_parser("plan"); s.add_argument("--subjects", nargs="+", default=["sub-03", "sub-04", "sub-05"])
     s.add_argument("--models", nargs="*", default=None)
     s = sub.add_parser("prep"); s.add_argument("--subject", required=True)
     s = sub.add_parser("fit"); s.add_argument("--subject"); s.add_argument("--cell"); s.add_argument("--unit", type=int)
     s.add_argument("--force", action="store_true")
+    s.add_argument("--keep-per-run", action="store_true",
+                   help="also write each run's effect/variance/t maps under <cell>/per-run/")
     sub.add_parser("collect")
     return p.parse_args(argv)
 

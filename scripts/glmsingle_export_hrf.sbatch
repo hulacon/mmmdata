@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
-#SBATCH --mem=48G
+#SBATCH --mem=64G
 #SBATCH --array=0-8
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/glmsingle_export_hrf_%A_%a.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/glmsingle_export_hrf_%A_%a.err
@@ -14,7 +14,7 @@
 #==============================================================================
 # Export HRFindex / FitHRFR2 / R2 / meanvol NIfTIs from the siloed GLMsingle
 # TB arms. One unit = one subject x arm; loads the TYPEB pickle whole (~16 G),
-# hence 48 G. Reference grid = the encoding arm's existing hrfindex dseg.
+# hence 48 G, plus one copy of FitHRFR2run (~3.6 G) for the per-run margin: 64 G. Reference grid = the encoding arm's existing hrfindex dseg.
 #
 # Usage:
 #   sbatch scripts/glmsingle_export_hrf.sbatch
@@ -41,7 +41,13 @@ source "${REPO_ROOT}/.venv/bin/activate"
 REF="${OUTPUT_DIR}/glmsingle_tb/${SUBJECT}/enc/${SUBJECT}_task-TBencoding_space-MNI152NLin2009cAsym_res-2_desc-hrfindex_dseg.nii.gz"
 test -f "${REF}" || { echo "ERROR: reference grid ${REF} missing"; exit 1; }
 
+# Brain mask for the masked FitHRFR2run export: intersection of the subject's
+# TBencoding run-01 masks (the rule the workbench HRF analyses use).
+MASKS=$(ls "${OUTPUT_DIR}"/fmriprep/"${SUBJECT}"/ses-*/func/"${SUBJECT}"_ses-*_task-TBencoding_run-01_space-MNI152NLin2009cAsym_res-2_desc-brain_mask.nii.gz)
+test -n "${MASKS}" || { echo "ERROR: no TBencoding run-01 brain masks for ${SUBJECT}"; exit 1; }
+
+# shellcheck disable=SC2086
 python "${REPO_ROOT}/scripts/glmsingle_export_hrf.py" \
-    --subject "${SUBJECT}" --arm "${ARM}" --reference "${REF}"
+    --subject "${SUBJECT}" --arm "${ARM}" --reference "${REF}" --mask ${MASKS}
 
 echo "End Time: $(date)"
