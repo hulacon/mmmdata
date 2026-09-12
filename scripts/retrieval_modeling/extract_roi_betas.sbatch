@@ -14,21 +14,24 @@
 # ROI pattern caches for derivatives/glmsingle_tb (all 3 beta types per arm)
 #==============================================================================
 # Workbench: mmmdata-agents/docs/workbench/retrieval-modeling/ (Settles-when 1).
-# Sizing: one pickled beta dict is up to ~30 G (pooled TYPEB); types are loaded
-# one at a time and freed. Revise from seff after the first array.
+# Sizing: measured 2026-09-10 (47191365) at <16 G / <2 min per cell; the
+# TB+FIN ret fits are ~8 G per beta type on disk. 80 G is generous.
 #
-# Array task mapping:
-#   1: sub-03/enc   2: sub-03/ret-image   3: sub-03/ret-word   4: sub-03/pooled
-#   5: sub-04/enc   6: sub-04/ret-image   7: sub-04/ret-word   8: sub-04/pooled
-#   9: sub-05/enc  10: sub-05/ret-image  11: sub-05/ret-word  12: sub-05/pooled
+# Array task mapping (5 arms per subject; `pooled` fits were deleted 2026-09-11
+# and are not extractable; `ret-*` = TB + FIN since 2026-09-11, `*-tbonly` =
+# the retained TB-only fits whose caches were renamed in place):
+#   sub-03:  1 enc   2 ret-image   3 ret-word   4 ret-image-tbonly   5 ret-word-tbonly
+#   sub-04:  6 enc   7 ret-image   8 ret-word   9 ret-image-tbonly  10 ret-word-tbonly
+#   sub-05: 11 enc  12 ret-image  13 ret-word  14 ret-image-tbonly  15 ret-word-tbonly
 #
 # Usage:
-#   sbatch --array=4 extract_roi_betas.sbatch      # pilot: sub-03/pooled (largest)
-#   sbatch --array=1-12 extract_roi_betas.sbatch
+#   sbatch --array=2,3,7,8,12,13 extract_roi_betas.sbatch   # the six TB+FIN ret arms
+#   sbatch --array=1-15 extract_roi_betas.sbatch
 #==============================================================================
 
-SUBJECTS=(sub-03 sub-03 sub-03 sub-03 sub-04 sub-04 sub-04 sub-04 sub-05 sub-05 sub-05 sub-05)
-ARMS=(enc ret-image ret-word pooled enc ret-image ret-word pooled enc ret-image ret-word pooled)
+ARM_SET=(enc ret-image ret-word ret-image-tbonly ret-word-tbonly)
+SUBJECTS=(sub-03 sub-03 sub-03 sub-03 sub-03 sub-04 sub-04 sub-04 sub-04 sub-04 sub-05 sub-05 sub-05 sub-05 sub-05)
+ARMS=("${ARM_SET[@]}" "${ARM_SET[@]}" "${ARM_SET[@]}")
 
 IDX=$((SLURM_ARRAY_TASK_ID - 1))
 SUBJECT=${SUBJECTS[$IDX]}

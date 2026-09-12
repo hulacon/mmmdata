@@ -9,11 +9,18 @@ Definitions (design record: mmmdata-agents docs/workbench/retrieval-modeling/,
 DECIDED 2026-08-26; conventions verified on the fits 2026-09-10):
 
   pair       (a, b): trial a of item i in phase X, trial b of item i in phase Y,
-             a != b. Stratified by `same_run` and, for enc<->ret cells, by the
-             retrieval trial's `reCon` (1 = retrieved in the encoding session,
-             2 = in a later session). Encoding repeats are 3 presentations
-             within ONE session over 1-3 runs, so enc<->enc has both strata;
-             image<->word is one pair per item, same session, different runs.
+             a != b. Stratified by `same_run`, by `fin` (either trial is a
+             ses-30 FINretrieval trial — a months-delayed second retrieval,
+             reported apart from the TB retrievals since the 2026-09-11
+             TB+FIN refit; under fin=True `reCon` is still the item's TB
+             condition), and, for enc<->ret cells, by the retrieval trial's
+             `reCon` (1 = retrieved in the encoding session, 2 = in a later
+             session). Encoding repeats are 3 presentations within ONE
+             session over 1-3 runs, so enc<->enc has both `same_run` strata;
+             image<->word is one pair per item, same session, different runs
+             (fin=False) plus, for the 240 FIN items, one cross-session pair
+             (fin=True). image<->image / word<->word non-anchor within-item
+             pairs exist only for the 120 FIN items per cue (fin=True).
   within     r(a, b) — Pearson across the ROI's voxels.
   across     run-matched baseline: mean r(a, k) over trials k of phase Y in
              run(b) whose item differs from i and is not an anchor, averaged
@@ -44,8 +51,13 @@ Inputs: the ROI caches written by extract_roi_betas.py. Outputs (per subject):
   <out_root>/results/retrieval_modeling/<sub>/<sub>_6cell_items.tsv.gz item level
   <out_root>/results/retrieval_modeling/<sub>/<sub>_modality.tsv
 
+Arms: `siloed` reads enc + ret-image + ret-word (the production TB+FIN
+fits, DECIDED 2026-09-11); `siloed-tbonly` reads the retained TB-only
+retrieval caches (`ret-*-tbonly`) with the same enc cache; `pooled` reads the
+retained pooled caches (its fit tree was deleted 2026-09-11).
+
 Usage:
-    python benchmark_6cell.py --subject sub-## [--arms siloed pooled] [--types B C D]
+    python benchmark_6cell.py --subject sub-## [--arms siloed siloed-tbonly pooled] [--types B C D]
 """
 
 from __future__ import annotations
@@ -77,7 +89,10 @@ CACHE_TREE = "pattern_similarity"
 PHASES = ["enc", "image", "word"]
 CELLS = [("enc", "enc"), ("enc", "image"), ("enc", "word"),
          ("image", "image"), ("word", "word"), ("image", "word")]
-SILOED_FILES = {"enc": "enc", "image": "ret-image", "word": "ret-word"}
+ARM_FILES = {
+    "siloed": {"enc": "enc", "image": "ret-image", "word": "ret-word"},
+    "siloed-tbonly": {"enc": "enc", "image": "ret-image-tbonly", "word": "ret-word-tbonly"},
+}
 ANCHORS = set(range(995, 1001))
 SEED = 20260910
 
@@ -90,7 +105,7 @@ def cache_dir(cache_root: Path, sub: str, arm_dir: str) -> Path:
 
 def load_arm(cache_root: Path, sub: str, arm: str, t: str):
     """-> trials DataFrame (one row per column), {roi: (V, N)}, {roi: meanvol}."""
-    files = ([(SILOED_FILES[p], p) for p in PHASES] if arm == "siloed"
+    files = ([(ARM_FILES[arm][p], p) for p in PHASES] if arm in ARM_FILES
              else [("pooled", None)])
     frames, pats, mvs = [], {r: [] for r in ps.PATTERN_ROI_NAMES}, {}
     for arm_dir, phase in files:
@@ -100,7 +115,7 @@ def load_arm(cache_root: Path, sub: str, arm: str, t: str):
         d = np.load(p, allow_pickle=True)
         df = pd.DataFrame({
             "session": d["session"].astype(str), "run": d["run"].astype(int),
-            "subgroup": d["subgroup"].astype(str),
+            "task": d["task"].astype(str), "subgroup": d["subgroup"].astype(str),
             "mmmId": pd.to_numeric(pd.Series(d["mmmId"].astype(str))).astype(int).to_numpy(),
             "sharedId": d["sharedId"].astype(float), "reCon": d["reCon"].astype(float),
             "enCon": d["enCon"].astype(float), "onset": d["onset"].astype(float),
@@ -116,6 +131,7 @@ def load_arm(cache_root: Path, sub: str, arm: str, t: str):
     trials["run_key"] = (trials["session"] + "/" + trials["subgroup"] + "/"
                          + trials["run"].astype(str))
     trials["anchor"] = trials["mmmId"].isin(ANCHORS)
+    trials["fin"] = trials["task"] == "FINretrieval"
     patterns = {roi: np.concatenate(pats[roi], axis=1) for roi in ps.PATTERN_ROI_NAMES}
     return trials, patterns, mvs
 
@@ -155,12 +171,13 @@ def build_pairs(trials: pd.DataFrame, X: str, Y: str) -> pd.DataFrame:
         m = m[m.index_a < m.index_b]
     m = m.rename(columns={"index_a": "a", "index_b": "b"})
     m["same_run"] = m.run_key_a == m.run_key_b
+    m["fin"] = m.fin_a | m.fin_b
     m["anchor"] = m.anchor_a
     if X == "enc" and Y in ("image", "word"):
         m["reCon"] = m.reCon_b
     else:
         m["reCon"] = np.nan
-    return m[["mmmId", "a", "b", "same_run", "anchor", "reCon"]].reset_index(drop=True)
+    return m[["mmmId", "a", "b", "same_run", "fin", "anchor", "reCon"]].reset_index(drop=True)
 
 
 def run_pools(trials: pd.DataFrame) -> dict:
@@ -214,13 +231,13 @@ def cell_rows(R, trials, X, Y, pools, n_perm, rng, meta: dict, item_rows: list):
     pairs["within"] = R[pairs.a.to_numpy(), pairs.b.to_numpy()]
     pairs["across"] = across_baseline(R, trials, pairs, pools)
     rows = []
-    # strata: anchors apart; then same_run; then reCon where defined
+    # strata: anchors apart; then same_run x fin; then reCon where defined
     strata = []
     for anchor in (False, True):
         sub = pairs[pairs.anchor == anchor]
         if sub.empty:
             continue
-        keys = ["same_run"] + (["reCon"] if sub.reCon.notna().any() else [])
+        keys = ["same_run", "fin"] + (["reCon"] if sub.reCon.notna().any() else [])
         for vals, g in sub.groupby(keys, dropna=False):
             vals = vals if isinstance(vals, tuple) else (vals,)
             strata.append((anchor, dict(zip(keys, vals)), g))
@@ -231,7 +248,7 @@ def cell_rows(R, trials, X, Y, pools, n_perm, rng, meta: dict, item_rows: list):
         null = null_deltas(R, trials, g, pools, n_perm, rng)
         p = float((np.sum(null >= delta) + 1) / (n_perm + 1))
         label = dict(cell=f"{X}<->{Y}", anchor=anchor, same_run=bool(key["same_run"]),
-                     reCon=key.get("reCon", np.nan))
+                     fin=bool(key["fin"]), reCon=key.get("reCon", np.nan))
         rows.append(meta | label | dict(
             n_items=len(items), n_pairs=int(len(g)), within=float(items.within.mean()),
             across=float(items.across.mean()), delta=delta, null_sd=float(null.std()),
@@ -283,7 +300,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--subject", required=True)
-    ap.add_argument("--arms", nargs="+", default=["siloed", "pooled"], choices=["siloed", "pooled"])
+    ap.add_argument("--arms", nargs="+", default=["siloed", "siloed-tbonly"],
+                    choices=["siloed", "siloed-tbonly", "pooled"])
     ap.add_argument("--types", nargs="+", default=["B", "C", "D"], choices=["B", "C", "D"])
     ap.add_argument("--norms", nargs="+", default=["raw", "runmean"], choices=["raw", "runmean"])
     ap.add_argument("--rois", nargs="+", default=ps.PATTERN_ROI_NAMES)
@@ -332,7 +350,7 @@ def main():
                                   index=False, float_format="%.5g")
     print(f"\nwrote {out_dir}")
     show = cells[(cells.norm == "runmean") & (~cells.anchor) & (~cells.same_run)]
-    print(show.pivot_table(index=["arm", "beta", "roi"], columns=["cell", "reCon"],
+    print(show.pivot_table(index=["arm", "beta", "roi"], columns=["cell", "fin", "reCon"],
                            values="delta", dropna=False).round(3).to_string())
 
 
