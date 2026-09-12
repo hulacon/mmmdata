@@ -8,10 +8,11 @@ import pytest
 from neuroimaging.glm import harness
 
 
-def test_factorial_enumerates_27_cells_per_model_plus_standalone_arms():
+def test_factorial_enumerates_the_full_grid_per_model_plus_standalone_arms():
     cells = harness.factorial_cells()
     fact = [c for c in cells if not c.standalone]
-    assert len(fact) == 3 * 3 * 3 * 3
+    n_cells = len(harness.HRF_LEVELS) * len(harness.CONFOUND_LEVELS) * len(harness.ENGINE_LEVELS)
+    assert len(fact) == len(harness.MODELS) * n_cells
     standalone = [c for c in cells if c.standalone]
     assert {(c.model, c.hrf) for c in standalone} == {("floc", "glmsingle"), ("tbrepetition", "glmsingle-betas")}
     assert len({c.id for c in cells}) == len(cells)
@@ -36,6 +37,40 @@ def test_freeze_once_and_refuse_drift(tmp_path):
         harness.check_frozen(tmp_path)
     with pytest.raises(FileNotFoundError, match="plan"):
         harness.check_frozen(tmp_path / "nowhere")
+
+
+def test_a_frozen_tree_survives_a_new_level_but_not_a_changed_one(tmp_path, monkeypatch):
+    """The compatible-extension rule (glm-strategy, 2026-09-12).
+
+    Track A adds engine levels to a tree that already holds scored cells.
+    Adding a level leaves every scoring rule alone, so the tree stays valid
+    and the cells fitted under the extension say so; changing or dropping a
+    level is not an extension and is still refused.
+    """
+    harness.freeze(tmp_path)
+    original = harness.ENGINE_LEVELS
+
+    monkeypatch.setattr(harness, "ENGINE_LEVELS", original + ("film-new",))
+    frozen = harness.check_frozen(tmp_path)
+    assert frozen["extended_by"] == ["engine_levels"]
+    assert frozen["sha256"] != frozen["live_sha256"]  # the tree keeps its own sha
+    assert harness.freeze(tmp_path) == tmp_path / "harness.json"  # still idempotent
+
+    monkeypatch.setattr(harness, "ENGINE_LEVELS", original[:-1])  # a level removed
+    with pytest.raises(RuntimeError, match="differs from the frozen.*engine_levels"):
+        harness.check_frozen(tmp_path)
+
+    monkeypatch.setattr(harness, "ENGINE_LEVELS", original)
+    monkeypatch.setattr(harness, "N_SETS", dict(harness.N_SETS, floc=(100, 200)))  # a changed N set
+    with pytest.raises(RuntimeError, match="differs from the frozen.*n_sets"):
+        harness.check_frozen(tmp_path)
+
+
+def test_extends_is_growth_only():
+    assert harness.extends(["a"], ["a", "b"]) and not harness.extends(["a", "b"], ["a"])
+    assert harness.extends({"a": 1}, {"a": 1, "b": 2})
+    assert not harness.extends({"a": 1}, {"a": 2})  # changed value, not an addition
+    assert harness.extends(3.1, 3.1) and not harness.extends(3.1, 2.3)
 
 
 def test_split_runs_alternates():

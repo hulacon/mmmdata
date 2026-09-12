@@ -81,7 +81,7 @@ def test_t_to_z_is_signed_monotone_and_finite():
 
 
 def test_engine_table_and_noise_model_guards():
-    assert set(ENGINES) == {"nilearn-ols", "nilearn-ar1", "remlfit-arma11"}
+    assert {"nilearn-ols", "nilearn-ar1", "remlfit-arma11"} <= set(ENGINES)
     img, mask, dm, vecs = _run(1)
     with pytest.raises(ValueError, match="arma11"):
         NilearnEstimator().fit_run(img, dm, vecs, t_r=TR, mask=mask, cfg=GlmConfig(noise_model="arma11"))

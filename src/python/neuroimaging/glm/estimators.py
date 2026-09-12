@@ -25,6 +25,10 @@ from .config import GlmConfig
 
 NILEARN_NOISE_MODELS = ("ols", "ar1")
 REMLFIT_NOISE_MODELS = ("ols", "arma11")
+#: FILM noise models. ``--sa`` pools only the Tukey path, so ``tukey`` /
+#: ``tukey-smoothed`` is the pooling pair and ``ar1`` has no pooled twin
+#: (MEASURED 2026-09-12; see :meth:`FilmEstimator.flags`).
+FILM_NOISE_MODELS = ("ols", "ar1", "tukey", "tukey-smoothed")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -335,13 +339,209 @@ class RemlfitEstimator:
         return out
 
 
-ESTIMATORS: dict[str, type] = {"nilearn": NilearnEstimator, "remlfit": RemlfitEstimator}
+# ------------------------------------------------------------------ FSL FILM
+def write_fsl_design(path: Path, design: pd.DataFrame) -> None:
+    """One run's design as the ``.mat`` ``film_gls --pd`` reads.
+
+    ``PPheights`` is each column's peak-to-peak range (1.0 for a constant
+    column, whose range is 0); FILM uses it only to report a required effect
+    size, never in the fit.
+    """
+    X = design.to_numpy(dtype=float)
+    heights = np.ptp(X, axis=0)
+    heights[heights == 0] = 1.0
+    with open(path, "w") as f:
+        f.write(f"/NumWaves\t{X.shape[1]}\n/NumPoints\t{X.shape[0]}\n")
+        f.write("/PPheights\t" + "\t".join(f"{h:.10g}" for h in heights) + "\n\n/Matrix\n")
+        np.savetxt(f, X, fmt="%.10g", delimiter="\t")
+
+
+def write_fsl_contrasts(path: Path, contrasts: dict[str, np.ndarray], n_waves: int) -> list[str]:
+    """The ``.con`` for ``film_gls --con``; returns the contrast names in file order.
+
+    FILM numbers its outputs ``cope1..copeK`` by row, so the returned order is
+    what maps a brick back to a contrast name.
+    """
+    names = list(contrasts)
+    rows = []
+    for name in names:
+        vec = np.asarray(contrasts[name], dtype=float)
+        if vec.shape != (n_waves,):
+            raise ValueError(f"contrast {name!r} has {vec.shape} weights for a {n_waves}-column design")
+        rows.append(vec)
+    with open(path, "w") as f:
+        for i, name in enumerate(names, start=1):
+            f.write(f"/ContrastName{i}\t{name}\n")
+        f.write(f"/NumWaves\t{n_waves}\n/NumContrasts\t{len(names)}\n")
+        f.write("/PPheights\t" + "\t".join("1" for _ in names) + "\n")
+        f.write("/RequiredEffect\t" + "\t".join("1" for _ in names) + "\n\n/Matrix\n")
+        np.savetxt(f, np.vstack(rows), fmt="%.10g", delimiter=" ")
+    return names
+
+
+#: Data are handed to FILM in percent signal change plus this offset, so the
+#: mean-based ``--thr`` mask is exactly the brain mask (out-of-mask voxels are
+#: left at 0). A contrast never weights the intercept, so the offset changes
+#: no estimate (verified by the OLS-equivalence test).
+FILM_OFFSET = 100.0
+FILM_THRESHOLD = 10.0
+
+
+class FilmEstimator:
+    """FSL ``film_gls``: FILM prewhitening, per voxel or spatially pooled.
+
+    The Track A engine (glm-strategy pass-2 design, 2026-09-11). Four noise
+    models, which differ only in how the autocorrelation is estimated:
+
+    ``ols``
+        ``--noest`` — no autocorrelation estimated. The contract arm: it
+        reproduces analytic (and nilearn) OLS to numerical precision, which
+        is what makes the other three comparable to the pass-1 table.
+    ``ar1``
+        ``--ar`` — AR(1) per voxel, nothing pooled. Same noise model as
+        ``nilearn-ar1`` in a different implementation, so the pair measures
+        implementation rather than model. It has no pooled twin: see
+        :meth:`flags`.
+    ``tukey`` / ``tukey-smoothed``
+        FILM's default Tukey taper (M = sqrt(n_scans)), unpooled and pooled.
+        This is the pooling pair — same taper, ``--sa`` off and on — and
+        ``tukey-smoothed`` is FEAT's production setting.
+
+    Comparability, as for :class:`RemlfitEstimator`: the data are smoothed
+    with nilearn's ``smooth_img`` and scaled to percent signal change per
+    voxel (``signal_scaling=0``) before FILM sees them, so effect maps share
+    units with the nilearn engine.
+
+    **Divergence from FEAT, deliberate.** FEAT passes ``--epith``, a
+    brightness threshold that makes ``--sa`` a SUSAN (edge-preserving)
+    smooth. Per-voxel percent-signal-change data are spatially flat by
+    construction — every in-mask voxel has the same mean — so brightness
+    gating has nothing to act on and is not passed. ``--sa`` is therefore
+    unweighted local pooling of the autocorrelation estimates, which is the
+    pooling the track is about, without a tissue-boundary confound.
+
+    Needs ``film_gls`` on PATH — on Talapas, ``module load fsl/6.0.7.9``.
+    """
+
+    name = "film"
+    executable = "film_gls"
+
+    def __init__(self, susan_mask_size: int = 5, keep_workdir: bool = False):
+        self.susan_mask_size = susan_mask_size
+        self.keep_workdir = keep_workdir
+
+    def flags(self, noise_model: str) -> list[str]:
+        """The ``film_gls`` flags for one noise model (its whole definition).
+
+        ``ar1-smoothed`` is refused rather than silently accepted: FILM
+        applies ``--sa`` inside the Tukey/multitaper estimator only, so
+        ``--ar --sa`` is byte-identical to ``--ar`` (MEASURED 2026-09-12 on
+        synthetic AR(0.4) data — varcope max |difference| exactly 0, while
+        the same pair on the Tukey path cuts the variance-map SD from 0.0156
+        to 0.0085). A caller asking for a pooled AR(1) wants the Tukey pair.
+        """
+        if noise_model == "ar1-smoothed":
+            raise ValueError(
+                "film's --sa does not pool the --ar path (`--ar --sa` is identical to `--ar`); "
+                "the pooling pair within FILM is 'tukey' vs 'tukey-smoothed'"
+            )
+        if noise_model not in FILM_NOISE_MODELS:
+            raise ValueError(f"film takes noise_model in {FILM_NOISE_MODELS}, got {noise_model!r}")
+        flags = {"ols": ["--noest"], "ar1": ["--ar"], "tukey": [], "tukey-smoothed": []}[noise_model]
+        if noise_model.endswith("-smoothed"):
+            flags = flags + ["--sa", f"--ms={self.susan_mask_size}"]
+        return flags
+
+    def fit_run(
+        self,
+        bold: Any,
+        design: pd.DataFrame,
+        contrasts: dict[str, np.ndarray],
+        *,
+        t_r: float,
+        mask: Any = None,
+        cfg: GlmConfig,
+    ) -> dict[str, ContrastEstimate]:
+        import nibabel as nib
+        from nilearn.glm.first_level.first_level import mean_scaling
+        from nilearn.image import smooth_img
+
+        del t_r  # the design matrix already encodes it; the interface is engine-neutral
+        exe = shutil.which(self.executable)
+        if exe is None:
+            raise RuntimeError(
+                f"{self.executable} not on PATH; on Talapas run `module load fsl/6.0.7.9` "
+                "(or prepend $FSLDIR/bin) before using the film estimator"
+            )
+        flags = self.flags(cfg.noise_model)
+        if mask is None:
+            raise ValueError("film needs a brain mask image; fMRIPrep writes one per run")
+
+        img = bold if isinstance(bold, nib.Nifti1Image) else nib.load(str(bold))
+        if cfg.smoothing_fwhm:
+            img = smooth_img(img, cfg.smoothing_fwhm)
+        data = np.asarray(img.dataobj, dtype=np.float32)
+        mask_arr = np.asarray(mask.dataobj).astype(bool)
+        n_scans = data.shape[-1]
+        if len(design) != n_scans:
+            raise ValueError(f"design has {len(design)} rows but the BOLD has {n_scans} volumes")
+        flat = data[mask_arr].T  # (time, voxels)
+        flat, _ = mean_scaling(flat, axis=0)
+        scaled = np.zeros_like(data)
+        scaled[mask_arr] = flat.T + FILM_OFFSET
+
+        workdir = Path(tempfile.mkdtemp(prefix="film_", dir=os.environ.get("TMPDIR")))
+        try:
+            bold_path = workdir / "bold.nii.gz"
+            nib.Nifti1Image(scaled, img.affine).to_filename(str(bold_path))
+            write_fsl_design(workdir / "design.mat", design)
+            names = write_fsl_contrasts(workdir / "design.con", contrasts, design.shape[1])
+            results = workdir / "stats"
+            cmd = [exe, f"--in={bold_path}", f"--rn={results}", f"--pd={workdir / 'design.mat'}",
+                   f"--con={workdir / 'design.con'}", f"--thr={FILM_THRESHOLD}"] + flags
+            res = subprocess.run(cmd, capture_output=True, text=True, cwd=workdir)
+            dof_file = results / "dof"
+            if res.returncode != 0 or not dof_file.exists():
+                raise RuntimeError(
+                    f"film_gls failed (rc {res.returncode}) in {workdir}:\n"
+                    + (res.stderr or res.stdout)[-3000:]
+                )
+            dof = float(dof_file.read_text().strip())
+            out: dict[str, ContrastEstimate] = {}
+            for j, name in enumerate(names, start=1):
+                maps = {}
+                for stat, stem in (("effect", "cope"), ("variance", "varcope"), ("stat", "tstat"), ("z", "zstat")):
+                    path = results / f"{stem}{j}.nii.gz"
+                    if not path.exists():
+                        raise RuntimeError(f"film_gls wrote no {path.name} for contrast {name!r} in {workdir}")
+                    arr = np.asarray(nib.load(str(path)).dataobj, dtype=np.float32)
+                    arr[~mask_arr] = np.nan if stat == "variance" else 0.0
+                    maps[stat] = nib.Nifti1Image(arr, img.affine)
+                out[name] = ContrastEstimate(dof=dof, **maps)
+        finally:
+            if not self.keep_workdir:
+                shutil.rmtree(workdir, ignore_errors=True)
+        return out
+
+
+ESTIMATORS: dict[str, type] = {
+    "nilearn": NilearnEstimator,
+    "remlfit": RemlfitEstimator,
+    "film": FilmEstimator,
+}
 
 #: The bake-off's engine factor: name -> (estimator, noise_model).
 ENGINES: dict[str, tuple[str, str]] = {
     "nilearn-ols": ("nilearn", "ols"),
     "nilearn-ar1": ("nilearn", "ar1"),
     "remlfit-arma11": ("remlfit", "arma11"),
+    # Track A (pass-2 design, 2026-09-11, corrected 2026-09-12): the pooling
+    # contrast is `film-tukey` vs `film-smoothed` — same taper, --sa off and
+    # on — because FILM pools only the Tukey path. `film-pervoxel` (--ar) is
+    # the implementation bridge to `nilearn-ar1`: same noise model, other code.
+    "film-pervoxel": ("film", "ar1"),
+    "film-tukey": ("film", "tukey"),
+    "film-smoothed": ("film", "tukey-smoothed"),
 }
 
 

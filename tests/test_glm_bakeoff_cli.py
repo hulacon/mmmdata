@@ -14,6 +14,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import glm_bakeoff  # noqa: E402
+from neuroimaging.glm import harness  # noqa: E402
 from test_glm_cli import SPACE, _seed_run  # noqa: E402
 
 
@@ -30,8 +31,27 @@ def test_plan_freezes_harness_and_writes_units(tree, capsys):
     base = tree / "derivatives" / "glm_bakeoff"
     assert (base / "harness.json").exists()
     units = (base / "units.txt").read_text().splitlines()
-    assert len(units) == 27 and units[0].startswith("sub-aa model-motor_hrf-spm_conf-motion6_engine-")
-    assert "27 array units" in capsys.readouterr().out
+    n = len(harness.HRF_LEVELS) * len(harness.CONFOUND_LEVELS) * len(harness.ENGINE_LEVELS)
+    assert len(units) == n and units[0].startswith("sub-aa model-motor_hrf-spm_conf-motion6_engine-")
+    assert f"{n} array units" in capsys.readouterr().out
+
+
+def test_plan_can_slice_the_factorial_to_one_track(tree, capsys):
+    """Track A plans a slice: one HRF x confound cell, its own units file."""
+    rc = glm_bakeoff.main([
+        "--bids-root", str(tree), "--units", "trackA.txt", "plan", "--subjects", "sub-aa",
+        "--models", "motor", "--hrfs", "spm", "--confounds", "acompcor",
+        "--engines", "film-pervoxel", "film-tukey", "film-smoothed", "--no-standalone",
+    ])
+    assert rc == 0
+    base = tree / "derivatives" / "glm_bakeoff"
+    units = (base / "trackA.txt").read_text().splitlines()
+    assert len(units) == 3
+    assert {u.split("engine-")[1] for u in units} == {"film-pervoxel", "film-tukey", "film-smoothed"}
+    assert all("hrf-spm_conf-acompcor" in u for u in units)
+    with pytest.raises(SystemExit, match="filters select no cell"):
+        glm_bakeoff.main(["--bids-root", str(tree), "plan", "--subjects", "sub-aa",
+                          "--models", "motor", "--engines", "nope", "--no-standalone"])
 
 
 def test_fit_writes_half_maps_and_scores_then_skips_without_force(tree, capsys):

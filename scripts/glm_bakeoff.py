@@ -13,8 +13,12 @@ t maps and the pre-registered scores (neuroimaging.glm.harness) into
 the scores and the ranking is read off the table.
 
 Verbs:
-    plan      freeze the harness into the output tree and write units.txt
-              (one "sub-XX cell-id" per line) for the SLURM array
+    plan      freeze the harness into the output tree and write the units
+              file (one "sub-XX cell-id" per line) for the SLURM array;
+              --hrfs/--confounds/--engines plan a SLICE of the factorial (a
+              track adding engine levels to one reference cell), and --units
+              names its own file so an earlier array's unit numbers keep
+              pointing at the cells they fitted
     prep      per subject, once, on a large-memory node: extract HRFindex
               from the encoding GLMsingle fit as a NIfTI (the per-voxel HRF
               arm reads it) and score the glmsingle-betas arm from the same
@@ -37,6 +41,15 @@ Usage:
     python glm_bakeoff.py collect
     python glm_bakeoff.py --out-base <derivatives>/glm_bakeoff_pass2 plan
     python glm_bakeoff.py --out-base <derivatives>/glm_bakeoff_pass2 fit --unit 7 --keep-per-run
+    python glm_bakeoff.py --out-base <derivatives>/glm_bakeoff_pass2 --units trackA.txt plan \
+        --hrfs spm --confounds acompcor --engines film-pervoxel film-tukey film-smoothed \
+        --models floc tbrepetition --no-standalone
+
+Adding an engine (or HRF, confound, model) level does NOT invalidate a tree
+already scored: `harness.check_frozen` accepts a frozen spec whose level lists
+are a subset of the live ones, because the scoring rules — halves, N sets,
+threshold, mask, metrics — are what score a cell and none of those change.
+Cells fitted under an extension record it (`harness_extended_by`).
 """
 
 from __future__ import annotations
@@ -200,13 +213,31 @@ def cmd_plan(args: argparse.Namespace) -> int:
     spec_path = harness.freeze(out_base)
     models = args.models or list(harness.MODELS)
     cells = harness.factorial_cells(models)
+    # A slice of the factorial, for a track that adds levels to one reference
+    # cell rather than refitting the whole thing (Track A, 2026-09-12). The
+    # filters are on the CELL, not the harness: nothing about the frozen
+    # scoring rules changes, so a sliced plan is scored against the same table.
+    for field, wanted in (("hrf", args.hrfs), ("confounds", args.confounds), ("engine", args.engines)):
+        if wanted:
+            cells = [c for c in cells if getattr(c, field) in wanted or c.standalone]
+    if args.no_standalone:
+        cells = [c for c in cells if not c.standalone]
+    if not cells:
+        raise SystemExit("ERROR: the filters select no cell; check --hrfs/--confounds/--engines")
     subjects = [_bare(s, "sub") for s in args.subjects]
     prep_cells = {c.id for c in cells if c.hrf == "glmsingle-betas"}
     lines = [f"sub-{s} {c.id}" for s in subjects for c in cells if c.id not in prep_cells]
-    units = out_base / "units.txt"
+    units = out_base / args.units
+    if units.exists() and units.read_text().splitlines() != lines:
+        print(f"NOTE: overwriting {units} ({len(units.read_text().splitlines())} units -> {len(lines)}); "
+              "pass --units <name> to keep an earlier array's unit numbering addressable")
     units.write_text("\n".join(lines) + "\n")
     n_fact = sum(1 for c in cells if not c.standalone)
-    print(f"harness frozen at {spec_path} (sha {json.loads(spec_path.read_text())['sha256']})")
+    frozen = harness.check_frozen(out_base)
+    print(f"harness frozen at {spec_path} (sha {frozen['sha256']})")
+    if frozen.get("extended_by"):
+        print(f"  extended since freezing on {frozen['extended_by']} (live sha {frozen['live_sha256']}); "
+              "scoring rules unchanged, so cells fitted now score against the same table")
     print(f"{len(cells)} cells per subject ({n_fact} factorial + {len(cells) - n_fact} standalone); "
           f"{len(prep_cells)} run under `prep`")
     print(f"{len(lines)} array units -> {units}")
@@ -281,11 +312,14 @@ def cmd_fit(args: argparse.Namespace) -> int:
     bids_root, derivatives, out_base = _paths(args)
     frozen = harness.check_frozen(out_base)
     if args.unit is not None:
-        lines = (out_base / "units.txt").read_text().splitlines()
+        units = out_base / args.units
+        if not units.exists():
+            raise SystemExit(f"ERROR: {units} missing; run `glm_bakeoff.py plan` (with --units {args.units}) first")
+        lines = units.read_text().splitlines()
         try:
             subject, cell_id = lines[args.unit - 1].split()
         except (IndexError, ValueError):
-            raise SystemExit(f"ERROR: unit {args.unit} not in {out_base / 'units.txt'} ({len(lines)} lines)")
+            raise SystemExit(f"ERROR: unit {args.unit} not in {units} ({len(lines)} lines)")
     else:
         if not (args.subject and args.cell):
             raise SystemExit("ERROR: fit needs --unit N or both --subject and --cell")
@@ -389,6 +423,7 @@ def cmd_fit(args: argparse.Namespace) -> int:
     record = {
         "cell": cell.id, "subject": subject, "model": model.name, "task": model.task, "space": args.space,
         "contrasts": scores, "harness_sha256": frozen["sha256"], "config": cfg_dict,
+        "harness_extended_by": frozen.get("extended_by"), "harness_live_sha256": frozen.get("live_sha256"),
         "runs": [r.entity_prefix for r in runs],
         "halves": [[runs[i].entity_prefix for i in h1], [runs[i].entity_prefix for i in h2]],
         "fit_seconds": [round(t, 1) for t in timings], "elapsed_s": round(time.time() - t0, 1),
@@ -445,9 +480,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--derivatives-dir", type=Path, default=None)
     p.add_argument("--out-base", type=Path, default=None,
                    help=f"output tree (default <derivatives>/{OUTPUT_TREE}); a different tree gets its own frozen harness")
+    p.add_argument("--units", default="units.txt",
+                   help="units file within the output tree; a track that plans a slice of the factorial "
+                        "should name its own so an earlier array's unit numbers stay addressable")
     sub = p.add_subparsers(dest="verb", required=True)
     s = sub.add_parser("plan"); s.add_argument("--subjects", nargs="+", default=["sub-03", "sub-04", "sub-05"])
     s.add_argument("--models", nargs="*", default=None)
+    s.add_argument("--hrfs", nargs="*", default=None, help="restrict to these HRF levels")
+    s.add_argument("--confounds", nargs="*", default=None, help="restrict to these confound presets")
+    s.add_argument("--engines", nargs="*", default=None, help="restrict to these engine levels")
+    s.add_argument("--no-standalone", action="store_true", help="drop the GLMsingle standalone arms")
     s = sub.add_parser("prep"); s.add_argument("--subject", required=True)
     s = sub.add_parser("fit"); s.add_argument("--subject"); s.add_argument("--cell"); s.add_argument("--unit", type=int)
     s.add_argument("--force", action="store_true")

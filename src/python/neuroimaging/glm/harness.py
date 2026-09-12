@@ -54,7 +54,12 @@ HRF_LEVELS: dict[str, str] = {
     "voxelwise": "voxelwise",
 }
 CONFOUND_LEVELS: tuple[str, ...] = ("motion6", "motion24", "acompcor")
-ENGINE_LEVELS: tuple[str, ...] = ("nilearn-ols", "nilearn-ar1", "remlfit-arma11")
+ENGINE_LEVELS: tuple[str, ...] = (
+    "nilearn-ols", "nilearn-ar1", "remlfit-arma11",
+    # Track A, added 2026-09-12 under the compatible-extension rule
+    # (EXTENSIBLE_KEYS): the pass-1 and pass-2 trees stay valid.
+    "film-pervoxel", "film-tukey", "film-smoothed",
+)
 STANDALONE_ARMS: dict[str, tuple[str, ...]] = {
     # arm -> models it applies to (GLMsingle needs >1 run per half; motor has 1)
     "glmsingle": ("floc",),
@@ -129,6 +134,32 @@ def harness_spec() -> dict[str, Any]:
     }
 
 
+#: Spec keys that may GROW without invalidating a tree already scored under
+#: them: a new engine, HRF or confound level, a new model or standalone arm.
+#: Adding one leaves every scored cell's rules untouched (the halves, N sets,
+#: threshold, mask and metrics are what score a cell, and those are not here),
+#: so refusing the tree would only force a fork. Everything else — the scoring
+#: rules — must still match exactly. Changing or REMOVING an existing level is
+#: not an extension and is still refused (glm-strategy log, 2026-09-12).
+EXTENSIBLE_KEYS: tuple[str, ...] = (
+    "hrf_levels", "confound_levels", "engine_levels", "standalone_arms", "models", "n_sets",
+)
+
+
+def extends(frozen: Any, live: Any) -> bool:
+    """True when ``live`` is ``frozen`` plus new entries — nothing changed or dropped.
+
+    Dicts must keep every frozen key at the same value; lists must keep every
+    frozen element. ``n_sets`` is a dict of model -> N tuple, so a changed N
+    set for an already-scored model fails here, which is the point.
+    """
+    if isinstance(frozen, dict) and isinstance(live, dict):
+        return all(k in live and live[k] == v for k, v in frozen.items())
+    if isinstance(frozen, list) and isinstance(live, list):
+        return all(v in live for v in frozen)
+    return frozen == live
+
+
 def spec_digest(spec: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()[:16]
 
@@ -147,7 +178,13 @@ def freeze(out_base: Path) -> Path:
 
 
 def check_frozen(out_base: Path) -> dict[str, Any]:
-    """The frozen spec, or an error naming the drift between code and tree."""
+    """The frozen spec, or an error naming the drift between code and tree.
+
+    A tree frozen under a spec whose level lists are a subset of the live
+    ones stays valid (:data:`EXTENSIBLE_KEYS`); the returned dict then
+    carries ``extended_by`` and ``live_sha256`` so a cell fitted under the
+    extension records which code fitted it. Its ``sha256`` stays the tree's.
+    """
     path = Path(out_base) / "harness.json"
     if not path.exists():
         raise FileNotFoundError(f"{path} missing: run `glm_bakeoff.py plan` first to freeze the harness")
@@ -158,10 +195,17 @@ def check_frozen(out_base: Path) -> dict[str, Any]:
     live = harness_spec()
     if frozen.get("sha256") != spec_digest(live):
         drift = sorted(k for k in set(content) | set(live) if content.get(k) != live.get(k))
-        raise RuntimeError(
-            f"harness in code differs from the frozen {path} on {drift}. Cells already scored "
-            "used the frozen rules; either revert the code or start a new output tree."
-        )
+        incompatible = [
+            k for k in drift if k not in EXTENSIBLE_KEYS or not extends(content.get(k), live.get(k))
+        ]
+        if incompatible:
+            raise RuntimeError(
+                f"harness in code differs from the frozen {path} on {incompatible}. Cells already "
+                "scored used the frozen rules; either revert the code or start a new output tree. "
+                f"(Compatible additions on {sorted(set(drift) - set(incompatible))} would have been "
+                "allowed: a new level leaves the scoring rules alone.)"
+            )
+        frozen = dict(frozen, extended_by=drift, live_sha256=spec_digest(live))
     return frozen
 
 
