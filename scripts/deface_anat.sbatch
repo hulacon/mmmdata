@@ -80,7 +80,10 @@ if [ "${DEFACE_RAW_ONLY:-0}" = "1" ]; then
     echo "RAW ONLY: converter-guard mode (no fMRIPrep expected)"
 fi
 
-python ${REPO_ROOT}/scripts/deface_anat.py run --subject ${SUBJECT} ${FLAGS}
+# `module load fsl` puts $FSLDIR/bin (which ships its own python 3.11)
+# ahead of the venv on PATH, so the interpreter is named absolutely here
+# rather than taken from PATH (see glm_bakeoff.sbatch, 2026-09-12).
+"${REPO_ROOT}/.venv/bin/python" ${REPO_ROOT}/scripts/deface_anat.py run --subject ${SUBJECT} ${FLAGS}
 EXIT_STATUS=$?
 
 echo ""

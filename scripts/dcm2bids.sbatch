@@ -90,9 +90,12 @@ if [ "${EXIT_STATUS}" -eq 0 ]; then
         echo "Defacing guard: ${ANAT_COUNT} anat NIfTIs under ${SUBJECT}; running deface_anat.py run ${DEFACE_FLAGS}"
         module load fsl/6.0.7.9 2>/dev/null || true
         export FSLOUTPUTTYPE=NIFTI_GZ
-        python scripts/deface_anat.py run --subject "${SUB_LABEL}" ${DEFACE_FLAGS}
+# `module load fsl` puts $FSLDIR/bin (which ships its own python 3.11)
+# ahead of the venv on PATH, so the interpreter is named absolutely here
+# rather than taken from PATH (see glm_bakeoff.sbatch, 2026-09-12).
+        "${REPO_ROOT}/.venv/bin/python" scripts/deface_anat.py run --subject "${SUB_LABEL}" ${DEFACE_FLAGS}
         EXIT_STATUS=$?
-        python scripts/deface_anat.py audit || EXIT_STATUS=1
+        "${REPO_ROOT}/.venv/bin/python" scripts/deface_anat.py audit || EXIT_STATUS=1
     fi
 fi
 
