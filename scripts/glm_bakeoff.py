@@ -86,7 +86,7 @@ from neuroimaging.glm.glmsingle_arm import (  # noqa: E402
 )
 from neuroimaging.glm.hrf import hrfindex_to_image, load_hrfindex  # noqa: E402
 from neuroimaging.glm.models import load_model  # noqa: E402
-from neuroimaging.glm.outputs import save_statmap, write_run_metadata  # noqa: E402
+from neuroimaging.glm.outputs import noise_map_name, save_statmap, write_run_metadata  # noqa: E402
 from neuroimaging.glm.voxelwise_hrf import VOXELWISE, fit_run_voxelwise  # noqa: E402
 from neuroimaging.io import FmriprepRun, load_confounds  # noqa: E402
 
@@ -158,11 +158,15 @@ def run_map_name(entity_prefix: str, space: str, contrast: str, stat: str) -> st
 
 
 def _write_per_run(out_dir: Path, space: str, runs: list[FmriprepRun], per_run: list[dict[str, ContrastEstimate]],
-                   halves: tuple[list[int], list[int]], timings: list[float]) -> Path:
+                   halves: tuple[list[int], list[int]], timings: list[float],
+                   noise_maps: Optional[list[Any]] = None) -> Path:
     """Write every run's effect / variance / t map and a per-run.json index.
 
     These are the fixed-effects inputs; keeping them lets the halves be
-    recombined by session (or any other rule) without a refit.
+    recombined by session (or any other rule) without a refit. An engine that
+    exposes a per-voxel noise parameter (nilearn ``ar1``) also gets that map
+    written beside them, so a ranking can be checked against the noise
+    structure that produced it without a refit.
     """
     d = out_dir / "per-run"
     d.mkdir(parents=True, exist_ok=True)
@@ -180,6 +184,11 @@ def _write_per_run(out_dir: Path, space: str, runs: list[FmriprepRun], per_run: 
                 save_statmap(img, d / fn)
                 files[stat] = fn
             entry["contrasts"][name] = {"dof": ce.dof, "files": files}
+        nm = noise_maps[i] if noise_maps is not None else None
+        if nm is not None:
+            fn = noise_map_name(r.entity_prefix, space, "ar1")
+            save_statmap(nm, d / fn)
+            entry["noise_map"] = {"param": "ar1", "file": fn}
         index.append(entry)
     (d / "per-run.json").write_text(json.dumps({
         "note": "per-run first-level estimates; the half maps are precision-weighted fixed effects of these",
@@ -377,6 +386,7 @@ def cmd_fit(args: argparse.Namespace) -> int:
                 raise SystemExit(f"ERROR: {hp} missing; run `glm_bakeoff.py prep --subject sub-{subject}` first")
             hrfindex = load_hrfindex(hp, reference=mask_img)
         per_run: list[dict[str, ContrastEstimate]] = []
+        noise_maps: list[Any] = []
         skipped: dict[str, list[str]] = {}
         for i, r in enumerate(runs):
             t_r = repetition_time(r, bids_root)
@@ -397,10 +407,12 @@ def cmd_fit(args: argparse.Namespace) -> int:
                 est = estimator.fit_run(bold, dm, vectors, t_r=t_r, mask=mask_img, cfg=cfg) if vectors else {}
             timings.append(time.time() - tt)
             per_run.append(est)
+            noise_maps.append(getattr(estimator, "last_noise_map", None))
             note = f" (no {', '.join(n for n, v in skipped.items() if r.entity_prefix in v)})" if any(
                 r.entity_prefix in v for v in skipped.values()) else ""
             print(f"  {r.entity_prefix}: {timings[-1]:.0f} s{note}", flush=True)
-        per_run_dir = _write_per_run(out_dir, args.space, runs, per_run, (h1, h2), timings) if keep_per_run else None
+        per_run_dir = _write_per_run(out_dir, args.space, runs, per_run, (h1, h2), timings,
+                                     noise_maps=noise_maps) if keep_per_run else None
         if per_run_dir is not None:
             print(f"  per-run maps -> {per_run_dir}")
         halves = []

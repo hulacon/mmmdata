@@ -67,6 +67,17 @@ def statmap_name(
     return "_".join(parts) + ext
 
 
+def noise_map_name(entity_prefix: str, space: str, param: str) -> str:
+    """``<run prefix>_space-S_param-P_noisemap.nii.gz``.
+
+    Not a ``statmap``: this is a fitted noise-model parameter (the per-voxel
+    AR(1) coefficient), not an estimate of an effect, and nothing scores it.
+    It is written only under ``--keep-per-run`` and only by engines that
+    expose one.
+    """
+    return f"{entity_prefix}_space-{space}_param-{param}_noisemap.nii.gz"
+
+
 def _bare(label: str, prefix: str) -> str:
     return label[len(prefix) + 1 :] if label.startswith(prefix + "-") else label
 

@@ -97,3 +97,63 @@ def test_ols_control_arm_is_selectable():
     cfg_ols = GlmConfig(smoothing_fwhm=None, noise_model="ols")
     est = NilearnEstimator().fit_run(img, dm, vecs, t_r=TR, mask=mask, cfg=cfg_ols)
     assert est["handVsRest"].effect.get_fdata()[ACTIVE].mean() > 1.0
+
+
+def _synthetic_run_ar(seed, rho=0.7):
+    """Same design, but the ACTIVE corner carries AR(1) noise and the rest white.
+
+    Nothing is planted in the *effect*: the only thing that differs between
+    the corner and the rest is the temporal autocorrelation of the noise.
+    """
+    rng = np.random.default_rng(seed)
+    cfg = GlmConfig(smoothing_fwhm=None, noise_model="ar1")
+    model = load_model("motor")
+    conf = pd.DataFrame(rng.normal(scale=0.1, size=(N_SCANS, 6)), columns=MOTION_6)
+    dm = build_design_matrix(_events(), conf, TR, N_SCANS, model, cfg)
+    white = rng.normal(loc=0.0, scale=1.0, size=SHAPE + (N_SCANS,))
+    ar = np.empty_like(white)
+    ar[..., 0] = white[..., 0]
+    for t in range(1, N_SCANS):
+        ar[..., t] = rho * ar[..., t - 1] + white[..., t]
+    data = np.full(SHAPE + (N_SCANS,), 100.0)
+    data += white
+    data[ACTIVE] = 100.0 + ar[ACTIVE]
+    img = nib.Nifti1Image(data.astype(np.float32), np.eye(4))
+    mask = nib.Nifti1Image(np.ones(SHAPE, dtype=np.uint8), np.eye(4))
+    return img, mask, dm, contrast_vectors(model, list(dm.columns)), cfg
+
+
+def test_ar1_fit_exposes_a_per_voxel_noise_map():
+    img, mask, dm, vecs, cfg = _synthetic_run_ar(11)
+    est = NilearnEstimator()
+    est.fit_run(img, dm, vecs, t_r=TR, mask=mask, cfg=cfg)
+    nm = est.last_noise_map
+    assert nm is not None, "an ar1 fit must expose the AR(1) coefficient it whitened with"
+    arr = nm.get_fdata()
+    assert arr.shape == SHAPE
+    assert np.all(np.abs(arr) < 1.0), "an AR(1) coefficient outside (-1, 1) is not a coefficient"
+
+
+def test_the_noise_map_finds_the_autocorrelated_corner():
+    """The map has to track the noise structure, not merely exist."""
+    img, mask, dm, vecs, cfg = _synthetic_run_ar(12, rho=0.7)
+    est = NilearnEstimator()
+    est.fit_run(img, dm, vecs, t_r=TR, mask=mask, cfg=cfg)
+    arr = est.last_noise_map.get_fdata()
+    corner = arr[ACTIVE]
+    rest = np.delete(arr.ravel(), np.ravel_multi_index(
+        np.indices(SHAPE)[:, ACTIVE[0], ACTIVE[1], ACTIVE[2]].reshape(3, -1), SHAPE))
+    assert corner.mean() > rest.mean() + 0.3
+    assert corner.mean() > 0.4
+
+
+def test_ols_fit_leaves_no_stale_noise_map():
+    """An ols fit has no AR coefficient, and must not inherit the previous fit's."""
+    est = NilearnEstimator()
+    img, mask, dm, vecs, cfg = _synthetic_run_ar(13)
+    est.fit_run(img, dm, vecs, t_r=TR, mask=mask, cfg=cfg)
+    assert est.last_noise_map is not None
+    img2, mask2, dm2, vecs2, _ = _synthetic_run(13)
+    est.fit_run(img2, dm2, vecs2, t_r=TR, mask=mask2,
+                cfg=GlmConfig(smoothing_fwhm=None, noise_model="ols"))
+    assert est.last_noise_map is None

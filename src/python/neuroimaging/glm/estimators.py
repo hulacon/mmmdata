@@ -66,9 +66,17 @@ class NilearnEstimator:
     ``noise_model="ar1"`` is prewhitening; ``"ols"`` is the iid control. The
     design matrix is built by :mod:`.design` and passed in whole, so what
     nilearn fits is exactly what was declared.
+
+    After an ``ar1`` fit, :attr:`last_noise_map` holds that run's per-voxel
+    AR(1) coefficient as an image (``None`` after an ``ols`` fit). It is a
+    diagnostic, not an output of the estimator interface: the runner writes
+    it only under ``--keep-per-run``.
     """
 
     name = "nilearn"
+
+    def __init__(self) -> None:
+        self.last_noise_map: Any = None
 
     def fit_run(
         self,
@@ -82,6 +90,7 @@ class NilearnEstimator:
     ) -> dict[str, ContrastEstimate]:
         from nilearn.glm.first_level import FirstLevelModel
 
+        self.last_noise_map = None
         if cfg.noise_model not in NILEARN_NOISE_MODELS:
             raise ValueError(
                 f"nilearn estimator takes noise_model in {NILEARN_NOISE_MODELS}, got "
@@ -102,6 +111,7 @@ class NilearnEstimator:
             signal_scaling=0,
         )
         flm.fit(bold, design_matrices=design)
+        self.last_noise_map = _ar1_map(flm) if cfg.noise_model == "ar1" else None
         out: dict[str, ContrastEstimate] = {}
         for name, vec in contrasts.items():
             maps = flm.compute_contrast(vec, stat_type="t", output_type="all")
@@ -113,6 +123,28 @@ class NilearnEstimator:
                 z=maps.get("z_score"),
             )
         return out
+
+
+def _ar1_map(flm: Any) -> Any:
+    """One run's per-voxel AR(1) coefficient, as an image in the fit's mask.
+
+    nilearn bins the Yule-Walker AR(1) estimate and carries it as the voxel's
+    ``labels_`` entry so voxels sharing a coefficient share a whitening matrix
+    (``nilearn/glm/first_level/first_level.py``, ``run_glm``); the label *is*
+    the coefficient, binned to 0.01. Recovering it costs nothing, and it is
+    the only per-voxel noise parameter nilearn exposes.
+
+    Returns ``None`` rather than raising if nilearn's internals move: this is
+    a diagnostic and must never fail a fit.
+    """
+    import numpy as np
+
+    try:
+        labels = flm.labels_[0]
+        ar = np.asarray([float(v) for v in np.asarray(labels).ravel()], dtype=np.float32)
+        return flm.masker_.inverse_transform(ar)
+    except Exception:
+        return None
 
 
 def _dof(flm: Any) -> Optional[float]:
