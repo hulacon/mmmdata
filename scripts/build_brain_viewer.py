@@ -6,7 +6,7 @@ One command turns an underlay + overlay spec into a single .html file that
 opens over file:// with no network (NiiVue vendored, data base64-inlined) and
 exports a .nvd for FreeBrowse from an in-page button. Library:
 src/python/neuroimaging/viewer.py (masking + sentinel conventions documented
-there). Bundles are findings — they land beside the data (qc/ dirs), never in
+there). Bundles are findings — they land beside the data (viz/ dirs), never in
 a repo; the claude.ai artifact route caps at 16 MB (surfaces ship per hemi).
 
 Generic subcommands take explicit files; overlay/layer specs are
@@ -267,7 +267,7 @@ def _prf_surface(args, root, out_dir, hemi):
 def cmd_prf(args):
     root = deriv_root(args.deriv_root)
     out_dir = (Path(args.out_dir) if args.out_dir
-               else _prf_unit(root, args.subject, args.session)[0] / "qc")
+               else _prf_unit(root, args.subject, args.session)[0] / "viz")
     if args.mode in ("volume", "both"):
         _prf_volume(args, root, out_dir)
     if args.mode in ("surface", "both"):
@@ -314,7 +314,7 @@ def main():
                    help="FreeSurfer mesh flavor (inflated, white, pial)")
     p.add_argument("--r2-floor", type=float, default=R2_FLOOR_DEFAULT)
     p.add_argument("--deriv-root", help="override config derivatives root")
-    p.add_argument("--out-dir", help="override <prf unit dir>/qc/")
+    p.add_argument("--out-dir", help="override <prf unit dir>/viz/")
     p.set_defaults(func=cmd_prf)
 
     args = ap.parse_args()

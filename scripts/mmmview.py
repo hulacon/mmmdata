@@ -36,7 +36,7 @@ recreated in the viewer per family and never written to disk (decided
 (the template has no two-tailed colormap); the pRF profile extends the
 table in build_brain_viewer.py.
 
-Bundles are findings: they land in <sub-##>/qc/ beside the data, never in a
+Bundles are findings: they land in <sub-##>/viz/ beside the data, never in a
 repo. A second call on unchanged inputs reuses the bundle (a sha256 key over
 the inputs and profile is written into the provenance note).
 
@@ -502,15 +502,16 @@ def find_mesh(entities, roots, surf):
     return mesh, (curv if curv.exists() else None)
 
 
-def qc_dir_for(path):
-    """<sub-##>/qc when the path sits under a subject directory, else
-    <parent>/qc (a directory input uses itself as the parent)."""
+def viz_dir_for(path):
+    """<sub-##>/viz when the path sits under a subject directory, else
+    <parent>/viz (a directory input uses itself as the parent). viz, not qc:
+    a bundle is a view of the data, not a review of its quality."""
     path = Path(path)
     start = path if path.is_dir() else path.parent
     for anc in (start, *start.parents):
         if anc.name.startswith("sub-"):
-            return anc / "qc"
-    return start / "qc"
+            return anc / "viz"
+    return start / "viz"
 
 
 def bundle_name(entities, suffix):
@@ -548,7 +549,7 @@ def resolve(target, roots, opts=None):
     if target.kind == "features":
         return _resolve_features(target, roots, opts)
 
-    out_dir = Path(opts.out_dir) if opts.out_dir else qc_dir_for(target.source)
+    out_dir = Path(opts.out_dir) if opts.out_dir else viz_dir_for(target.source)
     out = out_dir / bundle_name(target.entities, target.suffix)
     display = _sorted_display([
         display_for(m, parse_entities(m.name)[0], target.suffix, opts.r2_floor)
@@ -611,7 +612,7 @@ def _provenance(sources, display, key, opts):
 def _resolve_features(target, roots, opts):
     csv = target.maps[0]
     meta = json.loads(target.sidecar.read_text())
-    out_dir = Path(opts.out_dir) if opts.out_dir else qc_dir_for(csv)
+    out_dir = Path(opts.out_dir) if opts.out_dir else viz_dir_for(csv)
     out = out_dir / (split_name(csv.name)[0] + "_desc-viewer.html")
     env = roots.stimfeat_env
     bindir = Path(env) / "bin" if env else None
@@ -848,7 +849,7 @@ def main(argv=None):
                     "or a Contract B feature file")
     ap.add_argument("--no-open", action="store_true",
                     help="build only; print the output path")
-    ap.add_argument("--out-dir", help="override <sub-##>/qc/")
+    ap.add_argument("--out-dir", help="override <sub-##>/viz/")
     ap.add_argument("--underlay", help="explicit NIfTI underlay (volume maps)")
     ap.add_argument("--mesh", help="explicit FreeSurfer mesh (surface maps)")
     ap.add_argument("--surf", default="inflated",

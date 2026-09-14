@@ -127,7 +127,7 @@ class TestClassify:
                     touch(d / f"sub-07_task-prf_space-fsnative_hemi-{hemi}_"
                               f"desc-{param}_{pol}.shape.gii")
         touch(d / "sub-07_task-prf_space-T1w_prf.json")          # ignored
-        touch(d / "qc" / "sub-07_task-prf_space-T1w_desc-viewer_prf.html")
+        touch(d / "viz" / "sub-07_task-prf_space-T1w_desc-viewer_prf.html")
         targets = classify(d)
         keys = sorted((t.kind, t.entities.get("space"), t.entities.get("hemi"),
                        t.suffix) for t in targets)
@@ -290,12 +290,12 @@ class TestResolveMesh:
 
 
 class TestOutputPath:
-    def test_lands_in_subject_qc_dir(self, roots, tmp_path):
+    def test_lands_in_subject_viz_dir(self, roots, tmp_path):
         p = touch(tmp_path / "derivatives" / "glm_localizer" / "sub-07" /
                   "ses-04" / "func" / "sub-07_ses-04_task-floc_space-T1w_"
                   "contrast-faceVsObject_stat-z_statmap.nii.gz")
         plan = resolve(classify(p)[0], roots)
-        assert plan.out.parent == tmp_path / "derivatives" / "glm_localizer" / "sub-07" / "qc"
+        assert plan.out.parent == tmp_path / "derivatives" / "glm_localizer" / "sub-07" / "viz"
         assert plan.out.name == ("sub-07_ses-04_task-floc_space-T1w_"
                                  "contrast-faceVsObject_stat-z_desc-viewer_statmap.html")
 
@@ -305,7 +305,7 @@ class TestOutputPath:
             touch(d / f"sub-07_task-prf_space-T1w_desc-{param}_prf.nii.gz")
         (t,) = classify(d)
         plan = resolve(t, roots)
-        assert plan.out == d / "qc" / "sub-07_task-prf_space-T1w_desc-viewer_prf.html"
+        assert plan.out == d / "viz" / "sub-07_task-prf_space-T1w_desc-viewer_prf.html"
 
     def test_out_dir_override(self, roots, tmp_path):
         p = touch(tmp_path / "x" / "sub-07_space-T1w_stat-z_statmap.nii.gz")
@@ -385,7 +385,7 @@ class TestDispatch:
         assert plan.command[0] == str(roots.stimfeat_env / "bin" / "viz2psy-viz")
         assert plan.command[1:3] == ["dashboard", str(csv)]
         assert plan.command[plan.command.index("--image-root") + 1] == str(img.parent)
-        assert plan.out == csv.parent / "qc" / "aesthetics_desc-viewer.html"
+        assert plan.out == csv.parent / "viz" / "aesthetics_desc-viewer.html"
         assert not plan.messages
 
     def test_viz2psy_falls_back_to_registry_then_no_images(self, roots, tmp_path):

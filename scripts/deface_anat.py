@@ -960,10 +960,13 @@ def report_files(roots: Roots, subject: str) -> list[Path]:
     figs = roots.fmriprep / sub / "figures"
     if figs.is_dir():
         out += sorted(p for p in figs.iterdir() if "task-" not in p.name and p.name.endswith("_dseg.svg"))
-    # volume viewer bundles embed a T1w or MNI underlay; surface bundles do not
-    for qc in sorted(roots.deriv.glob(f"*/{sub}/qc/*_desc-viewer_*.html")):
-        if "space-fsnative" not in qc.name:
-            out.append(qc)
+    # volume viewer bundles embed a T1w or MNI underlay; surface bundles do
+    # not. Bundles land in viz/ since 2026-09-14; qc/ covers ones built before
+    for pat in (f"*/{sub}/viz/*_desc-viewer_*.html",
+                f"*/{sub}/qc/*_desc-viewer_*.html"):
+        for bundle in sorted(roots.deriv.glob(pat)):
+            if "space-fsnative" not in bundle.name:
+                out.append(bundle)
     return out
 
 
