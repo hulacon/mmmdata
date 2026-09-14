@@ -32,6 +32,7 @@
   button:hover { border-color:var(--accent); }
   #wheelbox { display:none; margin-top:6px; text-align:center; }
   #wheelbox .cap { font-size:11px; color:var(--dim); margin-top:2px; }
+  #threshcap { font-size:11px; color:var(--dim); margin-top:2px; }
   footer { padding:5px 14px; border-top:1px solid var(--edge); font-size:12px;
            color:var(--dim); display:flex; gap:16px; min-height:28px; }
   footer #status.err { color:#ff8484; }
@@ -52,6 +53,11 @@
     <div id="layers"></div>
     <h2>Opacity</h2>
     <input type="range" id="alpha" min="0" max="1" step="0.05">
+    <div id="threshbox" style="display:none">
+      <h2>Threshold</h2>
+      <input type="range" id="thresh">
+      <div id="threshcap"></div>
+    </div>
     <div id="views" style="display:none">
       <h2>View</h2>
       <div id="viewbtns" style="display:flex;gap:5px;flex-wrap:wrap"></div>
@@ -135,7 +141,36 @@ function applyActive() {
   }
   if (active < 0) $("wheelbox").style.display = "none";
   nv.updateGLVolume();
+  syncThresh();
 }
+
+// Live threshold = the active layer's cal_min. The bundle embeds the full
+// map; cal_min only clips display (isAlphaClipDark for volumes, the layer
+// clip for mesh layers), so sliding to 0 shows it unthresholded. Hidden
+// for angle layers (hsv is cyclic — a floor on degrees is meaningless)
+// and per-layer: each stat layer keeps its own threshold across toggles.
+const thr = {};  // layer index -> current cal_min
+const fmtThr = v => "show ≥ " + (+v).toPrecision(3);
+function syncThresh() {
+  const t = toggleables().find(t => t.i === active);
+  const usable = t && !t.angle_legend && t.cal_max !== null;
+  $("threshbox").style.display = usable ? "block" : "none";
+  if (!usable) return;
+  if (!(t.i in thr)) thr[t.i] = t.cal_min === null ? 0 : t.cal_min;
+  const s = $("thresh");
+  s.min = 0; s.max = t.cal_max; s.step = t.cal_max / 200 || 0.01;
+  s.value = thr[t.i];
+  $("threshcap").textContent = fmtThr(thr[t.i]);
+}
+$("thresh").addEventListener("input", () => {
+  if (active < 0) return;
+  const v = parseFloat($("thresh").value);
+  thr[active] = v;
+  if (CONFIG.mode === "volume") nv.volumes[active].cal_min = v;
+  else nv.setMeshLayerProperty(nv.meshes[0].id, active, "cal_min", v);
+  nv.updateGLVolume();
+  $("threshcap").textContent = fmtThr(v);
+});
 function buildControls() {
   const box = $("layers");
   const mk = (label, idx) => {

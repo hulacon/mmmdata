@@ -329,6 +329,17 @@ class TestDisplay:
         assert e["profile"]["floor"] == 15.0 and e["label"] == "angle"
         assert not plan.messages
 
+    def test_prf_r2_embeds_unthresholded(self, roots, tmp_path):
+        # R2 thresholds itself, so it is not baked: cal_min carries the
+        # floor and the viewer's threshold slider can walk it down to 0
+        r2 = touch(tmp_path / "x" /
+                   "sub-07_task-prf_space-T1w_desc-R2_negprf.nii.gz")
+        plan = resolve(classify(r2)[0], roots, Opts(r2_floor=15.0))
+        (e,) = plan.display
+        assert e["family"] == "prf" and e["mask"] is None
+        assert e["profile"]["cal_min"] == 15.0
+        assert not plan.messages
+
     def test_prf_without_r2_warns(self, roots, tmp_path):
         p = touch(tmp_path / "x" / "sub-07_task-prf_space-T1w_desc-size_prf.nii.gz")
         plan = resolve(classify(p)[0], roots)

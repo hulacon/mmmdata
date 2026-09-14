@@ -72,7 +72,7 @@ EXIT_UNPLACEABLE = 2
 EXIT_RENDER = 3
 R2_FLOOR_DEFAULT = 10.0   # percent, as build_brain_viewer.py
 ARTIFACT_CAP_MB = 16.0    # claude.ai artifact route; larger bundles are file:// only
-PROFILE_VERSION = 1       # bump when a display profile changes: keys change,
+PROFILE_VERSION = 2       # bump when a display profile changes: keys change,
                           # existing bundles rebuild
 
 HEMIS = {"L": "lh", "R": "rh"}
@@ -382,7 +382,12 @@ def display_for(map_path, entities, suffix, r2_floor):
         prof["floor"] = r2_floor
         r2 = Path(map_path).with_name(
             Path(map_path).name.replace(f"_desc-{param}_", "_desc-R2_"))
-        if r2.exists():
+        if param == "R2":
+            # R2 thresholds itself, which is what cal_min already does in
+            # display — so embed it unthresholded and let the viewer's
+            # threshold slider walk the floor down to 0
+            pass
+        elif r2.exists():
             entry["mask"] = r2
         else:
             entry["message"] = (f"no R2 map beside {Path(map_path).name}; "
@@ -681,15 +686,28 @@ def _p99(values):
 def _volume_specs(entry, floor):
     import nibabel as nib
     prof, path = entry["profile"], entry["map"]
-    if entry["family"] == "prf" and entry["mask"] is not None:
-        img = viewer.masked_volume(path, entry["mask"], floor)
-        data = np.asarray(img.dataobj)
+    if entry["family"] == "prf":
+        if entry["mask"] is not None:
+            img = viewer.masked_volume(path, entry["mask"], floor)
+            data = np.asarray(img.dataobj)
+        else:
+            raw = nib.load(str(path))
+            arr = np.asarray(raw.dataobj, dtype=np.float32)
+            data = np.where(np.isfinite(arr), arr,
+                            np.float32(viewer.MASK_SENTINEL))
+            img = _nifti_like(raw, data)
         spec = {"image": img, "name": path.name, "label": entry["label"],
                 "colormap": prof["colormap"], "cal_min": prof["cal_min"],
                 "cal_max": prof["cal_max"], "angle_legend":
                 prof.get("angle_legend", False)}
         if spec["cal_max"] is None:
-            spec["cal_max"] = _p99(data)
+            # unthresholded R2: ceiling from the samples above the floor,
+            # as the masked maps get by construction
+            ref = (np.where(data > prof["floor"], data,
+                            np.float32(viewer.MASK_SENTINEL))
+                   if entry["label"] == "R2" and entry["mask"] is None
+                   else data)
+            spec["cal_max"] = _p99(ref) or _p99(data)
         return [spec]
     img = nib.load(str(path))
     data = np.asarray(img.dataobj, dtype=np.float32)
@@ -745,13 +763,18 @@ def _surface_specs(entry, floor):
     import nibabel as nib
     prof, path = entry["profile"], entry["map"]
     if entry["family"] == "prf":
-        vals = viewer.masked_shape_values(path, entry["mask"], floor)
+        vals = viewer.masked_shape_values(
+            path, entry["mask"], floor if entry["mask"] is not None else None)
         spec = {"values": vals, "name": path.name, "label": entry["label"],
                 "colormap": prof["colormap"], "cal_min": prof["cal_min"],
                 "cal_max": prof["cal_max"],
                 "angle_legend": prof.get("angle_legend", False)}
         if spec["cal_max"] is None:
-            spec["cal_max"] = _p99(vals)
+            ref = (np.where(vals > prof["floor"], vals,
+                            np.float32(viewer.MASK_SENTINEL))
+                   if entry["label"] == "R2" and entry["mask"] is None
+                   else vals)
+            spec["cal_max"] = _p99(ref) or _p99(vals)
         return [spec]
     if not prof.get("tails"):
         vals = viewer.masked_shape_values(path)

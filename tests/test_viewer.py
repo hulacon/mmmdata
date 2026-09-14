@@ -102,6 +102,13 @@ def test_template_has_required_tokens():
         assert token in text
 
 
+def test_template_has_threshold_slider():
+    # live cal_min control; bundles embed the full map, display clips it
+    text = viewer.TEMPLATE.read_text()
+    for token in ('id="thresh"', "syncThresh", "isAlphaClipDark"):
+        assert token in text
+
+
 # ---------------------------------------------------------------------------
 # masking
 # ---------------------------------------------------------------------------
