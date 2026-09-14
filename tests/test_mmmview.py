@@ -596,9 +596,22 @@ class TestCli:
         monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
         monkeypatch.delenv("BROWSER", raising=False)
         monkeypatch.delenv("DISPLAY", raising=False)
+        # a headless Linux host: no macOS `open`, no xdg-open
+        monkeypatch.setattr(mmmview.sys, "platform", "linux")
         p, u, _ = zmap
         assert mmmview.main([str(p), "--underlay", str(u)]) == 0
         assert "Remote-SSH" in capsys.readouterr().out
+
+    def test_open_uses_open_on_macos(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BROWSER", raising=False)
+        monkeypatch.setattr(mmmview.sys, "platform", "darwin")
+        monkeypatch.setattr(mmmview.shutil, "which", lambda n: f"/usr/bin/{n}")
+        calls = []
+        monkeypatch.setattr(mmmview.subprocess, "Popen",
+                            lambda cmd, **kw: calls.append(cmd))
+        bundle = touch(tmp_path / "b_desc-viewer_statmap.html")
+        assert mmmview.open_view(bundle) == "opened via open"
+        assert calls and calls[0][0] == "open"
 
     def test_render_failure_exits_3(self, roots, tmp_path, capsys, monkeypatch):
         monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)

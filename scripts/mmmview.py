@@ -815,8 +815,10 @@ def _floor_from(plan):
 
 
 def open_view(path):
-    """Try $BROWSER, then xdg-open under a display. Returns a note, or None
-    when nothing could open it (the caller prints the path and a hint)."""
+    """Try $BROWSER, then the platform opener: `open` on macOS (a GUI is
+    always there — no $DISPLAY to gate on), xdg-open under a display
+    elsewhere. Returns a note, or None when nothing could open it (the
+    caller prints the path and a hint)."""
     browser = os.environ.get("BROWSER")
     uri = Path(path).resolve().as_uri()     # helpers want a URI, not a path
     if browser:
@@ -827,6 +829,10 @@ def open_view(path):
             return "opened via $BROWSER"
         except OSError:
             pass
+    if sys.platform == "darwin" and shutil.which("open"):
+        subprocess.Popen(["open", uri], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+        return "opened via open"
     if os.environ.get("DISPLAY") and shutil.which("xdg-open"):
         subprocess.Popen(["xdg-open", uri], stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL)
