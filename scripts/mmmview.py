@@ -4,6 +4,7 @@ mmmview.py — one path into the dataset in, the right interactive view out.
 
     mmmview PATH [--no-open] [--out-dir DIR] [--underlay NII | --mesh SURF]
                  [--surf inflated|pial|white] [--r2-floor F] [--force]
+                 [--films-dir DIR]
 
 mmmview is a dispatcher, not a viewer. The viewers exist (the NiiVue bundle
 builder in src/python/neuroimaging/viewer.py, the three *2psy dashboards);
@@ -27,6 +28,12 @@ What it places:
                                          group, every map a toggle layer
     *.csv / *.parquet + *.meta.json      the dashboard of the sidecar's
                                          extractor (viz2psy, aud2psy, word2psy)
+    movies_*_features.csv/.parquet       psytwill's movies timeline viewer,
+    (one table, or a directory of them)  over the whole table directory; the
+                                         per-film media tree is the sibling
+                                         movies/ directory (or --films-dir).
+                                         Covers composed TB runs laid out the
+                                         same way (workbench tb-timelines)
     *_events.tsv, *_beh.tsv              not here; the MCP plot tools cover them
 
 Display profiles live in DISPLAY_PROFILES below, keyed on the entity that
@@ -134,7 +141,7 @@ def parse_entities(name):
 
 @dataclass
 class Target:
-    kind: str                       # volume | surface | features
+    kind: str                       # volume | surface | features | movies
     maps: list                      # Path(s); one for a file, many for a dir
     entities: dict = field(default_factory=dict)   # shared, filename order
     suffix: str = None
@@ -230,8 +237,16 @@ def _classify_dir(path):
             except Unplaceable:
                 continue        # a directory skips what it cannot place
     if not singles:
+        # a movies feature-table directory, or a composed-run root holding
+        # one as features/ (the tb-timelines compose layout: features/ +
+        # movies/ side by side)
+        for cand in (path, path / "features"):
+            if cand.is_dir() and any(is_movies_table(p.name)
+                                     for p in cand.iterdir() if p.is_file()):
+                return [_movies_target(cand, source=path)]
         raise Unplaceable(f"no brain maps (*.nii.gz, *.shape.gii, "
-                          f"*.func.gii) in {path}; pass one file")
+                          f"*.func.gii) and no movies feature tables "
+                          f"(movies_*_features.*) in {path}; pass one file")
     subs = {t.entities.get("sub") for t in singles}
     if len(subs) > 1:
         raise Unplaceable(f"maps in {path} span several subjects "
@@ -263,9 +278,26 @@ def find_sidecar(path):
     return None
 
 
+def is_movies_table(name):
+    """A psytwill movie-schema table: movies_<grain>_features.csv/.parquet.
+    The naming is the dispatch signal itself — composed TB runs (workbench
+    tb-timelines) carry no sidecar but use the same schema and names."""
+    stem, ext = split_name(name)
+    return (ext in FEATURE_EXTS and stem.startswith("movies_")
+            and stem.endswith("_features"))
+
+
+def _movies_target(features_dir, source):
+    tables = sorted(p for p in features_dir.iterdir()
+                    if p.is_file() and is_movies_table(p.name))
+    return Target("movies", tables, {}, None, source=source)
+
+
 def _classify_features(path):
     sidecar = find_sidecar(path)
     if sidecar is None:
+        if is_movies_table(path.name):
+            return _movies_target(path.parent, source=path)
         raise Unplaceable(
             f"no Contract B sidecar (*.meta.json) beside {path}; mmmview "
             "dispatches feature files by the sidecar's extractor")
@@ -275,10 +307,13 @@ def _classify_features(path):
         raise Unplaceable(f"cannot read {sidecar}: {exc}")
     extractor = meta.get("extractor")
     if extractor == "psytwill":
+        if is_movies_table(path.name):
+            return _movies_target(path.parent, source=path)
         raise Unplaceable(
             f"{path.name} is a psytwill aggregate ({sidecar.name} says "
-            "extractor psytwill); psytwill has no browse verb yet, so "
-            "there is nothing to dispatch to")
+            "extractor psytwill); psytwill's browse verb covers the movies "
+            "set only (movies_*_features tables -> psytwill viz movies), "
+            "and this is not one")
     if extractor not in FEATURE_EXTRACTORS:
         raise Unplaceable(
             f"{sidecar.name} names extractor {extractor!r}; mmmview knows "
@@ -324,11 +359,12 @@ class Opts:
     r2_floor: float = R2_FLOOR_DEFAULT
     out_dir: str = None
     force: bool = False
+    films_dir: str = None          # movies: per-film media tree override
 
 
 @dataclass
 class Plan:
-    renderer: str                  # volume | surface | features
+    renderer: str                  # volume | surface | features | movies
     out: Path
     title: str
     inputs: dict = field(default_factory=dict)   # named source paths
@@ -553,6 +589,8 @@ def resolve(target, roots, opts=None):
     opts = opts or Opts()
     if target.kind == "features":
         return _resolve_features(target, roots, opts)
+    if target.kind == "movies":
+        return _resolve_movies(target, roots, opts)
 
     out_dir = Path(opts.out_dir) if opts.out_dir else viz_dir_for(target.source)
     out = out_dir / bundle_name(target.entities, target.suffix)
@@ -661,6 +699,45 @@ def _resolve_features(target, roots, opts):
                 {"csv": csv, "sidecar": target.sidecar}, [], cmd, messages)
 
 
+def _resolve_movies(target, roots, opts):
+    """psytwill's movies timeline viewer over a directory of movie-schema
+    tables. The per-film media tree (frames/, audio, transcripts) is the
+    sibling movies/ directory in both layouts that exist — the real set
+    (stimuli_features/{psytwill,movies}) and a composed TB run
+    (<run>/{features,movies}, workbench tb-timelines)."""
+    features_dir = target.maps[0].parent
+    if opts.films_dir:
+        films = Path(opts.films_dir)
+        if not films.is_dir():
+            raise Unplaceable(f"--films-dir {films} does not exist")
+    else:
+        films = features_dir.parent / "movies"
+        if not films.is_dir():
+            raise Unplaceable(
+                f"no per-film media tree beside the tables (expected "
+                f"{films}); pass --films-dir DIR")
+    # default where psytwill puts it: relative media links stay valid there
+    out_dir = Path(opts.out_dir) if opts.out_dir else films / "viz" / "timeline"
+    env = roots.stimfeat_env
+    exe = str(Path(env) / "bin" / "psytwill") if env else "psytwill"
+    cmd = [exe, "viz", "movies", "--features-dir", str(features_dir),
+           "--films-dir", str(films), "-o", str(out_dir)]
+    messages = []
+    registry = roots.bids / "stimuli" / "stimulus_registry"
+    if registry.is_dir():
+        cmd += ["--registry", str(registry)]
+    else:
+        messages.append("no stimulus registry at "
+                        f"{registry}; film titles fall back to slugs")
+    if env is None:
+        messages.append("paths.stimfeat_env is not set in config; running "
+                        "psytwill from PATH")
+    title = f"psytwill movies timeline ({features_dir})"
+    inputs = {t.name: t for t in target.maps}
+    return Plan("movies", out_dir / "index.html", title, inputs, [], cmd,
+                messages)
+
+
 # ---------------------------------------------------------------------------
 # stage 3 — render and open
 # ---------------------------------------------------------------------------
@@ -669,7 +746,7 @@ def is_current(plan):
     """True when the output exists and was built from these inputs."""
     if not plan.out.exists():
         return False
-    if plan.renderer == "features":
+    if plan.renderer in ("features", "movies"):
         newest = max(Path(p).stat().st_mtime for p in plan.inputs.values())
         return plan.out.stat().st_mtime >= newest
     with open(plan.out, "r", errors="replace") as f:
@@ -792,7 +869,7 @@ def render(plan, force=False):
     if not force and is_current(plan):
         return plan.out, False
     plan.out.parent.mkdir(parents=True, exist_ok=True)
-    if plan.renderer == "features":
+    if plan.renderer in ("features", "movies"):
         try:
             res = subprocess.run(plan.command, capture_output=True, text=True)
         except OSError as exc:
@@ -889,10 +966,12 @@ def main(argv=None):
     ap.add_argument("--force", action="store_true",
                     help="rebuild even when the output is current")
     ap.add_argument("--deriv-root", help="override config derivatives root")
+    ap.add_argument("--films-dir", help="movies tables: per-film media tree "
+                    "(default: the movies/ directory beside the tables)")
     args = ap.parse_args(argv)
 
     opts = Opts(args.underlay, args.mesh, args.surf, args.r2_floor,
-                args.out_dir, args.force)
+                args.out_dir, args.force, args.films_dir)
     roots = load_roots(args.deriv_root)
     try:
         targets = classify(args.path)

@@ -172,11 +172,37 @@ class TestClassify:
         with pytest.raises(Unplaceable, match="meta.json"):
             classify(csv)
 
-    def test_psytwill_parquet_is_unplaceable(self, tmp_path):
-        pq = touch(tmp_path / "movies_annot_chunks_features.parquet")
-        touch(tmp_path / "movies_annot_chunks_features.meta.json",
+    def test_movies_table_with_psytwill_sidecar(self, tmp_path):
+        pq = touch(tmp_path / "movies_frames_features.parquet")
+        touch(tmp_path / "movies_frames_features.meta.json",
               json.dumps({"extractor": "psytwill"}))
-        with pytest.raises(Unplaceable, match="psytwill"):
+        other = touch(tmp_path / "movies_audio_frames_features.parquet")
+        (t,) = classify(pq)
+        assert t.kind == "movies" and t.maps == [pq.parent / other.name, pq]
+
+    def test_movies_table_without_sidecar(self, tmp_path):
+        # composed TB runs (tb-timelines) write no Contract B sidecar; the
+        # movie-schema naming alone dispatches
+        pq = touch(tmp_path / "movies_frames_features.parquet")
+        (t,) = classify(pq)
+        assert t.kind == "movies" and t.maps == [pq]
+
+    def test_movies_directory(self, tmp_path):
+        touch(tmp_path / "movies_frames_features.parquet")
+        (t,) = classify(tmp_path)
+        assert t.kind == "movies" and t.source == tmp_path
+
+    def test_composed_run_root_with_features_child(self, tmp_path):
+        pq = touch(tmp_path / "run" / "features" / "movies_frames_features.parquet")
+        (tmp_path / "run" / "movies").mkdir()
+        (t,) = classify(tmp_path / "run")
+        assert t.kind == "movies" and t.maps == [pq]
+
+    def test_non_movies_psytwill_aggregate_is_unplaceable(self, tmp_path):
+        pq = touch(tmp_path / "shared1000_image_features.parquet")
+        touch(tmp_path / "shared1000_image_features.meta.json",
+              json.dumps({"extractor": "psytwill"}))
+        with pytest.raises(Unplaceable, match="viz movies"):
             classify(pq)
 
     def test_events_table_names_plot_tools(self, tmp_path):
@@ -457,6 +483,52 @@ class TestDispatch:
         out, built = render(plan)
         assert built and out.read_text() == "<html>"
         # second call: output newer than csv + sidecar -> reused
+        assert render(plan) == (out, False)
+
+    def _movies(self, tmp_path):
+        d = tmp_path / "derivatives" / "stimuli_features"
+        pq = touch(d / "psytwill" / "movies_frames_features.parquet")
+        (d / "movies").mkdir()
+        return pq
+
+    def test_movies_command_and_default_out(self, roots, tmp_path):
+        pq = self._movies(tmp_path)
+        (roots.bids / "stimuli" / "stimulus_registry").mkdir()
+        plan = resolve(classify(pq)[0], roots)
+        assert plan.renderer == "movies"
+        films = str(pq.parent.parent / "movies")
+        assert plan.command[:3] == [str(roots.stimfeat_env / "bin" / "psytwill"),
+                                    "viz", "movies"]
+        assert plan.command[plan.command.index("--features-dir") + 1] == str(pq.parent)
+        assert plan.command[plan.command.index("--films-dir") + 1] == films
+        assert plan.command[plan.command.index("--registry") + 1] == \
+            str(roots.bids / "stimuli" / "stimulus_registry")
+        assert plan.out == Path(films) / "viz" / "timeline" / "index.html"
+        assert not plan.messages
+
+    def test_movies_without_registry_notes_it(self, roots, tmp_path):
+        plan = resolve(classify(self._movies(tmp_path))[0], roots)
+        assert "--registry" not in plan.command
+        assert any("registry" in m for m in plan.messages)
+
+    def test_movies_missing_films_dir_names_the_flag(self, roots, tmp_path):
+        pq = touch(tmp_path / "alone" / "movies_frames_features.parquet")
+        with pytest.raises(Unplaceable, match="--films-dir"):
+            resolve(classify(pq)[0], roots)
+        films = tmp_path / "elsewhere"
+        films.mkdir()
+        plan = resolve(classify(pq)[0], roots, Opts(films_dir=str(films)))
+        assert plan.command[plan.command.index("--films-dir") + 1] == str(films)
+
+    def test_movies_render_reuses_current_bundle(self, roots, tmp_path):
+        pq = self._movies(tmp_path)
+        plan = resolve(classify(pq)[0], roots)
+        plan.command = [sys.executable, "-c", "import pathlib,sys; "
+                        f"p = pathlib.Path({str(plan.out)!r}); "
+                        "p.parent.mkdir(parents=True, exist_ok=True); "
+                        "p.write_text('<html>')"]
+        out, built = render(plan)
+        assert built and out.read_text() == "<html>"
         assert render(plan) == (out, False)
 
 
