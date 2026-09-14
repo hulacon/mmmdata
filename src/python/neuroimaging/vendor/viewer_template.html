@@ -228,10 +228,11 @@ async function init() {
     });
     nv.setSliceType(nv.sliceTypeRender);
     // view presets; azimuth convention verified against rendered anatomy
-    // (lh az 270 faces the medial wall — corpus callosum check)
+    // (lh az 270 faces the medial wall — corpus callosum check; az 0 is a
+    // camera at the posterior pole, so anterior needs 180)
     const lh = m.name.startsWith("lh");
     const views = { lateral: lh ? 90 : 270, medial: lh ? 270 : 90,
-                    posterior: 180, anterior: 0 };
+                    posterior: 0, anterior: 180 };
     $("views").style.display = "block";
     for (const [label, az] of Object.entries(views)) {
       const b = document.createElement("button");
