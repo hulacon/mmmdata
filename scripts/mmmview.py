@@ -598,12 +598,28 @@ def bundle_name(entities, suffix):
     return name + (f"_{suffix}" if suffix else "") + ".html"
 
 
+_SHA_CACHE = {}
+
+
 def _sha(path):
+    """Content hash, memoized on (path, mtime, size). A reap sweep resolves
+    every map in a directory and they share one underlay — without this the
+    underlay is re-hashed once per map."""
+    try:
+        st = os.stat(path)
+        ck = (str(path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        ck = None
+    if ck is not None and ck in _SHA_CACHE:
+        return _SHA_CACHE[ck]
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
-    return h.hexdigest()
+    digest = h.hexdigest()
+    if ck is not None:
+        _SHA_CACHE[ck] = digest
+    return digest
 
 
 def _key(inputs, display, opts):
@@ -1535,7 +1551,194 @@ def serve_main(argv):
     return 0
 
 
-VERBS = {"serve": serve_main}
+# ---------------------------------------------------------------------------
+# reap — remove bundles whose provenance no longer matches their inputs
+# ---------------------------------------------------------------------------
+
+VIZ_DIRS = ("viz", "qc")        # qc/ is the legacy location, still swept
+KEY_MARK = "mmmview-key:"
+
+
+def _read_head(path, limit=1 << 20):
+    """Bundles embed their provenance note near the end, but they are tens
+    of MB of base64 — read the whole file the same forgiving way is_current
+    does, not a slice, or a key would be missed."""
+    try:
+        with open(path, "r", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _viz_dirs_under(path):
+    path = Path(path)
+    found = []
+    if path.name in VIZ_DIRS and path.is_dir():
+        found.append(path)
+    for root, dirs, _ in os.walk(path):
+        dirs.sort()
+        for d in dirs:
+            if d in VIZ_DIRS:
+                found.append(Path(root) / d)
+    return sorted(set(found))
+
+
+def _data_dirs_for(viz):
+    """Every directory whose bundles land in this viz dir.
+
+    NOT just `viz.parent`: `viz_dir_for` walks UP to the nearest sub-##
+    ancestor, so a subject's maps usually sit deeper (<sub>/func,
+    <sub>/ses-##/func) while their bundles all land in <sub>/viz. Asking
+    only the parent finds no maps there, which would mark every live
+    bundle an orphan — and delete it under --yes. Matched on the anchor
+    (`viz.parent`) rather than the dir name so the legacy qc/ location is
+    covered by the same walk.
+    """
+    anchor = viz.parent
+    if not anchor.is_dir():
+        return []
+    found = []
+    for root, dirs, _ in os.walk(anchor):
+        dirs[:] = sorted(d for d in dirs if d not in VIZ_DIRS)
+        d = Path(root)
+        if viz_dir_for(d).parent == anchor:
+            found.append(d)
+    return found
+
+
+def _claims_for(viz, roots, opts):
+    """What SHOULD be in this viz dir: {bundle name: Plan}, recomputed from
+    every data directory it serves."""
+    claims = {}
+
+    def add(target):
+        try:
+            plan = resolve(target, roots, opts)
+        except Unplaceable:
+            return
+        claims[plan.out.name] = plan
+
+    for data_dir in _data_dirs_for(viz):
+        try:
+            for t in classify(data_dir):
+                add(t)
+        except Unplaceable:
+            pass
+        # ...and from each file on its own: `mmmview <one map>` is a
+        # supported call, and the bundle it writes carries a narrower name
+        # (contrast-, stat-) than the directory-level merge claims. Without
+        # this pass those bundles look unclaimed and --yes would delete
+        # current output.
+        for child in sorted(data_dir.iterdir()):
+            if not child.is_file():
+                continue
+            if not child.name.endswith(MAP_EXTS + SURF_EXTS + FEATURE_EXTS):
+                continue
+            try:
+                for t in classify(child):
+                    add(t)
+            except Unplaceable:
+                continue
+    return claims
+
+
+def reap_scan(path, roots, opts=None, paths_from=None):
+    """Classify every candidate under *path*. Returns (rows, touched) where
+    a row is (verdict, Path, size) and touched is the viz dirs holding at
+    least one stale file. Nothing is deleted here."""
+    opts = opts or Opts()
+    if paths_from:
+        starts = [Path(l.strip()) for l in Path(paths_from).read_text().splitlines()
+                  if l.strip()]
+    else:
+        starts = [Path(path)]
+    rows, touched = [], set()
+    for start in starts:
+        for viz in _viz_dirs_under(start):
+            claims = _claims_for(viz, roots, opts)
+            for f in sorted(viz.iterdir()):
+                if not (f.is_file() and "_desc-viewer" in f.name
+                        and f.name.endswith(".html")):
+                    continue
+                size = f.stat().st_size
+                text = _read_head(f)
+                if KEY_MARK not in text:
+                    # not signed by mmmview. A features/movies dashboard the
+                    # data still claims is ours but unverifiable (its
+                    # currency is mtime-based); anything else is simply not
+                    # ours — deface montages live in qc/ too — and stays
+                    # invisible to this sweep.
+                    plan = claims.get(f.name)
+                    if plan is not None and plan.renderer in ("features",
+                                                              "movies"):
+                        rows.append(("unverifiable (no key sidecar)", f, size))
+                    continue
+                plan = claims.get(f.name)
+                if plan is None:
+                    rows.append(("stale-orphan", f, size))
+                    touched.add(viz)
+                elif f"{KEY_MARK} {plan.key}" in text:
+                    rows.append(("keep", f, size))
+                else:
+                    rows.append(("stale-key", f, size))
+                    touched.add(viz)
+    return rows, touched
+
+
+def _regenerate(viz, roots, opts):
+    """Rewrite the pages that point at what was just removed. Only pages
+    that already exist — a reap builds nothing new."""
+    notes = []
+    if (viz / "index.html").exists():
+        if write_index(viz) is None:
+            notes.append(f"note: {viz / 'index.html'} left in place; fewer "
+                         "than two bundles remain, so it has no pulldown to "
+                         "regenerate — delete it by hand if you want it gone")
+    if (viz / BROWSE_PAGE).exists():
+        write_browse(viz.parent, roots, opts)
+    return notes
+
+
+def reap_main(argv):
+    ap = argparse.ArgumentParser(
+        prog="mmmview reap",
+        description="remove viewer bundles whose provenance key no longer "
+                    "matches their inputs. Dry run unless --yes.")
+    ap.add_argument("path", type=Path, help="subtree to sweep")
+    ap.add_argument("--yes", action="store_true",
+                    help="actually delete (default: report only)")
+    ap.add_argument("--paths-from", help="file of paths, one per line, to "
+                    "sweep instead of walking PATH (the catalog-diff hook)")
+    ap.add_argument("--deriv-root", help="override config derivatives root")
+    args = ap.parse_args(argv)
+
+    refusal = sourcedata_refusal(args.path)
+    if refusal:
+        print(f"mmmview: {refusal}", file=sys.stderr)
+        return EXIT_UNPLACEABLE
+    roots = load_roots(args.deriv_root)
+    opts = Opts()
+    rows, touched = reap_scan(args.path, roots, opts, args.paths_from)
+
+    stale = [r for r in rows if r[0].startswith("stale")]
+    for verdict, f, size in rows:
+        print(f"{verdict}\t{f}\t{size}")
+    freed = sum(size for _, _, size in stale)
+    print(f"-- {len(rows)} candidates, {len(stale)} stale, "
+          f"{freed / 1e6:.1f} MB "
+          f"{'deleted' if args.yes else 'reclaimable (dry run; --yes to '
+             'delete)'}")
+    if not args.yes:
+        return 0
+    for _, f, _ in stale:
+        f.unlink()
+    for viz in sorted(touched):
+        for note in _regenerate(viz, roots, opts):
+            print(note)
+    return 0
+
+
+VERBS = {"serve": serve_main, "reap": reap_main}
 
 
 def main(argv=None):

@@ -1105,3 +1105,181 @@ class TestServe:
         _, _, body = self.get(port, "/")
         assert b'href="/sub-07"' in body
         assert b"/sub-07/viz/browse.html" not in body
+
+
+# ---------------------------------------------------------------------------
+# reap (mmmview-browse increment 3): provenance-keyed removal of bundles
+# whose inputs moved on. Dry-run by default; signature-gated deletion only.
+# ---------------------------------------------------------------------------
+
+class TestReap:
+    @pytest.fixture
+    def reaped(self, roots, tmp_path):
+        """A subject dir with two claimed bundles (keys current), one
+        superseded orphan, and one look-alike carrying no signature."""
+        d = tmp_path / "sub-07"
+        touch(d / "sub-07_space-T1w_stat-z_statmap.nii.gz", "z")
+        touch(d / "sub-07_space-T1w_desc-brain_mask.nii.gz", "m")
+        viz = d / "viz"
+        claimed = []
+        for t in classify(d):
+            plan = resolve(t, roots, Opts())
+            touch(viz / plan.out.name,
+                  f"<html>notes mmmview-key: {plan.key} </html>")
+            claimed.append(plan.out.name)
+        # superseded: signed by mmmview, no longer claimed by any plan
+        touch(viz / "sub-07_space-T1w_desc-viewer_oldvariant.html",
+              "<html>mmmview-key: " + "0" * 64 + "</html>")
+        # a look-alike with no signature: NOT ours (the qc/ montage lesson)
+        touch(viz / "sub-07_space-T1w_desc-viewer_montage.html",
+              "<html>a deface montage</html>")
+        mmmview.write_index(viz)
+        return d, viz, claimed
+
+    def run(self, args):
+        return mmmview.main(["reap"] + args)
+
+    def test_dry_run_reports_and_deletes_nothing(self, roots, reaped, capsys,
+                                                 monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d, viz, claimed = reaped
+        before = sorted(p.name for p in viz.iterdir())
+        assert self.run([str(d)]) == 0
+        out = capsys.readouterr().out
+        assert "stale-orphan" in out
+        assert "sub-07_space-T1w_desc-viewer_oldvariant.html" in out
+        assert sorted(p.name for p in viz.iterdir()) == before
+
+    def test_current_bundles_are_kept(self, roots, reaped, capsys,
+                                      monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d, _, claimed = reaped
+        self.run([str(d)])
+        out = capsys.readouterr().out
+        for name in claimed:
+            assert any(line.startswith("keep") and name in line
+                       for line in out.splitlines())
+
+    def test_unsigned_lookalike_is_invisible(self, roots, reaped, capsys,
+                                             monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d, _, _ = reaped
+        self.run([str(d)])
+        assert "montage" not in capsys.readouterr().out
+
+    def test_changed_input_is_stale_key(self, roots, reaped, capsys,
+                                        monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d, _, claimed = reaped
+        (d / "sub-07_space-T1w_stat-z_statmap.nii.gz").write_text("changed")
+        self.run([str(d)])
+        out = capsys.readouterr().out
+        stale = [l for l in out.splitlines() if l.startswith("stale-key")]
+        assert len(stale) == 1 and "statmap" in stale[0]
+
+    def test_yes_deletes_stale_and_rewrites_the_index(self, roots, reaped,
+                                                      capsys, monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d, viz, claimed = reaped
+        assert self.run([str(d), "--yes"]) == 0
+        names = sorted(p.name for p in viz.iterdir())
+        assert "sub-07_space-T1w_desc-viewer_oldvariant.html" not in names
+        assert "sub-07_space-T1w_desc-viewer_montage.html" in names
+        for name in claimed:
+            assert name in names
+        html = (viz / "index.html").read_text()
+        assert "oldvariant" not in html
+        for name in claimed:
+            assert name in html
+
+    def test_features_bundle_is_unverifiable_and_never_deleted(
+            self, roots, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d = tmp_path / "feat"
+        touch(d / "aesthetics.csv", "x")
+        touch(d / "aesthetics.meta.json",
+              json.dumps({"extractor": "viz2psy", "input": {"paths": []}}))
+        bundle = touch(d / "viz" / "aesthetics_desc-viewer.html", "<html>")
+        assert self.run([str(d), "--yes"]) == 0
+        out = capsys.readouterr().out
+        assert "unverifiable" in out and "no key sidecar" in out
+        assert bundle.exists()
+
+    def test_legacy_qc_dirs_are_swept_too(self, roots, tmp_path, capsys,
+                                          monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d = tmp_path / "sub-07"
+        touch(d / "sub-07_space-T1w_stat-z_statmap.nii.gz", "z")
+        touch(d / "qc" / "sub-07_space-T1w_desc-viewer_oldvariant.html",
+              "<html>mmmview-key: " + "0" * 64 + "</html>")
+        assert self.run([str(d)]) == 0
+        assert "stale-orphan" in capsys.readouterr().out
+
+    def test_paths_from_restricts_the_walk(self, roots, tmp_path, capsys,
+                                           monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        root = tmp_path / "deriv"
+        for sub in ("sub-07", "sub-06"):
+            touch(root / sub / f"{sub}_space-T1w_stat-z_statmap.nii.gz", "z")
+            touch(root / sub / "viz" / f"{sub}_desc-viewer_oldvariant.html",
+                  "<html>mmmview-key: " + "0" * 64 + "</html>")
+        listing = touch(tmp_path / "changed.txt", str(root / "sub-07") + "\n")
+        assert self.run([str(root), "--paths-from", str(listing)]) == 0
+        out = capsys.readouterr().out
+        assert "sub-07_desc-viewer_oldvariant.html" in out
+        assert "sub-06_desc-viewer_oldvariant.html" not in out
+
+    def test_totals_are_printed(self, roots, reaped, capsys, monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d, _, _ = reaped
+        self.run([str(d)])
+        out = capsys.readouterr().out
+        assert "1 stale" in out and "dry run" in out
+
+    def test_mmmsourcedata_is_refused(self, roots, tmp_path, capsys,
+                                      monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d = tmp_path / "mmmsourcedata" / "sub-07"
+        d.mkdir(parents=True)
+        assert self.run([str(d)]) != 0
+        assert "mmmsourcedata" in capsys.readouterr().err
+
+    def test_bundles_whose_maps_live_deeper_are_not_orphans(
+            self, roots, tmp_path, capsys, monkeypatch):
+        # viz_dir_for walks up to sub-##, so a subject's bundles land in
+        # <sub>/viz while its maps sit in <sub>/func or <sub>/ses-##/func.
+        # Recomputing claims from viz.parent alone would call these live
+        # bundles orphans — and --yes would delete them.
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d = tmp_path / "sub-07"
+        m = touch(d / "ses-04" / "func"
+                  / "sub-07_space-T1w_stat-z_statmap.nii.gz", "z")
+        (t,) = classify(m)
+        plan = resolve(t, roots, Opts())
+        assert plan.out.parent == d / "viz"
+        touch(plan.out, f"<html>mmmview-key: {plan.key}</html>")
+        assert self.run([str(d)]) == 0
+        out = capsys.readouterr().out
+        assert not [l for l in out.splitlines() if l.startswith("stale")]
+        assert out.splitlines()[0].startswith("keep")
+        assert "0 stale" in out
+
+    def test_single_map_bundle_is_claimed_not_orphaned(self, roots, tmp_path,
+                                                       capsys, monkeypatch):
+        # `mmmview <one map>` writes a bundle whose name carries contrast-
+        # and stat-; the directory-level merge claims a broader name, so
+        # recomputing claims from the directory alone would orphan it
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d = tmp_path / "sub-07"
+        one = touch(d / "func" / "sub-07_space-T1w_contrast-faceVsObject_"
+                    "stat-z_statmap.nii.gz", "z")
+        touch(d / "func" / "sub-07_space-T1w_contrast-placeVsObject_"
+              "stat-z_statmap.nii.gz", "z2")
+        (t,) = classify(one)
+        plan = resolve(t, roots, Opts())
+        assert "contrast-faceVsObject" in plan.out.name
+        touch(plan.out, f"<html>mmmview-key: {plan.key}</html>")
+        assert self.run([str(d)]) == 0
+        out = capsys.readouterr().out
+        assert out.splitlines()[0].startswith("keep")
+        assert "0 stale" in out
