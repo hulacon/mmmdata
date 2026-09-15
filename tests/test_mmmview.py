@@ -836,3 +836,140 @@ class TestCli:
         assert shim.exists() and shim.stat().st_mode & 0o111
         text = shim.read_text()
         assert ".venv/bin/python" in text and "scripts/mmmview.py" in text
+
+
+# ---------------------------------------------------------------------------
+# browse index (mmmview-browse increment 1): a directory mmmview cannot place
+# gets a navigable page instead of exit 2
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def browse_tree(tmp_path):
+    """A directory mmmview cannot place: no maps of its own, but a feature
+    file it CAN place, a subdirectory of maps, and a subdirectory carrying
+    its own index."""
+    d = tmp_path / "study"
+    touch(d / "README.md")
+    touch(d / "aesthetics.csv", "x")
+    touch(d / "aesthetics.meta.json",
+          json.dumps({"extractor": "viz2psy", "input": {"paths": []}}))
+    touch(d / "sub-07" / "sub-07_space-T1w_stat-z_statmap.nii.gz")
+    touch(d / "sub-07" / "viz" / "index.html")
+    (d / "plain").mkdir()
+    return d
+
+
+class TestBrowsePage:
+    def test_unplaceable_dir_exits_zero_with_signed_browse_page(
+            self, roots, browse_tree, capsys, monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        assert mmmview.main([str(browse_tree), "--no-open"]) == 0
+        page = browse_tree / "viz" / "browse.html"
+        assert page.exists()
+        html = page.read_text()
+        assert mmmview.BROWSE_SIGNATURE in html
+        assert f"browse {page}" in capsys.readouterr().out
+
+    def test_header_states_staleness_and_regeneration_command(
+            self, roots, browse_tree):
+        page = mmmview.write_browse(browse_tree, roots)
+        html = page.read_text()
+        assert "static snapshot" in html
+        assert f"mmmview {browse_tree}" in html
+        assert "study" in html
+
+    def test_subdir_with_a_page_links_to_it_others_get_a_recipe(
+            self, roots, browse_tree):
+        html = mmmview.write_browse(browse_tree, roots).read_text()
+        assert 'href="../sub-07/viz/index.html"' in html
+        assert "<code>mmmview " in html
+        assert str(browse_tree / "plain") in html
+
+    def test_viewable_child_shows_recipe_then_links_once_built(
+            self, roots, browse_tree):
+        html = mmmview.write_browse(browse_tree, roots).read_text()
+        assert "aesthetics.csv" in html
+        assert 'href="aesthetics_desc-viewer.html"' not in html
+        touch(browse_tree / "viz" / "aesthetics_desc-viewer.html")
+        html = mmmview.write_browse(browse_tree, roots).read_text()
+        assert 'href="aesthetics_desc-viewer.html"' in html
+
+    def test_existing_bundles_are_listed_with_entity_labels(
+            self, roots, browse_tree):
+        touch(browse_tree / "viz"
+              / "sub-07_task-prf_space-T1w_desc-viewer_prfvariants.html")
+        html = mmmview.write_browse(browse_tree, roots).read_text()
+        assert "task-prf space-T1w prfvariants" in html
+
+    def test_empty_sections_are_omitted(self, roots, tmp_path):
+        d = tmp_path / "bare"
+        touch(d / "README.md")
+        html = mmmview.write_browse(d, roots).read_text()
+        assert "Subdirectories" not in html
+        assert "Viewable here" not in html
+        assert "Existing bundles" not in html
+
+    def test_page_never_matches_the_deface_viewer_glob(self, roots,
+                                                       browse_tree):
+        page = mmmview.write_browse(browse_tree, roots)
+        assert "desc-viewer" not in page.name
+        assert not list(page.parent.glob("*_desc-viewer_*.html"))
+
+    def test_browse_does_not_recurse_into_children(self, roots, browse_tree):
+        mmmview.write_browse(browse_tree, roots)
+        assert not (browse_tree / "plain" / "viz").exists()
+        assert not (browse_tree / "sub-07" / "viz" / "browse.html").exists()
+
+    def test_unchanged_page_is_not_rewritten(self, roots, browse_tree):
+        page = mmmview.write_browse(browse_tree, roots)
+        before = page.stat().st_mtime_ns
+        assert mmmview.write_browse(browse_tree, roots) == page
+        assert page.stat().st_mtime_ns == before
+
+    def test_placeable_directory_keeps_todays_behavior(self, roots, tmp_path,
+                                                       capsys, monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d = tmp_path / "maps"
+        ones = np.ones((3, 3, 2), np.float32)
+        u = d / "u.nii.gz"
+        d.mkdir()
+        nib.save(nib.Nifti1Image(ones, np.eye(4)), u)
+        nib.save(nib.Nifti1Image(ones, np.eye(4)),
+                 d / "sub-07_space-T1w_stat-z_statmap.nii.gz")
+        rc = mmmview.main([str(d), "--no-open", "--underlay", str(u)])
+        assert rc == 0 and "wrote" in capsys.readouterr().out
+        assert not (d / "viz" / "browse.html").exists()
+
+    def test_file_input_still_exits_2(self, roots, tmp_path, capsys,
+                                      monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        p = touch(tmp_path / "README.md")
+        assert mmmview.main([str(p), "--no-open"]) == 2
+        assert "--underlay/--mesh" in capsys.readouterr().err
+
+
+class TestSourcedataGuard:
+    @pytest.mark.parametrize("leaf", ["sub-07/ses-01",
+                                      "sub-07/ses-01/dicom/x.nii.gz"])
+    def test_mmmsourcedata_paths_are_refused(self, roots, tmp_path, capsys,
+                                             monkeypatch, leaf):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        p = tmp_path / "mmmsourcedata" / leaf
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if p.suffix:
+            touch(p)
+        else:
+            p.mkdir(parents=True, exist_ok=True)
+        assert mmmview.main([str(p), "--no-open"]) != 0
+        err = capsys.readouterr().err
+        assert "mmmsourcedata" in err and "refusing" in err
+
+    def test_guard_sees_through_a_symlink(self, roots, tmp_path, capsys,
+                                          monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        real = tmp_path / "mmmsourcedata" / "sub-07"
+        real.mkdir(parents=True)
+        link = tmp_path / "shortcut"
+        link.symlink_to(real)
+        assert mmmview.main([str(link), "--no-open"]) != 0
+        assert "mmmsourcedata" in capsys.readouterr().err
