@@ -61,6 +61,28 @@ PRF_PARAMS = {
 HEMIS = {"L": "lh", "R": "rh"}
 
 
+def _variant_rank(v):
+    """Plain fit first, its negative second, confound variants after."""
+    return ({"prf": 0, "negprf": 1}.get(v, 2), v)
+
+
+def _variant_list(args, prf, r2_prefix, ext):
+    """The pRF fit variants one bundle covers: --variants as given (comma
+    list), 'auto' = every fit with an R2 map in the unit directory, or the
+    single --polarity when --variants is absent."""
+    if args.variants is None:
+        return [args.polarity]
+    if args.variants != "auto":
+        return [v for v in args.variants.split(",") if v]
+    found = sorted((p.name[len(r2_prefix):-len(ext)]
+                    for p in prf.glob(f"{r2_prefix}*{ext}")),
+                   key=_variant_rank)
+    if not found:
+        sys.exit(f"ERROR: --variants auto found no {r2_prefix}*{ext} "
+                 f"in {prf}")
+    return found
+
+
 def deriv_root(override):
     if override:
         return Path(override)
@@ -79,7 +101,7 @@ def deriv_root(override):
 
 _BOOL_KEYS = ("visible", "shade", "angle_legend")
 _SPEC_KEYS = ("name", "label", "colormap", "cal_min", "cal_max", "opacity",
-              "visible", "shade", "angle_legend")
+              "visible", "shade", "angle_legend", "variant")
 
 
 def parse_spec(text):
@@ -197,32 +219,37 @@ def _p99(values):
 
 
 def _prf_volume(args, root, out_dir):
-    import nibabel as nib
     prf, base, space, underlay, label = _prf_unit(root, args.subject, args.session)
     if not underlay.exists():
         sys.exit(f"ERROR: no underlay at {underlay}")
-    r2 = prf / f"{base}_space-{space}_desc-R2_{args.polarity}.nii.gz"
+    variants = _variant_list(args, prf, f"{base}_space-{space}_desc-R2_",
+                             ".nii.gz")
 
-    overlays = []
-    for param, disp in PRF_PARAMS.items():
-        path = prf / f"{base}_space-{space}_desc-{param}_{args.polarity}.nii.gz"
-        if not path.exists():
-            sys.exit(f"ERROR: no parameter volume at {path}")
-        img = viewer.masked_volume(path, r2, args.r2_floor)
-        data = np.asarray(img.dataobj)
-        spec = {"image": img, "name": path.name, "label": param, **disp}
-        spec.setdefault("cal_min", args.r2_floor if param == "R2" else 0.0)
-        if spec["cal_max"] is None:
-            spec["cal_max"] = round(_p99(data), 2)
-        overlays.append(spec)
+    overlays, srcs = [], [underlay]
+    for variant in variants:
+        r2 = prf / f"{base}_space-{space}_desc-R2_{variant}.nii.gz"
+        srcs.append(r2)
+        for param, disp in PRF_PARAMS.items():
+            path = prf / f"{base}_space-{space}_desc-{param}_{variant}.nii.gz"
+            if not path.exists():
+                sys.exit(f"ERROR: no parameter volume at {path}")
+            img = viewer.masked_volume(path, r2, args.r2_floor)
+            data = np.asarray(img.dataobj)
+            spec = {"image": img, "name": path.name, "label": param,
+                    "variant": variant if len(variants) > 1 else None, **disp}
+            spec.setdefault("cal_min", args.r2_floor if param == "R2" else 0.0)
+            if spec["cal_max"] is None:
+                spec["cal_max"] = round(_p99(data), 2)
+            overlays.append(spec)
 
-    out = out_dir / f"{base}_space-{space}_desc-viewer_{args.polarity}.html"
+    vname = variants[0] if len(variants) == 1 else "prfvariants"
+    out = out_dir / f"{base}_space-{space}_desc-viewer_{vname}.html"
     out = viewer.build_volume_viewer(
         {"path": underlay, "label": "T1w" if space == "T1w" else "boldref"},
         overlays, out,
-        title=f"pRF {args.polarity} {label} ({space})",
-        notes=provenance([underlay, r2],
-                         f"all maps masked to R2 > {args.r2_floor}%"))
+        title=f"pRF {'+'.join(variants)} {label} ({space})",
+        notes=provenance(srcs, f"all maps masked to R2 > {args.r2_floor}% "
+                         "(each variant to its own R2)"))
     report(out, "volume")
 
 
@@ -236,31 +263,37 @@ def _prf_surface(args, root, out_dir, hemi):
         if not p.exists():
             sys.exit(f"ERROR: no FreeSurfer file at {p}")
     base = f"{base}_space-fsnative_hemi-{hemi}"
-    r2 = prf / f"{base}_desc-R2_{args.polarity}.shape.gii"
-    if not r2.exists():
-        sys.exit(f"ERROR: no projected R2 map at {r2} — run "
-                 "project_prf_fsnative.py first")
+    variants = _variant_list(args, prf, f"{base}_desc-R2_", ".shape.gii")
 
     layers = [{"path": curv, "label": "curvature", "shade": True,
                "colormap": "gray", "cal_min": 0.3, "cal_max": 0.8,
                "opacity": 0.7}]
-    for param, disp in PRF_PARAMS.items():
-        path = prf / f"{base}_desc-{param}_{args.polarity}.shape.gii"
-        if not path.exists():
-            sys.exit(f"ERROR: no projected map at {path}")
-        vals = viewer.masked_shape_values(path, r2, args.r2_floor)
-        spec = {"values": vals, "name": path.name, "label": param, **disp}
-        spec.setdefault("cal_min", args.r2_floor if param == "R2" else 0.0)
-        if spec["cal_max"] is None:
-            spec["cal_max"] = round(_p99(vals), 2)
-        layers.append(spec)
+    srcs = [mesh, curv]
+    for variant in variants:
+        r2 = prf / f"{base}_desc-R2_{variant}.shape.gii"
+        if not r2.exists():
+            sys.exit(f"ERROR: no projected R2 map at {r2} — run "
+                     "project_prf_fsnative.py first")
+        srcs.append(r2)
+        for param, disp in PRF_PARAMS.items():
+            path = prf / f"{base}_desc-{param}_{variant}.shape.gii"
+            if not path.exists():
+                sys.exit(f"ERROR: no projected map at {path}")
+            vals = viewer.masked_shape_values(path, r2, args.r2_floor)
+            spec = {"values": vals, "name": path.name, "label": param,
+                    "variant": variant if len(variants) > 1 else None, **disp}
+            spec.setdefault("cal_min", args.r2_floor if param == "R2" else 0.0)
+            if spec["cal_max"] is None:
+                spec["cal_max"] = round(_p99(vals), 2)
+            layers.append(spec)
 
-    out = out_dir / f"{base}_desc-viewer_{args.polarity}.html"
+    vname = variants[0] if len(variants) == 1 else "prfvariants"
+    out = out_dir / f"{base}_desc-viewer_{vname}.html"
     out = viewer.build_surface_viewer(
         mesh, layers, out,
-        title=f"pRF {args.polarity} {label} hemi-{hemi} ({args.surf})",
-        notes=provenance([mesh, curv, r2],
-                         f"vertices masked to R2 > {args.r2_floor}%"))
+        title=f"pRF {'+'.join(variants)} {label} hemi-{hemi} ({args.surf})",
+        notes=provenance(srcs, f"vertices masked to R2 > {args.r2_floor}% "
+                         "(each variant to its own R2)"))
     report(out, "surface")
 
 
@@ -307,6 +340,12 @@ def main():
                         "(derivatives/prf_unpooled). Omit for the subject's "
                         "POOLED product (derivatives/prf, space-T1w)")
     p.add_argument("--polarity", choices=("prf", "negprf"), default="prf")
+    p.add_argument("--variants", default=None,
+                   help="comma-separated fit variants to merge into ONE "
+                        "bundle behind a variant selector (e.g. "
+                        "prf,negprf,motion6prf), or 'auto' for every fit "
+                        "with a desc-R2 map in the unit directory; "
+                        "default: just --polarity, one bundle per call")
     p.add_argument("--mode", choices=("volume", "surface", "both"),
                    default="both")
     p.add_argument("--hemi", choices=("L", "R", "both"), default="both")

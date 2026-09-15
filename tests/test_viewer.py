@@ -109,6 +109,14 @@ def test_template_has_threshold_slider():
         assert token in text
 
 
+def test_template_has_variant_selector():
+    # second toggle dimension; volume mode decodes variants lazily
+    text = viewer.TEMPLATE.read_text()
+    for token in ('id="variantbox"', "loadVariant", "removeVolume",
+                  "activeVariant"):
+        assert token in text
+
+
 # ---------------------------------------------------------------------------
 # masking
 # ---------------------------------------------------------------------------
@@ -177,6 +185,27 @@ def test_surface_bundle_layers_and_sentinel(surf_files, tmp_path):
     assert payloads["lh.inflated"] == mesh.read_bytes()
 
 
+def test_variant_field_passes_through_both_builders(vol_pair, surf_files,
+                                                    tmp_path):
+    stat, mask, _ = vol_pair
+    out = viewer.build_volume_viewer(
+        stat,
+        [{"path": stat, "label": "R2", "variant": "prf"},
+         {"path": stat, "name": "b.nii.gz", "label": "R2", "variant": "negprf"}],
+        tmp_path / "v.html")
+    cfg, _ = embedded_payloads(out.read_text())
+    assert [v.get("variant") for v in cfg["volumes"]] == [None, "prf", "negprf"]
+
+    mesh, curv, gii, _ = surf_files
+    out = viewer.build_surface_viewer(
+        mesh,
+        [{"path": curv, "label": "curvature", "shade": True},
+         {"path": gii, "label": "stat", "variant": "prf"}],
+        tmp_path / "s.html")
+    cfg, _ = embedded_payloads(out.read_text())
+    assert [l["variant"] for l in cfg["meshes"][0]["layers"]] == [None, "prf"]
+
+
 def test_script_safe_neutralizes_inline_breakers():
     js = 'a.indexOf("<!--"); b("<script>"); c("</script>")'
     safe = viewer._script_safe(js)
@@ -213,3 +242,23 @@ def test_cli_spec_parsing(tmp_path):
         cli.parse_spec(f"{p}:bogus=1")
     with pytest.raises(SystemExit):
         cli.parse_spec(str(tmp_path / "missing.nii.gz"))
+
+
+def test_cli_variant_list(tmp_path):
+    scripts = str(Path(__file__).resolve().parent.parent / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import argparse
+    import build_brain_viewer as cli
+    ns = argparse.Namespace(variants=None, polarity="negprf")
+    assert cli._variant_list(ns, tmp_path, "b_desc-R2_", ".nii.gz") == ["negprf"]
+    ns.variants = "prf,negprf"
+    assert cli._variant_list(ns, tmp_path, "b_desc-R2_", ".nii.gz") == \
+        ["prf", "negprf"]
+    ns.variants = "auto"
+    for pol in ("motion6prf", "prf", "negprf"):
+        (tmp_path / f"b_desc-R2_{pol}.nii.gz").write_bytes(b"")
+    assert cli._variant_list(ns, tmp_path, "b_desc-R2_", ".nii.gz") == \
+        ["prf", "negprf", "motion6prf"]
+    with pytest.raises(SystemExit):
+        cli._variant_list(ns, tmp_path, "missing_desc-R2_", ".nii.gz")

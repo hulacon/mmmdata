@@ -51,6 +51,10 @@
   <aside>
     <h2>Overlay</h2>
     <div id="layers"></div>
+    <div id="variantbox" style="display:none">
+      <h2>Variant</h2>
+      <div id="variants"></div>
+    </div>
     <h2>Opacity</h2>
     <input type="range" id="alpha" min="0" max="1" step="0.05">
     <div id="threshbox" style="display:none">
@@ -119,27 +123,71 @@ const nv = new niivue.Niivue({
 nv.onLocationChange = d => { $("loc").textContent = (d && d.string) || ""; };
 
 // Exclusive stat-layer toggle; shade layers and the underlay stay put.
-let active = -1;  // index into CONFIG list of toggleable entries
-function toggleables() {
+// The toggle is two-dimensional when entries carry a variant (several map
+// families of the same parameters in one bundle): Overlay picks the
+// parameter (label), Variant picks the family, and the active entry is
+// the (label, variant) pair. Entries keep their stable CONFIG index i.
+function entries() {
   return CONFIG.mode === "volume"
     ? CONFIG.volumes.map((v, i) => ({ ...v, i })).filter(v => !v.isUnderlay)
     : CONFIG.meshes[0].layers.map((l, i) => ({ ...l, i })).filter(l => !l.shade);
 }
-function applyActive() {
+const uniq = xs => [...new Set(xs)];
+const VARIANTS = uniq(entries().map(e => e.variant).filter(v => v != null));
+const hasVariants = VARIANTS.length > 1;
+let activeParam = null;                 // label of the active overlay
+let activeVariant = VARIANTS[0] || null;
+function activeEntry() {
+  return entries().find(e => e.label === activeParam &&
+    (!hasVariants || e.variant === activeVariant)) || null;
+}
+
+// Volume mode decodes lazily: only the underlay plus the active variant's
+// maps are resident (four variants all-resident would be ~4x the memory
+// for maps that are hidden anyway). nvIndex maps a CONFIG index to the
+// entry's current position in nv.volumes. Surface layers are per-vertex
+// and cheap, so they all load up front as before.
+let loadedVariant;                      // undefined until the first load
+const nvIndex = new Map();
+async function loadVariant(v) {
+  if (loadedVariant === v) return;
+  while (nv.volumes.length > 1) nv.removeVolume(nv.volumes[1]);
+  nvIndex.clear();
+  for (const e of entries()) {
+    if (hasVariants && e.variant !== v) continue;
+    const img = await niivue.NVImage.loadFromBase64({
+      base64: e.base64, name: e.name });
+    img.colormap = e.colormap;
+    img.cal_min = e.i in thr ? thr[e.i]           // threshold survives the
+      : (e.cal_min === null ? 0 : e.cal_min);     // variant switch
+    if (e.cal_max !== null) img.cal_max = e.cal_max;
+    img.opacity = 0;
+    img.colorbarVisible = false;
+    nvIndex.set(e.i, nv.volumes.length);
+    nv.addVolume(img);
+  }
+  loadedVariant = v;
+}
+
+async function applyActive() {
   const alpha = parseFloat($("alpha").value);
-  for (const t of toggleables()) {
-    const on = t.i === active;
+  if (CONFIG.mode === "volume") await loadVariant(activeVariant);
+  for (const e of entries()) {
+    const on = e.label === activeParam &&
+      (!hasVariants || e.variant === activeVariant);
     if (CONFIG.mode === "volume") {
-      nv.volumes[t.i].colorbarVisible = on;
-      nv.setOpacity(t.i, on ? alpha : 0);
+      const vi = nvIndex.get(e.i);
+      if (vi === undefined) continue;   // not the loaded variant
+      nv.volumes[vi].colorbarVisible = on;
+      nv.setOpacity(vi, on ? alpha : 0);
     } else {
       const id = nv.meshes[0].id;
-      nv.setMeshLayerProperty(id, t.i, "colorbarVisible", on ? 1 : 0);
-      nv.setMeshLayerProperty(id, t.i, "opacity", on ? alpha : 0);
+      nv.setMeshLayerProperty(id, e.i, "colorbarVisible", on ? 1 : 0);
+      nv.setMeshLayerProperty(id, e.i, "opacity", on ? alpha : 0);
     }
-    if (on) $("wheelbox").style.display = t.angle_legend ? "block" : "none";
   }
-  if (active < 0) $("wheelbox").style.display = "none";
+  const a = activeEntry();
+  $("wheelbox").style.display = a && a.angle_legend ? "block" : "none";
   nv.updateGLVolume();
   syncThresh();
 }
@@ -149,10 +197,10 @@ function applyActive() {
 // clip for mesh layers), so sliding to 0 shows it unthresholded. Hidden
 // for angle layers (hsv is cyclic — a floor on degrees is meaningless)
 // and per-layer: each stat layer keeps its own threshold across toggles.
-const thr = {};  // layer index -> current cal_min
+const thr = {};  // CONFIG index -> current cal_min
 const fmtThr = v => "show ≥ " + (+v).toPrecision(3);
 function syncThresh() {
-  const t = toggleables().find(t => t.i === active);
+  const t = activeEntry();
   const usable = t && !t.angle_legend && t.cal_max !== null;
   $("threshbox").style.display = usable ? "block" : "none";
   if (!usable) return;
@@ -163,26 +211,38 @@ function syncThresh() {
   $("threshcap").textContent = fmtThr(thr[t.i]);
 }
 $("thresh").addEventListener("input", () => {
-  if (active < 0) return;
+  const t = activeEntry();
+  if (!t) return;
   const v = parseFloat($("thresh").value);
-  thr[active] = v;
-  if (CONFIG.mode === "volume") nv.volumes[active].cal_min = v;
-  else nv.setMeshLayerProperty(nv.meshes[0].id, active, "cal_min", v);
+  thr[t.i] = v;
+  if (CONFIG.mode === "volume") {
+    const vi = nvIndex.get(t.i);
+    if (vi === undefined) return;
+    nv.volumes[vi].cal_min = v;
+  } else nv.setMeshLayerProperty(nv.meshes[0].id, t.i, "cal_min", v);
   nv.updateGLVolume();
   $("threshcap").textContent = fmtThr(v);
 });
 function buildControls() {
-  const box = $("layers");
-  const mk = (label, idx) => {
+  const mkRadio = (box, group, label, checked, onpick) => {
     const l = document.createElement("label"); l.className = "row";
     const r = document.createElement("input");
-    r.type = "radio"; r.name = "layer"; r.checked = idx === active;
-    r.addEventListener("change", () => { active = idx; applyActive(); });
+    r.type = "radio"; r.name = group; r.checked = checked;
+    r.addEventListener("change", onpick);
     l.append(r, document.createTextNode(label));
     box.append(l);
   };
-  mk("none", -1);
-  for (const t of toggleables()) mk(t.label, t.i);
+  const box = $("layers");
+  mkRadio(box, "layer", "none", activeParam === null,
+          () => { activeParam = null; applyActive(); });
+  for (const p of uniq(entries().map(e => e.label)))
+    mkRadio(box, "layer", p, p === activeParam,
+            () => { activeParam = p; applyActive(); });
+  if (!hasVariants) return;
+  $("variantbox").style.display = "block";
+  for (const v of VARIANTS)
+    mkRadio($("variants"), "variant", v, v === activeVariant,
+            () => { activeVariant = v; applyActive(); });
 }
 
 async function init() {
@@ -190,16 +250,16 @@ async function init() {
   if (CONFIG.mode === "volume") {
     $("hint").textContent =
       "click: crosshair · scroll: slice · right-drag: zoom · drag render view: rotate";
-    for (const v of CONFIG.volumes) {
-      const img = await niivue.NVImage.loadFromBase64({
-        base64: v.base64, name: v.name });
-      img.colormap = v.colormap;
-      if (v.cal_min !== null) img.cal_min = v.cal_min;
-      if (v.cal_max !== null) img.cal_max = v.cal_max;
-      img.opacity = v.isUnderlay ? 1 : 0;
-      img.colorbarVisible = false;
-      nv.addVolume(img);
-    }
+    // underlay only; applyActive lazy-loads the active variant's overlays
+    const u = CONFIG.volumes.find(v => v.isUnderlay);
+    const img = await niivue.NVImage.loadFromBase64({
+      base64: u.base64, name: u.name });
+    img.colormap = u.colormap;
+    if (u.cal_min !== null) img.cal_min = u.cal_min;
+    if (u.cal_max !== null) img.cal_max = u.cal_max;
+    img.opacity = 1;
+    img.colorbarVisible = false;
+    nv.addVolume(img);
     nv.setSliceType(nv.sliceTypeMultiplanar);
   } else {
     $("hint").textContent = "drag: rotate · scroll: zoom · right-drag: pan";
@@ -242,16 +302,18 @@ async function init() {
     }
     nv.setRenderAzimuthElevation(views.medial, 0);
   }
-  const first = toggleables().find(t => t.visible);
-  active = first ? first.i : -1;
+  const first = entries().find(e => e.visible);
+  activeParam = first ? first.label : null;
+  if (hasVariants && first) activeVariant = first.variant;
   $("alpha").value = first ? first.opacity : 0.8;
   buildControls();
-  applyActive();
+  await applyActive();
   drawWheel();
   $("notes").textContent = CONFIG.notes || "(none)";
   status("NiiVue " + (nv.version || "") + " — " + CONFIG.mode + " mode, " +
     (CONFIG.mode === "volume"
-      ? nv.volumes.length + " volumes"
+      ? CONFIG.volumes.length + " volumes" +
+        (hasVariants ? " (" + VARIANTS.length + " variants, on demand)" : "")
       : "1 mesh, " + CONFIG.meshes[0].layers.length + " layers"));
 }
 $("alpha").addEventListener("input", applyActive);

@@ -25,7 +25,12 @@ What it places:
     *.nii.gz with BIDS entities          volume bundle; underlay by space-
     *.shape.gii / *.func.gii with hemi-  surface bundle; fsnative mesh by hemi-
     a directory of either                one bundle per (space, hemi, suffix)
-                                         group, every map a toggle layer
+                                         group, every map a toggle layer;
+                                         pRF fit variants (prf, negprf,
+                                         motion6prf, ...) merge into ONE
+                                         bundle per (space, hemi) with a
+                                         variant selector, named
+                                         *_desc-viewer_prfvariants.html
     *.csv / *.parquet + *.meta.json      the dashboard of the sidecar's
                                          extractor (viz2psy, aud2psy, word2psy)
     movies_*_features.csv/.parquet       psytwill's movies timeline viewer,
@@ -45,7 +50,11 @@ table in build_brain_viewer.py.
 
 Bundles are findings: they land in <sub-##>/viz/ beside the data, never in a
 repo. A second call on unchanged inputs reuses the bundle (a sha256 key over
-the inputs and profile is written into the provenance note).
+the inputs and profile is written into the provenance note). A viz dir
+holding more than one bundle also gets a data-free index.html — a pulldown
+over every bundle present, shown in an iframe — regenerated from the
+directory listing whenever a bundle lands, and opened (preselecting the
+bundle just built) instead of "the first of N outputs".
 
 Roots come from config/base.toml (+ local.toml): paths.output_dir,
 paths.bids_project_dir, paths.stimfeat_env.
@@ -79,7 +88,7 @@ EXIT_UNPLACEABLE = 2
 EXIT_RENDER = 3
 R2_FLOOR_DEFAULT = 10.0   # percent, as build_brain_viewer.py
 ARTIFACT_CAP_MB = 16.0    # claude.ai artifact route; larger bundles are file:// only
-PROFILE_VERSION = 2       # bump when a display profile changes: keys change,
+PROFILE_VERSION = 3       # bump when a display profile changes: keys change,
                           # existing bundles rebuild
 
 HEMIS = {"L": "lh", "R": "rh"}
@@ -144,14 +153,21 @@ class Target:
     kind: str                       # volume | surface | features | movies
     maps: list                      # Path(s); one for a file, many for a dir
     entities: dict = field(default_factory=dict)   # shared, filename order
-    suffix: str = None
+    suffix: str = None              # None when variants spans several
     sidecar: Path = None            # features only
     extractor: str = None           # features only
     source: Path = None             # what the user pointed at
+    variants: tuple = None          # >1 pRF fit variants merged in one bundle
 
 
 PRF_DESCS = ("R2", "angle", "eccentricity", "size", "sigma", "gain",
              "exponent")
+
+
+def _variant_rank(v):
+    """Stable variant order: the plain fit first, its negative second,
+    everything else (confound variants etc.) alphabetically after."""
+    return ({"prf": 0, "negprf": 1}.get(v, 2), v or "")
 
 
 def family_of(entities, suffix):
@@ -255,14 +271,28 @@ def _classify_dir(path):
     groups = {}
     for t in singles:
         groups.setdefault(_group_key(t), []).append(t)
+    # pRF fit variants (same space/hemi/ses/task/run, different suffix —
+    # prf/negprf/motion6prf/...) merge into ONE bundle carrying a variant
+    # selector; every other key keeps a bundle per suffix.
+    buckets = {}
+    for key, members in groups.items():
+        is_prf = family_of(members[0].entities, key[-1]) == "prf"
+        bucket = (key[:-1], True) if is_prf else (key, False)
+        buckets.setdefault(bucket, []).append((key[-1], members))
     out = []
-    for members in groups.values():
+    for variant_groups in buckets.values():
+        variant_groups.sort(key=lambda kv: _variant_rank(kv[0]))
+        members = [t for _, ms in variant_groups for t in ms]
         common = dict(members[0].entities)
         for t in members[1:]:
             common = {k: v for k, v in common.items()
                       if t.entities.get(k) == v}
+        vnames = tuple(v for v, _ in variant_groups)
         out.append(Target(members[0].kind, [t.maps[0] for t in members],
-                          common, members[0].suffix, source=path))
+                          common,
+                          suffix=vnames[0] if len(vnames) == 1 else None,
+                          source=path,
+                          variants=vnames if len(vnames) > 1 else None))
     return out
 
 
@@ -444,6 +474,7 @@ def _label(entities, suffix, family):
 
 def _sorted_display(entries):
     return sorted(entries, key=lambda e: (_FAMILY_ORDER[e["family"]],
+                                          _variant_rank(e.get("variant")),
                                           str(e["map"])))
 
 
@@ -576,7 +607,8 @@ def _key(inputs, display, opts):
     for p in sorted(str(p) for p in inputs if p):
         h.update(p.encode())
         h.update(_sha(p).encode())
-    prof = [(str(e["map"]), e["family"], json.dumps(e["profile"], sort_keys=True))
+    prof = [(str(e["map"]), e["family"], e.get("variant"),
+             json.dumps(e["profile"], sort_keys=True))
             for e in display]
     h.update(json.dumps(prof).encode())
     h.update(f"{opts.r2_floor}|{opts.surf}".encode())
@@ -593,10 +625,15 @@ def resolve(target, roots, opts=None):
         return _resolve_movies(target, roots, opts)
 
     out_dir = Path(opts.out_dir) if opts.out_dir else viz_dir_for(target.source)
-    out = out_dir / bundle_name(target.entities, target.suffix)
-    display = _sorted_display([
-        display_for(m, parse_entities(m.name)[0], target.suffix, opts.r2_floor)
-        for m in target.maps])
+    out = out_dir / bundle_name(
+        target.entities, "prfvariants" if target.variants else target.suffix)
+    display = []
+    for m in target.maps:
+        ents, sfx, _ = parse_entities(m.name)
+        entry = display_for(m, ents, sfx, opts.r2_floor)
+        entry["variant"] = sfx if target.variants else None
+        display.append(entry)
+    display = _sorted_display(display)
     messages = [e["message"] for e in display if e["message"]]
     inputs = {"maps": list(target.maps)}
     sub = target.entities.get("sub", "?")
@@ -635,7 +672,9 @@ def _title_bits(target):
     e = target.entities
     bits = [f"{k}-{v}" for k, v in e.items()
             if k in ("ses", "task", "run", "contrast", "stat", "desc")]
-    if target.suffix:
+    if target.variants:
+        bits.append("+".join(target.variants))
+    elif target.suffix:
         bits.append(target.suffix)
     return " ".join(bits)
 
@@ -648,6 +687,10 @@ def _provenance(sources, display, key, opts):
              "(pRF maps masked to R2 > floor); z/t/effect negative tails "
              "are a separate layer",
              f"mmmview-key: {key}"]
+    variants = [v for v in dict.fromkeys(e.get("variant") for e in display) if v]
+    if variants:
+        lines.insert(2, f"variants: {', '.join(variants)} — each masked to "
+                        "its own R2; selector in the viewer")
     lines += [f"  {Path(s).name}" for s in sources if s]
     return "\n".join(lines)
 
@@ -886,7 +929,10 @@ def render(plan, force=False):
         if plan.renderer == "volume":
             overlays = []
             for e in plan.display:
-                overlays += _volume_specs(e, floor)
+                specs = _volume_specs(e, floor)
+                for s in specs:
+                    s["variant"] = e.get("variant")
+                overlays += specs
             for i, o in enumerate(overlays):
                 o["visible"] = i == 0
             viewer.build_volume_viewer(
@@ -899,7 +945,10 @@ def render(plan, force=False):
                                "shade": True, "colormap": "gray",
                                "cal_min": 0.3, "cal_max": 0.8, "opacity": 0.7})
             for e in plan.display:
-                layers += _surface_specs(e, floor)
+                specs = _surface_specs(e, floor)
+                for s in specs:
+                    s["variant"] = e.get("variant")
+                layers += specs
             viewer.build_surface_viewer(plan.inputs["mesh"], layers, plan.out,
                                         title=plan.title, notes=plan.notes)
     except Exception as exc:   # renderer failure, not a placement failure
@@ -914,13 +963,95 @@ def _floor_from(plan):
     return R2_FLOOR_DEFAULT
 
 
-def open_view(path):
+# ---------------------------------------------------------------------------
+# viz-dir index — one pulldown over every bundle in the directory
+# ---------------------------------------------------------------------------
+
+_INDEX_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__ — mmmview</title>
+<style>
+  :root { --bg:#101014; --panel:#1a1a22; --ink:#e8e8ee; --edge:#2c2c38; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.45 system-ui, sans-serif;
+         display:flex; flex-direction:column; height:100vh; }
+  header { padding:8px 14px; border-bottom:1px solid var(--edge);
+           background:var(--panel); display:flex; align-items:center;
+           gap:12px; flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0; font-weight:600; }
+  select { background:var(--panel); color:var(--ink);
+           border:1px solid var(--edge); border-radius:6px;
+           padding:5px 8px; font:inherit; max-width:70vw; }
+  iframe { flex:1; border:0; width:100%; }
+</style>
+</head>
+<body>
+<header><h1>__TITLE__</h1><select id="pick">
+__OPTIONS__
+</select></header>
+<iframe id="view" src=""></iframe>
+<script>
+"use strict";
+const pick = document.getElementById("pick"), view = document.getElementById("view");
+// #<bundle-filename> preselects a view (mmmview passes the one just built)
+if (location.hash) {
+  const want = decodeURIComponent(location.hash.slice(1));
+  for (const o of pick.options) if (o.value === want) pick.value = want;
+}
+const go = () => { view.src = pick.value; };
+pick.addEventListener("change", go);
+go();
+</script>
+</body>
+</html>
+"""
+
+
+def _index_label(name):
+    """Display label for a bundle filename: its entities minus the
+    constant-per-directory sub- and the desc-viewer marker."""
+    ents, suffix, _ = parse_entities(name)
+    bits = [f"{k}-{v}" for k, v in ents.items() if k not in ("sub", "desc")]
+    if suffix:
+        bits.append(suffix)
+    return " ".join(bits) or name
+
+
+def write_index(viz_dir):
+    """(Re)generate viz_dir/index.html: a pulldown over every viewer bundle
+    in the directory, shown in an iframe. Data-free — it holds filenames
+    only, so it is rebuilt from the directory listing every time a bundle
+    lands and stays current for bundles from earlier runs too. Returns the
+    index path, or None when fewer than two bundles exist (a lone bundle
+    needs no index)."""
+    bundles = sorted(p.name for p in viz_dir.iterdir()
+                     if p.is_file() and "_desc-viewer" in p.name
+                     and p.name.endswith(".html"))
+    if len(bundles) < 2:
+        return None
+    options = "\n".join(f'<option value="{n}">{_index_label(n)}</option>'
+                        for n in bundles)
+    html = (_INDEX_TEMPLATE.replace("__TITLE__", viz_dir.parent.name)
+                           .replace("__OPTIONS__", options))
+    idx = viz_dir / "index.html"
+    if not idx.exists() or idx.read_text() != html:
+        idx.write_text(html)
+    return idx
+
+
+def open_view(path, fragment=None):
     """Try $BROWSER, then the platform opener: `open` on macOS (a GUI is
     always there — no $DISPLAY to gate on), xdg-open under a display
     elsewhere. Returns a note, or None when nothing could open it (the
     caller prints the path and a hint)."""
     browser = os.environ.get("BROWSER")
     uri = Path(path).resolve().as_uri()     # helpers want a URI, not a path
+    if fragment:
+        uri += "#" + fragment
     if browser:
         try:
             subprocess.Popen(shlex.split(browser) + [uri],
@@ -998,10 +1129,23 @@ def main(argv=None):
               f"{plan.renderer}){cap}")
         outs.append(out)
 
+    # a viz dir holding several bundles gets a pulldown index; open that
+    # (preselecting this run's first bundle) instead of "the first of N"
+    index = None
+    bundle_outs = [p.out for p in plans if p.renderer in ("volume", "surface")]
+    for d in sorted({o.parent for o in bundle_outs}):
+        got = write_index(d)
+        if got:
+            index = got
+            print(f"index {got}")
+
     if not args.no_open and outs:
-        if len(outs) > 1:
-            print(f"opening the first of {len(outs)} outputs")
-        note = open_view(outs[0])
+        if index:
+            note = open_view(index, fragment=bundle_outs[0].name)
+        else:
+            if len(outs) > 1:
+                print(f"opening the first of {len(outs)} outputs")
+            note = open_view(outs[0])
         print(note if note else OPEN_HINT)
     return 0
 

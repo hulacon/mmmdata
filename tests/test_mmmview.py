@@ -118,7 +118,7 @@ class TestClassify:
         with pytest.raises(Unplaceable, match="fsnative"):
             classify(p)
 
-    def test_directory_groups_by_space_hemi_suffix(self, tmp_path):
+    def test_directory_groups_by_space_hemi_and_merges_prf_variants(self, tmp_path):
         d = tmp_path / "sub-07"
         for pol in ("prf", "negprf"):
             for param in ("R2", "angle", "eccentricity"):
@@ -129,16 +129,31 @@ class TestClassify:
         touch(d / "sub-07_task-prf_space-T1w_prf.json")          # ignored
         touch(d / "viz" / "sub-07_task-prf_space-T1w_desc-viewer_prf.html")
         targets = classify(d)
+        # pRF suffix variants merge into ONE target per (space, hemi)
         keys = sorted((t.kind, t.entities.get("space"), t.entities.get("hemi"),
-                       t.suffix) for t in targets)
+                       t.suffix, t.variants) for t in targets)
         assert keys == [
-            ("surface", "fsnative", "L", "negprf"), ("surface", "fsnative", "L", "prf"),
-            ("surface", "fsnative", "R", "negprf"), ("surface", "fsnative", "R", "prf"),
-            ("volume", "T1w", None, "negprf"), ("volume", "T1w", None, "prf")]
-        vol = next(t for t in targets if t.kind == "volume" and t.suffix == "prf")
-        assert len(vol.maps) == 3
+            ("surface", "fsnative", "L", None, ("prf", "negprf")),
+            ("surface", "fsnative", "R", None, ("prf", "negprf")),
+            ("volume", "T1w", None, None, ("prf", "negprf"))]
+        vol = next(t for t in targets if t.kind == "volume")
+        assert len(vol.maps) == 6
         # desc differs across members, so it drops out of the shared entities
         assert "desc" not in vol.entities and vol.entities["task"] == "prf"
+
+    def test_directory_single_prf_variant_is_unmerged(self, tmp_path):
+        d = tmp_path / "sub-07"
+        for param in ("R2", "angle"):
+            touch(d / f"sub-07_task-prf_space-T1w_desc-{param}_negprf.nii.gz")
+        (t,) = classify(d)
+        assert t.suffix == "negprf" and t.variants is None
+
+    def test_variant_order_plain_negative_then_confounds(self, tmp_path):
+        d = tmp_path / "sub-07"
+        for pol in ("acompcorprf", "negprf", "prf", "motion6prf"):
+            touch(d / f"sub-07_task-prf_space-T1w_desc-R2_{pol}.nii.gz")
+        (t,) = classify(d)
+        assert t.variants == ("prf", "negprf", "acompcorprf", "motion6prf")
 
     def test_directory_spanning_subjects_is_unplaceable(self, tmp_path):
         touch(tmp_path / "sub-07_space-T1w_stat-z_statmap.nii.gz")
@@ -332,6 +347,25 @@ class TestOutputPath:
         (t,) = classify(d)
         plan = resolve(t, roots)
         assert plan.out == d / "viz" / "sub-07_task-prf_space-T1w_desc-viewer_prf.html"
+
+    def test_merged_variant_bundle_name_and_display(self, roots, tmp_path):
+        d = tmp_path / "derivatives" / "prf" / "sub-07"
+        for pol in ("negprf", "prf"):
+            for param in ("R2", "angle"):
+                touch(d / f"sub-07_task-prf_space-T1w_desc-{param}_{pol}.nii.gz")
+        (t,) = classify(d)
+        plan = resolve(t, roots)
+        assert plan.out == (d / "viz" /
+                            "sub-07_task-prf_space-T1w_desc-viewer_prfvariants.html")
+        # sorted plain-fit first, each entry carrying its variant, each
+        # variant masked on its OWN R2
+        assert [(e["label"], e["variant"]) for e in plan.display] == [
+            ("R2", "prf"), ("angle", "prf"),
+            ("R2", "negprf"), ("angle", "negprf")]
+        ang_neg = next(e for e in plan.display
+                       if e["label"] == "angle" and e["variant"] == "negprf")
+        assert ang_neg["mask"].name.endswith("_desc-R2_negprf.nii.gz")
+        assert "prf+negprf" in plan.title
 
     def test_out_dir_override(self, roots, tmp_path):
         p = touch(tmp_path / "x" / "sub-07_space-T1w_stat-z_statmap.nii.gz")
@@ -615,6 +649,31 @@ class TestRenderVolume:
         assert cfg["volumes"][1]["cal_min"] == 10.0
         assert cfg["volumes"][2]["angle_legend"] and cfg["volumes"][2]["cal_max"] == 360.0
 
+    def test_prf_variant_bundle_config(self, roots, tmp_path):
+        d = tmp_path / "x"
+        d.mkdir()
+        u = d / "u.nii.gz"
+        nib.save(nib.Nifti1Image(np.ones((3, 3, 2), np.float32), np.eye(4)), u)
+        for pol in ("prf", "negprf"):
+            base = f"sub-07_task-prf_space-T1w_desc-{{}}_{pol}.nii.gz"
+            nib.save(nib.Nifti1Image(np.full((3, 3, 2), 50.0, np.float32),
+                                     np.eye(4)), d / base.format("R2"))
+            nib.save(nib.Nifti1Image(np.full((3, 3, 2), 90.0, np.float32),
+                                     np.eye(4)), d / base.format("angle"))
+        (t,) = classify(d)
+        plan = resolve(t, roots, Opts(underlay=str(u)))
+        out, _ = render(plan)
+        assert out.name.endswith("_desc-viewer_prfvariants.html")
+        html = out.read_text()
+        cfg = _config(html)
+        got = [(v["label"], v.get("variant")) for v in cfg["volumes"]]
+        assert got == [("underlay", None), ("R2", "prf"), ("angle", "prf"),
+                       ("R2", "negprf"), ("angle", "negprf")]
+        assert [v["visible"] for v in cfg["volumes"][1:]] == [
+            True, False, False, False]
+        assert 'id="variantbox"' in html
+        assert "variants: prf, negprf" in cfg["notes"]
+
     def test_renderer_failure_is_render_error(self, roots, tmp_path):
         p = touch(tmp_path / "x" / "sub-07_space-T1w_stat-z_statmap.nii.gz", "not nifti")
         u = touch(tmp_path / "x" / "u.nii.gz", "not nifti")
@@ -651,6 +710,75 @@ class TestSurfaceRender:
         assert [l["label"] for l in mesh["layers"]] == ["curvature", "R2", "eccentricity"]
         assert mesh["layers"][0]["shade"] and mesh["layers"][1]["visible"]
         assert not mesh["layers"][2]["visible"]
+
+
+# ---------------------------------------------------------------------------
+# viz-dir index
+# ---------------------------------------------------------------------------
+
+class TestIndex:
+    def test_lists_bundles_with_entity_labels(self, tmp_path):
+        viz = tmp_path / "sub-07" / "viz"
+        vol = "sub-07_task-prf_space-T1w_desc-viewer_prfvariants.html"
+        surf = "sub-07_task-prf_space-fsnative_hemi-L_desc-viewer_prfvariants.html"
+        feat = "aesthetics_desc-viewer.html"          # a dashboard counts too
+        for n in (vol, surf, feat):
+            touch(viz / n)
+        touch(viz / "notes.txt")                      # never listed
+        idx = mmmview.write_index(viz)
+        html = idx.read_text()
+        assert idx.name == "index.html"
+        assert f'value="{vol}"' in html
+        assert "task-prf space-fsnative hemi-L prfvariants" in html
+        assert "aesthetics" in html
+        assert "notes.txt" not in html
+        assert "<h1>sub-07</h1>" in html
+        assert "<iframe" in html and 'src="http' not in html   # data-free, local
+
+    def test_lone_bundle_needs_no_index(self, tmp_path):
+        viz = tmp_path / "viz"
+        touch(viz / "sub-07_task-x_desc-viewer_statmap.html")
+        assert mmmview.write_index(viz) is None
+        assert not (viz / "index.html").exists()
+
+    def test_unchanged_index_is_not_rewritten(self, tmp_path):
+        viz = tmp_path / "viz"
+        touch(viz / "sub-07_stat-z_desc-viewer_statmap.html")
+        touch(viz / "sub-07_desc-brain_desc-viewer_mask.html")
+        idx = mmmview.write_index(viz)
+        before = idx.stat().st_mtime_ns
+        assert mmmview.write_index(viz) == idx
+        assert idx.stat().st_mtime_ns == before
+
+    def test_cli_multi_bundle_dir_writes_index(self, roots, tmp_path, capsys,
+                                               monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d = tmp_path / "x"
+        d.mkdir()
+        u = d / "u.nii.gz"
+        ones = np.ones((3, 3, 2), np.float32)
+        nib.save(nib.Nifti1Image(ones, np.eye(4)), u)
+        nib.save(nib.Nifti1Image(ones, np.eye(4)),
+                 d / "sub-07_space-T1w_stat-z_statmap.nii.gz")
+        nib.save(nib.Nifti1Image(ones, np.eye(4)),
+                 d / "sub-07_space-T1w_desc-brain_mask.nii.gz")
+        rc = mmmview.main([str(d), "--no-open", "--underlay", str(u)])
+        out = capsys.readouterr().out
+        assert rc == 0
+        idx = d / "viz" / "index.html"
+        assert idx.exists() and f"index {idx}" in out
+        html = idx.read_text()
+        assert "_desc-viewer_statmap.html" in html
+        assert "_desc-viewer_mask.html" in html
+
+    def test_open_fragment_preselects(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BROWSER", "true")
+        calls = []
+        monkeypatch.setattr(mmmview.subprocess, "Popen",
+                            lambda cmd, **kw: calls.append(cmd))
+        idx = touch(tmp_path / "index.html")
+        assert mmmview.open_view(idx, fragment="a_desc-viewer_b.html")
+        assert calls[0][-1].endswith("index.html#a_desc-viewer_b.html")
 
 
 # ---------------------------------------------------------------------------

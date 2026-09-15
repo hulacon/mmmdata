@@ -133,7 +133,10 @@ def build_volume_viewer(underlay, overlays, out, title="brain viewer",
 
     Overlay spec keys: ``path`` OR ``image`` (in-memory nibabel image, e.g.
     from :func:`masked_volume`), ``name``, ``colormap``, ``cal_min``,
-    ``cal_max``, ``opacity``, ``visible``, ``angle_legend``.
+    ``cal_max``, ``opacity``, ``visible``, ``angle_legend``, ``variant``
+    (a family name shared by a set of same-labeled overlays; two or more
+    distinct variants make the viewer show a second, variant radio group,
+    and volume mode then decodes only the active variant's maps).
     """
     if not isinstance(underlay, dict):
         underlay = {"path": underlay}
@@ -160,7 +163,8 @@ def build_volume_viewer(underlay, overlays, out, title="brain viewer",
     for i, spec in enumerate(overlays):
         spec = _norm_spec(spec, {"colormap": "viridis", "cal_min": 0.0,
                                  "cal_max": None, "opacity": 0.8,
-                                 "visible": i == 0, "angle_legend": False})
+                                 "visible": i == 0, "angle_legend": False,
+                                 "variant": None})
         vols.append({
             "name": nii_name(spec, i + 1),
             "label": spec.get("label") or Path(nii_name(spec, i + 1)).name,
@@ -169,6 +173,7 @@ def build_volume_viewer(underlay, overlays, out, title="brain viewer",
             "cal_min": spec["cal_min"], "cal_max": spec["cal_max"],
             "opacity": spec["opacity"], "visible": bool(spec["visible"]),
             "isUnderlay": False, "angle_legend": bool(spec["angle_legend"]),
+            "variant": spec["variant"],
         })
 
     return _render({"mode": "volume", "title": title, "notes": notes,
@@ -184,7 +189,9 @@ def build_surface_viewer(mesh, layers, out, title="brain viewer", notes=""):
     :func:`masked_shape_values`, serialized as .shape.gii), ``name``,
     ``colormap``, ``cal_min``, ``cal_max``, ``opacity``, ``visible``
     (False loads at opacity 0, toggleable), ``shade`` (True = always-on
-    shading, exempt from the exclusive stat-layer toggle), ``angle_legend``.
+    shading, exempt from the exclusive stat-layer toggle), ``angle_legend``,
+    ``variant`` (see :func:`build_volume_viewer`; surface layers stay
+    all-resident — per-vertex data is cheap).
     """
     mesh = Path(mesh)
     structure = "CortexRight" if mesh.name.startswith("rh") else "CortexLeft"
@@ -194,7 +201,7 @@ def build_surface_viewer(mesh, layers, out, title="brain viewer", notes=""):
         spec = _norm_spec(spec, {"colormap": "viridis", "cal_min": 0.0,
                                  "cal_max": None, "opacity": 0.7,
                                  "visible": None, "shade": False,
-                                 "angle_legend": False})
+                                 "angle_legend": False, "variant": None})
         if spec.get("values") is not None:
             data = shape_gii_bytes(spec["values"], structure)
             name = spec.get("name") or f"layer{i}.shape.gii"
@@ -215,6 +222,7 @@ def build_surface_viewer(mesh, layers, out, title="brain viewer", notes=""):
             "opacity": spec["opacity"], "visible": bool(spec["visible"]),
             "shade": bool(spec["shade"]),
             "angle_legend": bool(spec["angle_legend"]),
+            "variant": spec["variant"],
         })
 
     meshes = [{"name": mesh.name, "base64": _b64(mesh.read_bytes()),
