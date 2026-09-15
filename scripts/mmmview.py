@@ -1777,10 +1777,12 @@ def reap_main(argv):
     for verdict, f, size in rows:
         print(f"{verdict}\t{f}\t{size}")
     freed = sum(size for _, _, size in stale)
+    # phrasing hoisted out of the f-string: reusing the outer quote inside
+    # an f-string expression is PEP 701 (3.12+) and this repo's CI runs 3.11
+    disposition = ("deleted" if args.yes
+                   else "reclaimable (dry run; --yes to delete)")
     print(f"-- {len(rows)} candidates, {len(stale)} stale, "
-          f"{freed / 1e6:.1f} MB "
-          f"{'deleted' if args.yes else 'reclaimable (dry run; --yes to '
-             'delete)'}")
+          f"{freed / 1e6:.1f} MB {disposition}")
     if not args.yes:
         return 0
     for _, f, _ in stale:
