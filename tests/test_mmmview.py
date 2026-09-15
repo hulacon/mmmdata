@@ -1283,3 +1283,77 @@ class TestReap:
         out = capsys.readouterr().out
         assert out.splitlines()[0].startswith("keep")
         assert "0 stale" in out
+
+
+# ---------------------------------------------------------------------------
+# agent artifacts (mmmview-browse increment 4): agent-written HTML appears
+# in the surface, labelled by its provenance sidecar, and is never reaped
+# ---------------------------------------------------------------------------
+
+class TestAgentArtifacts:
+    def artifact(self, viz, slug="prfnotes", sidecar=True):
+        name = f"sub-07_desc-agent_{slug}.html"
+        touch(viz / name, "<html>an agent wrote this</html>")
+        if sidecar:
+            touch(viz / f"sub-07_desc-agent_{slug}.prov.json",
+                  json.dumps({"author": "mmmdata-qc agent",
+                              "date": "2026-09-15",
+                              "inputs": ["sub-##/func/sub-##_bold.nii.gz"],
+                              "command": "mmmview ..."}))
+        return viz / name
+
+    def test_index_lists_it_in_its_own_group(self, tmp_path):
+        viz = tmp_path / "sub-07" / "viz"
+        touch(viz / "sub-07_desc-viewer_statmap.html")
+        self.artifact(viz)
+        html = mmmview.write_index(viz).read_text()
+        assert "Agent-generated" in html
+        assert "sub-07_desc-agent_prfnotes.html" in html
+        assert "mmmdata-qc agent" in html
+
+    def test_browse_page_has_an_agent_section(self, roots, tmp_path):
+        d = tmp_path / "study"
+        touch(d / "README.md")
+        self.artifact(d / "viz")
+        html = mmmview.write_browse(d, roots).read_text()
+        assert "Agent-generated" in html
+        assert "mmmdata-qc agent" in html and "2026-09-15" in html
+
+    def test_missing_sidecar_is_flagged_unattributed(self, roots, tmp_path):
+        d = tmp_path / "study"
+        touch(d / "README.md")
+        self.artifact(d / "viz", slug="hunch", sidecar=False)
+        html = mmmview.write_browse(d, roots).read_text()
+        assert "unattributed" in html
+        assert "sub-07_desc-agent_hunch.html" in html
+
+    def test_unreadable_sidecar_is_unattributed_not_an_error(self, roots,
+                                                             tmp_path):
+        d = tmp_path / "study"
+        touch(d / "README.md")
+        self.artifact(d / "viz", slug="broken")
+        touch(d / "viz" / "sub-07_desc-agent_broken.prov.json", "{not json")
+        html = mmmview.write_browse(d, roots).read_text()
+        assert "unattributed" in html
+
+    def test_reap_never_lists_an_agent_artifact(self, roots, tmp_path,
+                                                capsys, monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d = tmp_path / "sub-07"
+        touch(d / "sub-07_space-T1w_stat-z_statmap.nii.gz", "z")
+        art = self.artifact(d / "viz")
+        assert mmmview.main(["reap", str(d), "--yes"]) == 0
+        assert "desc-agent" not in capsys.readouterr().out
+        assert art.exists()
+
+    def test_deface_report_glob_does_not_match_it(self, tmp_path):
+        viz = tmp_path / "viz"
+        art = self.artifact(viz)
+        assert art not in list(viz.glob("*_desc-viewer_*.html"))
+        assert list(viz.glob("*_desc-agent_*.html")) == [art]
+
+    def test_artifacts_are_not_classified_as_data(self, tmp_path):
+        viz = tmp_path / "viz"
+        self.artifact(viz)
+        with pytest.raises(Unplaceable):
+            classify(viz)

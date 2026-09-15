@@ -1052,10 +1052,19 @@ def write_index(viz_dir):
     bundles = sorted(p.name for p in viz_dir.iterdir()
                      if p.is_file() and "_desc-viewer" in p.name
                      and p.name.endswith(".html"))
-    if len(bundles) < 2:
+    agents = agent_artifacts(viz_dir)
+    if len(bundles) + len(agents) < 2:
         return None
     options = "\n".join(f'<option value="{n}">{_index_label(n)}</option>'
                         for n in bundles)
+    if agents:
+        # agent-written pages are views too, but never mmmview's output —
+        # kept in their own group so the distinction survives the pulldown
+        options += ('\n<optgroup label="Agent-generated">\n'
+                    + "\n".join(
+                        f'<option value="{a["name"]}">{a["label"]} — '
+                        f'{_agent_caption(a)}</option>' for a in agents)
+                    + "\n</optgroup>")
     html = (_INDEX_TEMPLATE.replace("__TITLE__", viz_dir.parent.name)
                            .replace("__OPTIONS__", options))
     idx = viz_dir / "index.html"
@@ -1067,6 +1076,44 @@ def write_index(viz_dir):
 # ---------------------------------------------------------------------------
 # browse pages — a directory mmmview cannot place is still navigable
 # ---------------------------------------------------------------------------
+
+AGENT_MARK = "_desc-agent"
+PROV_EXT = ".prov.json"
+
+
+def agent_artifacts(viz_dir):
+    """Agent-written pages in *viz_dir*: `*_desc-agent_<slug>.html`, each
+    described by a `<stem>.prov.json` sidecar (author, date, inputs,
+    command). A page without a readable sidecar still lists — flagged
+    unattributed — because hiding it would be worse than not knowing who
+    wrote it. These are never mmmview's output: reap ignores them (they
+    carry no mmmview-key) and the sidecar owns them."""
+    out = []
+    if not Path(viz_dir).is_dir():
+        return out
+    for p in sorted(Path(viz_dir).iterdir()):
+        if not (p.is_file() and AGENT_MARK in p.name
+                and p.name.endswith(".html")):
+            continue
+        author = date = None
+        prov = p.with_name(split_name(p.name)[0] + PROV_EXT)
+        if prov.exists():
+            try:
+                meta = json.loads(prov.read_text())
+                author, date = meta.get("author"), meta.get("date")
+            except (OSError, ValueError):
+                pass
+        out.append({"name": p.name, "path": p, "label": _index_label(p.name),
+                    "author": author, "date": date,
+                    "attributed": bool(author or date)})
+    return out
+
+
+def _agent_caption(a):
+    if not a["attributed"]:
+        return "unattributed"
+    return " ".join(str(b) for b in (a["author"], a["date"]) if b)
+
 
 BROWSE_PAGE = "browse.html"
 # The reaper keys on this exact string; every generated page carries it.
@@ -1145,7 +1192,7 @@ def browse_model(directory, roots, opts=None):
     model = {"dir": directory, "rel": _rel_to_root(directory, roots),
              "date": datetime.date.today().isoformat(),
              "command": f"mmmview {directory}",
-             "subdirs": [], "viewable": [], "bundles": []}
+             "subdirs": [], "viewable": [], "bundles": [], "agents": []}
     try:
         children = sorted(directory.iterdir())
     except OSError:
@@ -1168,6 +1215,7 @@ def browse_model(directory, roots, opts=None):
             if p.is_file() and "_desc-viewer" in p.name and p.name.endswith(".html"):
                 model["bundles"].append({"name": p.name, "path": p,
                                          "label": _index_label(p.name)})
+    model["agents"] = agent_artifacts(viz)
     return model
 
 
@@ -1260,6 +1308,11 @@ def _browse_sections(model, link, build_link=None, dir_link=None):
     rows = [f'<a href="{_escape(link(b["path"]))}">{_escape(b["label"])}</a>'
             for b in model["bundles"]]
     section("Existing bundles", rows)
+
+    rows = [f'<a href="{_escape(link(a["path"]))}">{_escape(a["label"])}</a>'
+            f'<span class="kind">{_escape(_agent_caption(a))}</span>'
+            for a in model.get("agents", [])]
+    section("Agent-generated", rows)
     return "\n".join(out)
 
 
