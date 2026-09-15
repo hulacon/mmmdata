@@ -62,13 +62,17 @@ paths.bids_project_dir, paths.stimfeat_env.
 
 import argparse
 import datetime
+import functools
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
+import urllib.parse
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass, field
 from html import escape as _escape
 from pathlib import Path
@@ -1199,10 +1203,13 @@ def _recipe(path):
     return f"<code>mmmview {_escape(str(path))}</code>"
 
 
-def _browse_sections(model, link, build_link=None):
+def _browse_sections(model, link, build_link=None, dir_link=None):
     """HTML for the page body. `link(Path) -> href` places an existing
     file; `build_link(Path) -> href` offers to build one on demand (serve
-    mode) — when it is None an unbuilt target shows its recipe instead."""
+    mode) — when it is None an unbuilt target shows its recipe instead;
+    `dir_link(Path) -> href` addresses a subdirectory live (serve mode),
+    which must win over any page already on disk, or serving would hand
+    back yesterday's static snapshot."""
     out = []
 
     def section(title, rows):
@@ -1213,10 +1220,10 @@ def _browse_sections(model, link, build_link=None):
     rows = []
     for sd in model["subdirs"]:
         name = _escape(sd["name"])
-        if sd["page"] is not None:
+        if dir_link is not None:
+            rows.append(f'<a href="{_escape(dir_link(sd["path"]))}">{name}/</a>')
+        elif sd["page"] is not None:
             rows.append(f'<a href="{_escape(link(sd["page"]))}">{name}/</a>')
-        elif build_link is not None:
-            rows.append(f'<a href="{_escape(build_link(sd["path"]))}">{name}/</a>')
         else:
             rows.append(f"{name}/ {_recipe(sd['path'])}")
     section("Subdirectories", rows)
@@ -1240,7 +1247,7 @@ def _browse_sections(model, link, build_link=None):
     return "\n".join(out)
 
 
-def render_browse(model, link, build_link=None):
+def render_browse(model, link, build_link=None, dir_link=None):
     """Render a browse model to HTML. Data-free by construction: filenames
     and entity labels only, never imaging data or participant values."""
     return (_BROWSE_TEMPLATE
@@ -1248,7 +1255,8 @@ def render_browse(model, link, build_link=None):
             .replace("__SIGNATURE__", BROWSE_SIGNATURE)
             .replace("__COMMAND__", _escape(model["command"]))
             .replace("__DATE__", model["date"])
-            .replace("__SECTIONS__", _browse_sections(model, link, build_link)))
+            .replace("__SECTIONS__",
+                     _browse_sections(model, link, build_link, dir_link)))
 
 
 def write_browse(directory, roots, opts=None):
@@ -1267,14 +1275,19 @@ def write_browse(directory, roots, opts=None):
 
 
 def open_view(path, fragment=None):
-    """Try $BROWSER, then the platform opener: `open` on macOS (a GUI is
-    always there — no $DISPLAY to gate on), xdg-open under a display
-    elsewhere. Returns a note, or None when nothing could open it (the
-    caller prints the path and a hint)."""
-    browser = os.environ.get("BROWSER")
+    """Open a local file in a browser. Returns a note, or None when nothing
+    could open it (the caller prints the path and a hint)."""
     uri = Path(path).resolve().as_uri()     # helpers want a URI, not a path
     if fragment:
         uri += "#" + fragment
+    return open_url(uri)
+
+
+def open_url(uri):
+    """Try $BROWSER, then the platform opener: `open` on macOS (a GUI is
+    always there — no $DISPLAY to gate on), xdg-open under a display
+    elsewhere."""
+    browser = os.environ.get("BROWSER")
     if browser:
         try:
             subprocess.Popen(shlex.split(browser) + [uri],
@@ -1301,7 +1314,237 @@ OPEN_HINT = ("nothing here can open a browser (no $BROWSER, no $DISPLAY). "
              "`python -m http.server` from its directory")
 
 
+# ---------------------------------------------------------------------------
+# serve mode — the same browse model, generated per request, with live
+# build links and Range support (Chrome media elements stall without 206s)
+# ---------------------------------------------------------------------------
+
+BUILD_PATH = "/__build"
+
+
+class _BrowseHandler(SimpleHTTPRequestHandler):
+    """Serves the dataset tree: directories as browse pages generated in
+    memory (never written, so never stale), files with Range support."""
+
+    extensions_map = {**SimpleHTTPRequestHandler.extensions_map,
+                      ".m4a": "audio/mp4"}
+
+    def log_message(self, fmt, *args):
+        sys.stderr.write("mmmview serve: %s\n" % (fmt % args))
+
+    # -- path validation, on every request ----------------------------------
+
+    def safe_path(self, urlpath):
+        """(Path, None) for a request inside the served tree, else
+        (None, reason). Containment is checked BEFORE symlink resolution:
+        the staged tree symlinks internally by design, so
+        resolve-then-check would refuse its own layout."""
+        rel = urllib.parse.unquote(urlpath.split("?", 1)[0]).lstrip("/")
+        if ".." in Path(rel).parts:
+            return None, "path traversal is refused"
+        root = Path(self.server.mmm_root)
+        full = Path(os.path.normpath(str(root / rel))) if rel else root
+        if full != root and root not in full.parents:
+            return None, "outside the served root"
+        if (SOURCEDATA_DIR in full.parts
+                or SOURCEDATA_DIR in full.resolve().parts):
+            return None, (f"{SOURCEDATA_DIR} is outside mmmview's scope "
+                          "(PII tree)")
+        return full, None
+
+    def url_for(self, path):
+        """URL path for a file inside the served tree ('' when outside)."""
+        root = Path(self.server.mmm_root)
+        try:
+            rel = Path(path).relative_to(root)
+        except ValueError:
+            return ""
+        return "/" + urllib.parse.quote(str(rel))
+
+    def build_url_for(self, path):
+        rel = self.url_for(path).lstrip("/")
+        return f"{BUILD_PATH}?path={rel}" if rel else ""
+
+    # -- routing ------------------------------------------------------------
+
+    def do_GET(self):
+        split = urllib.parse.urlsplit(self.path)
+        if split.path == BUILD_PATH:
+            return self.serve_build(split.query)
+        path, reason = self.safe_path(split.path)
+        if reason:
+            return self.send_error(403, reason)
+        if path.is_dir():
+            return self.serve_dir(path)
+        return super().do_GET()
+
+    def serve_dir(self, path):
+        """A directory that classifies goes to its bundle (building it if
+        absent, through the same endpoint the links use); anything else
+        renders the browse model live."""
+        plans = self._plans(path)
+        if plans:
+            target = self._existing_output(path, plans)
+            return self.redirect(target or self.build_url_for(path))
+        model = browse_model(path, self.server.mmm_roots,
+                             self.server.mmm_opts)
+        body = render_browse(model, self.url_for,
+                             build_link=self.build_url_for,
+                             dir_link=self.url_for).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def serve_build(self, query):
+        rel = (urllib.parse.parse_qs(query).get("path") or [""])[0]
+        path, reason = self.safe_path("/" + rel)
+        if reason:
+            return self.send_error(403, reason)
+        try:
+            targets = classify(path)
+            outs = []
+            for t in targets:
+                plan = resolve(t, self.server.mmm_roots, self.server.mmm_opts)
+                out, _ = render(plan)
+                outs.append(out)
+        except (Unplaceable, RenderError) as exc:
+            # 422: the request was well formed, the thing it names cannot be
+            # built. Never a traceback page.
+            return self.send_error(422, str(exc).splitlines()[0])
+        for d in sorted({o.parent for o in outs}):
+            write_index(d)
+        url = self.url_for(outs[0]) if outs else ""
+        if not url:
+            return self.send_error(422, f"{path} built outside the served "
+                                        "root; open it directly")
+        return self.redirect(url)
+
+    def redirect(self, url):
+        self.send_response(303)
+        self.send_header("Location", url)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _plans(self, path):
+        try:
+            return [resolve(t, self.server.mmm_roots, self.server.mmm_opts)
+                    for t in classify(path)]
+        except Unplaceable:
+            return []
+
+    def _existing_output(self, path, plans):
+        """The URL to send a classifiable directory to, or '' when nothing
+        is built yet."""
+        idx = viz_dir_for(path) / "index.html"
+        if len(plans) > 1 and idx.exists():
+            return self.url_for(idx)
+        if all(p.out.exists() for p in plans):
+            return self.url_for(plans[0].out)
+        return ""
+
+    # -- files: Range, ported from the stimfeat-viewer prototype ------------
+
+    def send_head(self):
+        m = re.match(r"bytes=(\d+)-(\d*)$", self.headers.get("Range") or "")
+        if not m:
+            return super().send_head()
+        path = self.translate_path(self.path)
+        try:
+            f = open(path, "rb")
+        except OSError:
+            self.send_error(404)
+            return None
+        size = os.fstat(f.fileno()).st_size
+        start = int(m.group(1))
+        end = min(int(m.group(2)) if m.group(2) else size - 1, size - 1)
+        if start >= size:
+            f.close()
+            self.send_error(416)
+            return None
+        self.send_response(206)
+        self.send_header("Content-Type", self.guess_type(path))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(end - start + 1))
+        self.end_headers()
+        f.seek(start)
+        self._range_left = end - start + 1
+        return f
+
+    def copyfile(self, source, outputfile):
+        left = getattr(self, "_range_left", None)
+        if left is None:
+            return super().copyfile(source, outputfile)
+        self._range_left = None
+        while left > 0:
+            chunk = source.read(min(65536, left))
+            if not chunk:
+                break
+            outputfile.write(chunk)
+            left -= len(chunk)
+
+
+def make_server(root, roots, opts, bind="127.0.0.1", port=8471):
+    """A server over *root*. Separate from serve_main so tests can drive it
+    on an ephemeral port."""
+    root = Path(os.path.abspath(str(root)))
+    handler = functools.partial(_BrowseHandler, directory=str(root))
+    srv = ThreadingHTTPServer((bind, port), handler)
+    srv.mmm_root, srv.mmm_roots, srv.mmm_opts = root, roots, opts
+    return srv
+
+
+def serve_main(argv):
+    ap = argparse.ArgumentParser(
+        prog="mmmview serve",
+        description="serve the dataset tree: browse pages per request, "
+                    "build-on-demand links, HTTP Range for media")
+    ap.add_argument("root", nargs="?", help="directory to serve "
+                    "(default: the configured BIDS root)")
+    ap.add_argument("--port", type=int, default=8471)
+    ap.add_argument("--bind", default="127.0.0.1")
+    ap.add_argument("--no-open", action="store_true")
+    ap.add_argument("--deriv-root", help="override config derivatives root")
+    args = ap.parse_args(argv)
+
+    roots = load_roots(args.deriv_root)
+    root = Path(args.root) if args.root else roots.bids
+    refusal = sourcedata_refusal(root)
+    if refusal:
+        print(f"mmmview: {refusal}", file=sys.stderr)
+        return EXIT_UNPLACEABLE
+    if not Path(root).is_dir():
+        print(f"mmmview: not a directory: {root}", file=sys.stderr)
+        return EXIT_UNPLACEABLE
+    srv = make_server(root, roots, Opts(), args.bind, args.port)
+    port = srv.server_address[1]
+    url = f"http://{args.bind}:{port}/"
+    print(f"serving {Path(os.path.abspath(str(root)))} at {url}")
+    print(f"from your laptop: ssh -N -L {port}:localhost:{port} "
+          "<user>@login.talapas.uoregon.edu   # then open " + url)
+    if not args.no_open:
+        open_url(url)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("\nmmmview: stopped")
+    finally:
+        srv.server_close()
+    return 0
+
+
+VERBS = {"serve": serve_main}
+
+
 def main(argv=None):
+    # verb dispatch BEFORE argparse: `mmmview PATH` must keep parsing
+    # exactly as it does today, so the parser never becomes subcommands
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] in VERBS:
+        return VERBS[argv[0]](argv[1:])
+
     ap = argparse.ArgumentParser(
         prog="mmmview", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)

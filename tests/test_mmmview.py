@@ -973,3 +973,135 @@ class TestSourcedataGuard:
         link.symlink_to(real)
         assert mmmview.main([str(link), "--no-open"]) != 0
         assert "mmmsourcedata" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# serve mode (mmmview-browse increment 2): the same index generated per
+# request, with build-on-demand links and Range support
+# ---------------------------------------------------------------------------
+
+class TestServe:
+    @pytest.fixture
+    def server(self, roots, tmp_path):
+        """A live server on an ephemeral port over a fake tree, torn down
+        with the fixture."""
+        import threading
+        root = tmp_path / "served"
+        touch(root / "README.md")
+        touch(root / "media.m4a", "0123456789" * 40)
+        touch(root / "sub-07" / "sub-07_space-T1w_stat-z_statmap.nii.gz")
+        (root / "sub-07" / "viz").mkdir(parents=True)
+        (root / "empty").mkdir()
+        srv = mmmview.make_server(root, roots, Opts(), "127.0.0.1", 0)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        yield srv, root, srv.server_address[1]
+        srv.shutdown()
+        srv.server_close()
+
+    def get(self, port, path, headers=None):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        c.request("GET", path, headers=headers or {})
+        r = c.getresponse()
+        body = r.read()
+        c.close()
+        return r.status, dict(r.getheaders()), body
+
+    def test_directory_get_returns_the_signed_browse_page(self, server):
+        _, _, port = server
+        status, _, body = self.get(port, "/")
+        assert status == 200
+        assert mmmview.BROWSE_SIGNATURE.encode() in body
+        assert b"sub-07" in body
+
+    def test_served_page_is_not_written_to_disk(self, server):
+        _, root, port = server
+        self.get(port, "/")
+        assert not (root / "viz").exists()
+
+    def test_unbuilt_viewable_links_to_build_endpoint(self, server):
+        _, _, port = server
+        _, _, body = self.get(port, "/")
+        assert b"/__build?path=sub-07" in body
+
+    def test_file_get_honors_range(self, server):
+        _, root, port = server
+        size = (root / "media.m4a").stat().st_size
+        status, hdrs, body = self.get(port, "/media.m4a",
+                                      {"Range": "bytes=0-99"})
+        assert status == 206
+        assert hdrs["Content-Range"] == f"bytes 0-99/{size}"
+        assert len(body) == 100
+        assert hdrs["Content-Type"] == "audio/mp4"
+
+    def test_file_get_without_range_is_whole(self, server):
+        _, root, port = server
+        size = (root / "media.m4a").stat().st_size
+        status, _, body = self.get(port, "/media.m4a")
+        assert status == 200 and len(body) == size
+
+    @pytest.mark.parametrize("path", ["/../../etc/passwd", "/sub-07/../../x"])
+    def test_traversal_is_refused(self, server, path):
+        _, _, port = server
+        status, _, _ = self.get(port, path)
+        assert status == 403
+
+    def test_mmmsourcedata_is_refused(self, server):
+        _, root, port = server
+        (root / "mmmsourcedata" / "sub-07").mkdir(parents=True)
+        status, _, body = self.get(port, "/mmmsourcedata/sub-07")
+        assert status == 403 and b"mmmsourcedata" in body
+
+    def test_build_endpoint_redirects_to_the_bundle(self, server,
+                                                    monkeypatch):
+        _, root, port = server
+
+        def fake_render(plan, force=False):
+            plan.out.parent.mkdir(parents=True, exist_ok=True)
+            plan.out.write_text("bundle")
+            return plan.out, True
+
+        monkeypatch.setattr(mmmview, "render", fake_render)
+        status, hdrs, _ = self.get(port, "/__build?path=sub-07")
+        assert status in (302, 303)
+        assert hdrs["Location"].startswith("/sub-07/viz/")
+        assert hdrs["Location"].endswith("_desc-viewer_statmap.html")
+
+    def test_build_of_an_unplaceable_path_is_422_not_a_traceback(self,
+                                                                 server):
+        _, _, port = server
+        status, _, body = self.get(port, "/__build?path=empty")
+        assert status == 422
+        assert b"Traceback" not in body
+
+    def test_build_outside_the_root_is_refused(self, server):
+        _, _, port = server
+        status, _, _ = self.get(port, "/__build?path=../outside")
+        assert status == 403
+
+    def test_serve_refuses_a_sourcedata_root(self, tmp_path, capsys,
+                                             monkeypatch, roots):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        d = tmp_path / "mmmsourcedata" / "sub-07"
+        d.mkdir(parents=True)
+        assert mmmview.main(["serve", str(d), "--no-open"]) != 0
+        assert "mmmsourcedata" in capsys.readouterr().err
+
+    def test_serve_verb_does_not_disturb_path_parsing(self, roots, zmap,
+                                                      capsys, monkeypatch):
+        # `mmmview PATH` must keep working exactly as before the verb split
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        p, u, _ = zmap
+        assert mmmview.main([str(p), "--no-open", "--underlay", str(u)]) == 0
+        assert "_desc-viewer_statmap.html" in capsys.readouterr().out
+
+    def test_served_subdir_links_are_live_not_a_static_snapshot(self, server):
+        # a child that already has a browse.html on disk must still be
+        # addressed live — serving yesterday's snapshot is the staleness
+        # this mode exists to avoid
+        _, root, port = server
+        touch(root / "sub-07" / "viz" / "browse.html", "stale")
+        _, _, body = self.get(port, "/")
+        assert b'href="/sub-07"' in body
+        assert b"/sub-07/viz/browse.html" not in body
