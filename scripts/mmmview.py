@@ -93,8 +93,9 @@ EXIT_UNPLACEABLE = 2
 EXIT_RENDER = 3
 R2_FLOOR_DEFAULT = 10.0   # percent, as build_brain_viewer.py
 ARTIFACT_CAP_MB = 16.0    # claude.ai artifact route; larger bundles are file:// only
-PROFILE_VERSION = 3       # bump when a display profile changes: keys change,
-                          # existing bundles rebuild
+PROFILE_VERSION = 4       # bump when a display profile or the viewer page
+                          # changes: keys change, existing bundles rebuild
+                          # (4: crosshair readout box)
 
 HEMIS = {"L": "lh", "R": "rh"}
 MAP_EXTS = (".nii.gz", ".nii")
@@ -429,6 +430,9 @@ PRF_DISPLAY = {
     "gain": {"colormap": "viridis", "cal_min": 0.0, "cal_max": None},
     "exponent": {"colormap": "viridis", "cal_min": 0.0, "cal_max": None},
 }
+# units the crosshair readout appends to a pRF parameter's value
+PRF_UNITS = {"R2": "%", "angle": "°", "eccentricity": "°", "size": "°",
+             "sigma": "°", "gain": "", "exponent": ""}
 DISPLAY_PROFILES = {
     # masked at R2 > floor; per-parameter colormap from PRF_DISPLAY
     "prf": {"mask": "R2", "tails": False},
@@ -982,7 +986,12 @@ def _volume_specs(entry, floor):
         spec = {"image": img, "name": path.name, "label": entry["label"],
                 "colormap": prof["colormap"], "cal_min": prof["cal_min"],
                 "cal_max": prof["cal_max"], "angle_legend":
-                prof.get("angle_legend", False)}
+                prof.get("angle_legend", False),
+                "readout": {"kind": "value", "quantity": entry["label"],
+                            "unit": PRF_UNITS.get(entry["label"], ""),
+                            "masked": ("below R² floor"
+                                       if entry["mask"] is not None
+                                       else "no fit")}}
         if spec["cal_max"] is None:
             # unthresholded R2: ceiling from the samples above the floor,
             # as the masked maps get by construction
@@ -996,7 +1005,8 @@ def _volume_specs(entry, floor):
         # embedded as-is: label values must stay integers for the lookup
         return [{"path": path, "name": path.name, "label": entry["label"],
                  "colormap": "gray", "cal_min": 0.0, "cal_max": None,
-                 "opacity": prof["opacity"], "lut": label_lut(entry)}]
+                 "opacity": prof["opacity"], "lut": label_lut(entry),
+                 "readout": {"kind": "label"}}]
     img = nib.load(str(path))
     data = np.asarray(img.dataobj, dtype=np.float32)
     if not prof.get("tails"):
@@ -1008,7 +1018,9 @@ def _volume_specs(entry, floor):
                  "colormap": prof.get("colormap", "viridis"),
                  "cal_min": prof.get("cal_min", 0.0),
                  "cal_max": prof.get("cal_max") or _p99(out),
-                 "angle_legend": prof.get("angle_legend", False)}]
+                 "angle_legend": prof.get("angle_legend", False),
+                 "readout": {"kind": "value", "quantity": None, "unit": "",
+                             "masked": "no data"}}]
     return _tail_specs(entry, data, lambda arr: _nifti_like(img, arr))
 
 
@@ -1034,16 +1046,23 @@ def _tail_specs(entry, data, wrap):
     neg = np.where(finite & (data < 0), -data, np.float32(viewer.MASK_SENTINEL))
     thr = (f" (threshold {prof['threshold']})" if prof.get("threshold")
            else "")
+    # both layers name the same source map, so the readout can report its
+    # signed value whichever tail the crosshair sits on
+    quantity = entry["family"].split("-", 1)[-1]
+
+    def readout(sign):
+        return {"kind": "tail", "quantity": quantity, "sign": sign,
+                "group": path.name}
     specs = [{"image" if wrap else "values": wrap(pos) if wrap else pos,
               "name": path.name, "label": f"{entry['label']} +{thr}",
               "colormap": prof["pos"], "cal_min": prof["cal_min"],
-              "cal_max": absmax}]
+              "cal_max": absmax, "readout": readout(1)}]
     if np.any(neg != viewer.MASK_SENTINEL):
         specs.append({"image" if wrap else "values": wrap(neg) if wrap else neg,
                       "name": "neg_" + path.name,
                       "label": f"{entry['label']} − (as |value|){thr}",
                       "colormap": prof["neg"], "cal_min": prof["cal_min"],
-                      "cal_max": absmax})
+                      "cal_max": absmax, "readout": readout(-1)})
     return specs
 
 
@@ -1108,7 +1127,10 @@ def render(plan, force=False):
             viewer.build_volume_viewer(
                 {"path": plan.inputs["underlay"], "label": "underlay"},
                 overlays, plan.out, title=plan.title, notes=plan.notes,
-                overlay_title=axes[0], variant_title=axes[1])
+                overlay_title=axes[0], variant_title=axes[1],
+                coord_label=coord_label(
+                    parse_entities(plan.display[0]["map"].name)[0])
+                if plan.display else None)
         else:
             layers = []
             if plan.inputs.get("curv"):
@@ -1125,6 +1147,22 @@ def render(plan, force=False):
     except Exception as exc:   # renderer failure, not a placement failure
         raise RenderError(f"{type(exc).__name__}: {exc}")
     return plan.out, True
+
+
+def coord_label(entities):
+    """What a bundle's mm coordinates mean, from its maps' entities: a
+    template or standard space reads out in that space's mm; native maps
+    are scanner mm, named so nobody mistakes them for MNI (converting
+    would need fMRIPrep's nonlinear transform)."""
+    if "tpl" in entities and "sub" not in entities:
+        return f"{entities['tpl']} mm"
+    space = entities.get("space")
+    if space is None:
+        return ("scanner mm (native func)" if entities.get("task")
+                else "scanner mm (native T1w)")
+    if space == "T1w":
+        return "scanner mm (native T1w)"
+    return f"{space} mm"
 
 
 def _floor_from(plan):

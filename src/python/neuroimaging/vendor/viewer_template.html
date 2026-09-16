@@ -33,6 +33,19 @@
   #wheelbox { display:none; margin-top:6px; text-align:center; }
   #wheelbox .cap { font-size:11px; color:var(--dim); margin-top:2px; }
   #threshcap { font-size:11px; color:var(--dim); margin-top:2px; }
+  /* key above value: the panel is narrow and both halves can be long
+     (a 17-network parcel name, "MNI152NLin2009cAsym mm") */
+  /* pinned at the top of the panel: a GLM bundle's overlay list can be
+     dozens of rows, and the readout must not scroll away beneath it */
+  #readoutbox { position:sticky; top:-10px; z-index:1; background:var(--panel);
+                margin:-10px -12px 0; padding:10px 12px 8px;
+                border-bottom:1px solid var(--edge); }
+  #readoutbox h2 { margin-top:2px; }
+  #readout { font-size:12px; display:flex; flex-direction:column; }
+  #readout .k { color:var(--dim); font-size:11px; margin-top:5px; }
+  #readout .k:first-child { margin-top:0; }
+  #readout .v { overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+  #readout .note { color:#e0b060; font-size:11px; margin-top:5px; }
   footer { padding:5px 14px; border-top:1px solid var(--edge); font-size:12px;
            color:var(--dim); display:flex; gap:16px; min-height:28px; }
   footer #status.err { color:#ff8484; }
@@ -49,6 +62,10 @@
 <main>
   <div id="viewport"><canvas id="gl"></canvas></div>
   <aside>
+    <div id="readoutbox" style="display:none">
+      <h2>At crosshair</h2>
+      <div id="readout"></div>
+    </div>
     <h2 id="overlaytitle">Overlay</h2>
     <div id="layers"></div>
     <div id="variantbox" style="display:none">
@@ -120,21 +137,99 @@ const nv = new niivue.Niivue({
   isAlphaClipDark: true,           // volume overlays: hide below cal_min
   multiplanarShowRender: niivue.SHOW_RENDER.ALWAYS,
 });
-// Label maps: NiiVue's own readout names every loaded volume (the hidden
-// selector siblings and the underlay value too), so a label overlay reads
-// out only the active map's region name, at the crosshair's mm position.
 nv.onLocationChange = d => {
-  let text = (d && d.string) || "";
-  const a = typeof activeEntry === "function" ? activeEntry() : null;
-  const vi = a && a.lut ? nvIndex.get(a.i) : undefined;
-  if (d && d.values && vi !== undefined && d.values[vi]) {
-    const v = Math.round(d.values[vi].value);
-    const mm = (d.mm || []).slice(0, 3).map(x => x.toFixed(0)).join("×");
-    text = mm + " mm   " + (v > 0 ? (a.lut.labels[a.lut.I.indexOf(v)] || v)
-                                   : "outside regions");
-  }
-  $("loc").textContent = text;
+  if (CONFIG.mode === "volume") renderReadout(d);
+  else $("loc").textContent = (d && d.string) || "";
 };
+
+// "At crosshair" box (volume mode): the ACTIVE map only — never a hidden
+// selector sibling. Each overlay's `readout` (from mmmview) says how to
+// describe its value: a region name, a quantity with units, or the signed
+// value of a stat map split into +/− tail layers.
+const SENTINEL = -1;                    // viewer.MASK_SENTINEL
+const fmtNum = v => {
+  const a = Math.abs(v);
+  return a >= 1000 || (a > 0 && a < 0.001) ? v.toExponential(2)
+    : String(Number(v.toPrecision(a >= 100 ? 4 : 3)));
+};
+function valueAt(d, e) {
+  const vi = nvIndex.get(e.i);
+  return vi !== undefined && d.values && d.values[vi]
+    ? d.values[vi].value : null;
+}
+// voxel indices in the FILE's own grid (i, j, k as nibabel would index
+// it), or null when the point falls outside that grid
+function fileVoxel(vol, mm) {
+  if (!vol || !vol.grid) return null;
+  const M = vol.grid.mm2vox, p = [mm[0], mm[1], mm[2], 1];
+  const ijk = M.map(row => Math.round(row.reduce((s, m, k) => s + m * p[k], 0)));
+  return ijk.every((n, k) => n >= 0 && n < vol.grid.shape[k]) ? ijk : null;
+}
+function renderReadout(d) {
+  const box = $("readout");
+  if (!d || !d.values) return;
+  const rows = [];
+  const add = (k, v) => rows.push([k, v]);
+  const notes = [];
+  const a = activeEntry();
+  if (!a) add("map", "none selected");
+  else {
+    const r = a.readout || { kind: "value", quantity: null, unit: "",
+                             masked: "no data" };
+    add("map", a.label + (hasVariants ? " · " + activeVariant : ""));
+    const inside = !a.grid || !d.mm || fileVoxel(a, d.mm) !== null;
+    const v = inside ? valueAt(d, a) : null;
+    const floor = a.i in thr ? thr[a.i] : (a.cal_min === null ? 0 : a.cal_min);
+    if (v === null) add(r.quantity || (a.lut ? "region" : "value"),
+                        inside ? "—" : "outside map");
+    else if (a.lut) {
+      const n = Math.round(v), j = a.lut.I.indexOf(n);
+      add("region", n > 0 ? (j >= 0 ? a.lut.labels[j] : "index " + n)
+                          : "outside regions");
+    } else if (r.kind === "tail") {
+      const sib = entries().find(e => e.i !== a.i && e.readout &&
+        e.readout.kind === "tail" && e.readout.group === r.group &&
+        (!hasVariants || e.variant === a.variant));
+      const sv = sib ? valueAt(d, sib) : null;
+      if (v !== SENTINEL) {
+        add(r.quantity, fmtNum(r.sign * v));
+        if (v < floor) notes.push("below display threshold");
+      } else if (sv !== null && sv !== SENTINEL) {
+        add(r.quantity, fmtNum(sib.readout.sign * sv));
+        notes.push("on the " + (sib.readout.sign > 0 ? "+" : "−") +
+                   " layer, not this one");
+      } else add(r.quantity, "no data");
+    } else if (v === SENTINEL) add(r.quantity || "value", r.masked || "no data");
+    else {
+      add(r.quantity || "value", fmtNum(v) + (r.unit || ""));
+      if (v < floor) notes.push("below display threshold");
+    }
+  }
+  const U = CONFIG.volumes.find(v => v.isUnderlay);
+  const uv = d.mm && fileVoxel(U, d.mm);
+  if (uv) add("slice", uv.join(", "));
+  if (a && d.mm && a.grid) {
+    const mv = fileVoxel(a, d.mm);
+    const sameGrid = JSON.stringify(a.grid) === JSON.stringify(U.grid);
+    if (!sameGrid) add("map voxel", mv ? mv.join(", ") : "outside map");
+  }
+  if (d.mm) add(CONFIG.coord_label || "mm",
+                Array.from(d.mm).slice(0, 3)
+                  .map(x => (Math.abs(x) < 0.05 ? 0 : x).toFixed(1)).join(", "));
+  box.replaceChildren();
+  for (const [k, v] of rows) {
+    const kk = document.createElement("span"); kk.className = "k";
+    kk.textContent = k;
+    const vv = document.createElement("span"); vv.className = "v";
+    vv.textContent = v;
+    box.append(kk, vv);
+  }
+  for (const n of notes) {
+    const nn = document.createElement("span"); nn.className = "note";
+    nn.textContent = n;
+    box.append(nn);
+  }
+}
 
 // Exclusive stat-layer toggle; shade layers and the underlay stay put.
 // The toggle is two-dimensional when entries carry a variant (several map
@@ -238,6 +333,7 @@ $("thresh").addEventListener("input", () => {
   } else nv.setMeshLayerProperty(nv.meshes[0].id, t.i, "cal_min", v);
   nv.updateGLVolume();
   $("threshcap").textContent = fmtThr(v);
+  if (CONFIG.mode === "volume") nv.createOnLocationChange();
 });
 function buildControls() {
   if (CONFIG.overlay_title) $("overlaytitle").textContent = CONFIG.overlay_title;
@@ -279,6 +375,7 @@ async function init() {
     img.colorbarVisible = false;
     nv.addVolume(img);
     nv.setSliceType(nv.sliceTypeMultiplanar);
+    $("readoutbox").style.display = "block";
   } else {
     $("hint").textContent = "drag: rotate · scroll: zoom · right-drag: pan";
     const m = CONFIG.meshes[0];

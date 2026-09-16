@@ -128,7 +128,8 @@ def _norm_spec(spec, defaults):
 # ---------------------------------------------------------------------------
 
 def build_volume_viewer(underlay, overlays, out, title="brain viewer",
-                        notes="", overlay_title=None, variant_title=None):
+                        notes="", overlay_title=None, variant_title=None,
+                        coord_label=None):
     """underlay: path or dict spec; overlays: list of dict specs.
 
     Overlay spec keys: ``path`` OR ``image`` (in-memory nibabel image, e.g.
@@ -139,7 +140,11 @@ def build_volume_viewer(underlay, overlays, out, title="brain viewer",
     and volume mode then decodes only the active variant's maps), ``lut``
     (a NiiVue label colormap ``{R,G,B,A,I,labels}``: the map is drawn as
     named integer regions, with no threshold or colorbar).
-    ``overlay_title``/``variant_title`` rename the two radio groups.
+    ``readout`` (how the crosshair box describes the value: ``{"kind":
+    "label"}``, ``{"kind": "value", "quantity", "unit", "masked"}`` or
+    ``{"kind": "tail", "quantity", "sign", "group"}``; absent = raw value).
+    ``overlay_title``/``variant_title`` rename the two radio groups;
+    ``coord_label`` names what the readout's mm coordinates are.
     """
     if not isinstance(underlay, dict):
         underlay = {"path": underlay}
@@ -150,6 +155,18 @@ def build_volume_viewer(underlay, overlays, out, title="brain viewer",
         if spec.get("image") is not None:
             return _nifti_bytes(spec["image"])
         return Path(spec["path"]).read_bytes()
+
+    def grid(spec):
+        """The file's own mm -> voxel matrix (3x4) and shape, so the page
+        reports the voxel indices a script would use — NiiVue's are in its
+        RAS-reoriented grid, which differs for non-RAS files."""
+        import nibabel as nib
+        img = (spec["image"] if spec.get("image") is not None
+               else nib.load(str(spec["path"])))
+        inv = np.linalg.inv(np.asarray(img.affine, dtype=float))
+        return {"mm2vox": [[round(float(x), 6) for x in row]
+                           for row in inv[:3]],
+                "shape": [int(n) for n in img.shape[:3]]}
 
     def nii_name(spec, i):
         n = spec.get("name") or (Path(spec["path"]).name if spec.get("path")
@@ -162,6 +179,7 @@ def build_volume_viewer(underlay, overlays, out, title="brain viewer",
         "colormap": underlay["colormap"],
         "cal_min": underlay["cal_min"], "cal_max": underlay["cal_max"],
         "opacity": 1.0, "isUnderlay": True, "angle_legend": False,
+        "grid": grid(underlay),
     }]
     for i, spec in enumerate(overlays):
         spec = _norm_spec(spec, {"colormap": "viridis", "cal_min": 0.0,
@@ -177,12 +195,14 @@ def build_volume_viewer(underlay, overlays, out, title="brain viewer",
             "opacity": spec["opacity"], "visible": bool(spec["visible"]),
             "isUnderlay": False, "angle_legend": bool(spec["angle_legend"]),
             "variant": spec["variant"], "lut": spec.get("lut"),
+            "readout": spec.get("readout"), "grid": grid(spec),
         })
 
     return _render({"mode": "volume", "title": title, "notes": notes,
                     "volumes": vols, "meshes": [],
                     "overlay_title": overlay_title,
-                    "variant_title": variant_title}, out)
+                    "variant_title": variant_title,
+                    "coord_label": coord_label}, out)
 
 
 def build_surface_viewer(mesh, layers, out, title="brain viewer", notes=""):

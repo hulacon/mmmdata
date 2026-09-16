@@ -1634,3 +1634,108 @@ class TestLabelMaps:
         assert "wrote" in capsys.readouterr().out
         assert list((atlas_dir / "viz").glob("*_desc-viewer_dseg.html"))
         assert not (atlas_dir / "viz" / "browse.html").exists()
+
+
+# ---------------------------------------------------------------------------
+# crosshair readout: each overlay tells the page how to describe its value
+# at the crosshair, and the bundle says what its mm coordinates are
+# ---------------------------------------------------------------------------
+
+def _overlays(out):
+    return [v for v in _config(out.read_text())["volumes"]
+            if not v["isUnderlay"]]
+
+
+class TestCrosshairReadout:
+    def test_prf_maps_carry_quantity_units_and_mask_meaning(self, roots,
+                                                            tmp_path):
+        d = tmp_path / "x"
+        u = d / "u.nii.gz"
+        d.mkdir()
+        nib.save(nib.Nifti1Image(np.ones((3, 3, 2), np.float32), np.eye(4)), u)
+        for desc, val in (("R2", 50.0), ("angle", 90.0),
+                          ("eccentricity", 3.0)):
+            nib.save(nib.Nifti1Image(np.full((3, 3, 2), val, np.float32),
+                                     np.eye(4)),
+                     d / f"sub-07_task-prf_space-T1w_desc-{desc}_prf.nii.gz")
+        (t,) = classify(d)
+        out, _ = render(resolve(t, roots, Opts(underlay=str(u))))
+        got = {v["label"]: v["readout"] for v in _overlays(out)}
+        assert got["angle"] == {"kind": "value", "quantity": "angle",
+                                "unit": "°", "masked": "below R² floor"}
+        assert got["eccentricity"]["unit"] == "°"
+        assert got["R2"]["unit"] == "%"
+        assert got["R2"]["masked"] == "no fit"     # R2 itself is unmasked
+
+    def test_glm_tails_share_a_group_and_carry_their_sign(self, roots, zmap):
+        p, u, _ = zmap
+        out, _ = render(resolve(classify(p)[0], roots, Opts(underlay=str(u))))
+        pos, neg = (v["readout"] for v in _overlays(out))
+        assert pos["kind"] == neg["kind"] == "tail"
+        assert pos["quantity"] == neg["quantity"] == "z"
+        assert (pos["sign"], neg["sign"]) == (1, -1)
+        assert pos["group"] == neg["group"] == p.name
+
+    def test_unknown_maps_read_out_a_plain_value(self, roots, tmp_path):
+        p = tmp_path / "x" / "sub-07_space-T1w_desc-foo_bold.nii.gz"
+        p.parent.mkdir()
+        nib.save(nib.Nifti1Image(np.ones((3, 3, 2), np.float32), np.eye(4)), p)
+        out, _ = render(resolve(classify(p)[0], roots,
+                                Opts(underlay=str(p))))
+        [ov] = _overlays(out)
+        assert ov["readout"] == {"kind": "value", "quantity": None,
+                                 "unit": "", "masked": "no data"}
+
+    def test_label_maps_read_out_regions(self, roots, atlas_dir):
+        out, _ = render(resolve(classify(atlas_dir)[0], roots))
+        assert all(v["readout"] == {"kind": "label"}
+                   for v in _overlays(out))
+
+    @pytest.mark.parametrize("ents,label", [
+        ({"sub": "07", "space": "MNI152NLin2009cAsym"},
+         "MNI152NLin2009cAsym mm"),
+        ({"tpl": "MNI152NLin2009cAsym"}, "MNI152NLin2009cAsym mm"),
+        ({"sub": "07", "space": "T1w"}, "scanner mm (native T1w)"),
+        ({"sub": "07"}, "scanner mm (native T1w)"),
+        ({"sub": "07", "ses": "04", "task": "floc"},
+         "scanner mm (native func)"),
+    ])
+    def test_coordinate_label_names_the_space(self, ents, label):
+        assert mmmview.coord_label(ents) == label
+
+    def test_bundle_config_carries_the_coordinate_label(self, roots,
+                                                         atlas_dir):
+        out, _ = render(resolve(classify(atlas_dir)[0], roots))
+        cfg = _config(out.read_text())
+        assert cfg["coord_label"] == "MNI152NLin2009cAsym mm"
+        assert 'id="readout"' in out.read_text()
+
+    def test_viewer_version_is_part_of_the_key(self, roots, zmap,
+                                               monkeypatch):
+        p, u, _ = zmap
+        plan = resolve(classify(p)[0], roots, Opts(underlay=str(u)))
+        monkeypatch.setattr(mmmview, "PROFILE_VERSION",
+                            mmmview.PROFILE_VERSION + 1)
+        assert resolve(classify(p)[0], roots,
+                       Opts(underlay=str(u))).key != plan.key
+
+    def test_volumes_carry_their_own_voxel_grid(self, roots, tmp_path):
+        # an LPS-stored map: the page must report the file's i,j,k, not
+        # NiiVue's RAS-reoriented ones
+        d = tmp_path / "x"
+        d.mkdir()
+        aff = np.diag([-2.0, -2.0, 2.0, 1.0])
+        aff[:3, 3] = [10.0, 20.0, -30.0]
+        p = d / "sub-07_space-T1w_desc-foo_bold.nii.gz"
+        nib.save(nib.Nifti1Image(np.ones((5, 6, 7), np.float32), aff), p)
+        u = d / "u.nii.gz"
+        nib.save(nib.Nifti1Image(np.ones((3, 3, 2), np.float32), np.eye(4)), u)
+        out, _ = render(resolve(classify(p)[0], roots, Opts(underlay=str(u))))
+        cfg = _config(out.read_text())
+        [ov] = [v for v in cfg["volumes"] if not v["isUnderlay"]]
+        assert ov["grid"]["shape"] == [5, 6, 7]
+        m = np.array(ov["grid"]["mm2vox"])
+        ijk = m @ np.array([6.0, 14.0, -24.0, 1.0])     # voxel (2, 3, 3)
+        assert np.allclose(ijk, [2, 3, 3])
+        und = next(v for v in cfg["volumes"] if v["isUnderlay"])
+        assert und["grid"]["shape"] == [3, 3, 2]
