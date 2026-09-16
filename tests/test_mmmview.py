@@ -1739,3 +1739,116 @@ class TestCrosshairReadout:
         assert np.allclose(ijk, [2, 3, 3])
         und = next(v for v in cfg["volumes"] if v["isUnderlay"])
         assert und["grid"]["shape"] == [3, 3, 2]
+
+
+# ---------------------------------------------------------------------------
+# results kind (mmmview-browse increment 6): long-format TSV + Vega-Lite spec
+# ---------------------------------------------------------------------------
+
+RESULT_TABLE = "subject\tcondition\taccuracy\n01\tsingle\t0.61\n02\tsingle\t0.72\n"
+
+
+def result_spec(**meta):
+    m = {"schema_version": 1, "err_over": "none", **meta}
+    return json.dumps({
+        "usermeta": {"mmmview": m}, "mark": "bar",
+        "encoding": {"x": {"field": "subject", "type": "nominal"},
+                     "y": {"field": "accuracy", "type": "quantitative"}}})
+
+
+@pytest.fixture
+def results_dir(tmp_path):
+    d = tmp_path / "behavioral_analysis" / "group"
+    for stem in ("acc", "dprime"):
+        touch(d / f"{stem}.tsv", RESULT_TABLE)
+        touch(d / f"{stem}.vl.json", result_spec())
+    return d
+
+
+class TestResults:
+    def test_directory_is_one_results_target_over_every_spec(self,
+                                                             results_dir):
+        (t,) = classify(results_dir)
+        assert t.kind == "results"
+        assert [p.name for p in t.maps] == ["acc.vl.json", "dprime.vl.json"]
+
+    def test_table_and_spec_each_classify(self, results_dir):
+        for name in ("acc.tsv", "acc.vl.json"):
+            (t,) = classify(results_dir / name)
+            assert t.kind == "results"
+            assert [p.name for p in t.maps] == ["acc.vl.json"]
+
+    def test_table_without_spec_names_the_sidecar_to_add(self, tmp_path):
+        p = touch(tmp_path / "rt_by_condition.tsv", RESULT_TABLE)
+        with pytest.raises(Unplaceable, match=r"rt_by_condition\.vl\.json"):
+            classify(p)
+
+    def test_events_tables_still_go_to_the_plot_tools(self, tmp_path):
+        p = touch(tmp_path / "sub-07_ses-04_task-floc_events.tsv")
+        touch(tmp_path / "sub-07_ses-04_task-floc_events.vl.json",
+              result_spec())
+        with pytest.raises(Unplaceable, match="plot_"):
+            classify(p)
+
+    def test_broken_spec_fails_at_classify_with_the_contract_message(
+            self, results_dir):
+        touch(results_dir / "acc.vl.json", result_spec(err_over=""))
+        with pytest.raises(Unplaceable, match="err_over is required"):
+            classify(results_dir)
+
+    def test_output_names_and_place(self, roots, results_dir):
+        (t,) = classify(results_dir)
+        plan = resolve(t, roots, Opts())
+        assert plan.out == results_dir / "viz" / "group_desc-viewer_results.html"
+        (t,) = classify(results_dir / "acc.tsv")
+        assert resolve(t, roots, Opts()).out.name == "acc_desc-viewer_results.html"
+
+    def test_key_follows_table_content(self, roots, results_dir):
+        (t,) = classify(results_dir)
+        k1 = resolve(t, roots, Opts()).key
+        touch(results_dir / "acc.tsv", RESULT_TABLE + "03\tsingle\t0.55\n")
+        mmmview._SHA_CACHE.clear()
+        assert resolve(t, roots, Opts()).key != k1
+
+    def test_render_then_reuse(self, roots, results_dir):
+        (t,) = classify(results_dir)
+        plan = resolve(t, roots, Opts())
+        out, built = render(plan)
+        assert built and out.exists()
+        html = out.read_text()
+        assert f"mmmview-key: {plan.key}" in html
+        assert "mmmview " + str(results_dir) in html       # regenerate recipe
+        assert render(plan) == (out, False)
+
+    def test_reap_keeps_a_current_results_page(self, roots, results_dir,
+                                               capsys, monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        for target in (results_dir, results_dir / "acc.tsv"):
+            (t,) = classify(target)
+            render(resolve(t, roots, Opts()))
+        assert mmmview.main(["reap", str(results_dir), "--yes"]) == 0
+        out = capsys.readouterr().out
+        for name in ("group_desc-viewer_results.html",
+                     "acc_desc-viewer_results.html"):
+            assert any(l.startswith("keep") and name in l
+                       for l in out.splitlines())
+            assert (results_dir / "viz" / name).exists()
+
+    def test_index_label(self):
+        assert (mmmview._index_label("group_desc-viewer_results.html")
+                == "group (results)")
+
+    def test_browse_lists_the_results_dir_as_viewable(self, roots,
+                                                      results_dir):
+        model = mmmview.browse_model(results_dir.parent, roots)
+        (v,) = [e for e in model["viewable"] if e["name"] == "group"]
+        assert v["kind"] == "results" and v["label"] == "2 result charts"
+
+    def test_cli_builds_and_indexes(self, roots, results_dir, capsys,
+                                    monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        touch(results_dir / "viz" / "acc_desc-viewer_results.html")
+        assert mmmview.main([str(results_dir), "--no-open"]) == 0
+        out = capsys.readouterr().out
+        assert "results)" in out
+        assert (results_dir / "viz" / "index.html").exists()

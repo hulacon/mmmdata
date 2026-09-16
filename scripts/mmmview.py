@@ -39,6 +39,10 @@ What it places:
                                          movies/ directory (or --films-dir).
                                          Covers composed TB runs laid out the
                                          same way (workbench tb-timelines)
+    *.tsv + *.vl.json (a Vega-Lite spec  one results page, a chart per spec,
+    with usermeta.mmmview), or a         Vega vendored and the table inlined;
+    directory of them                    the contract is in
+                                         src/python/resultsview/page.py
     *_events.tsv, *_beh.tsv              not here; the MCP plot tools cover them
 
 Display profiles live in DISPLAY_PROFILES below, keyed on the entity that
@@ -88,6 +92,7 @@ if str(_REPO_ROOT / "src" / "python") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "src" / "python"))
 
 from neuroimaging import viewer  # noqa: E402
+from resultsview import page as resultspage  # noqa: E402
 
 EXIT_UNPLACEABLE = 2
 EXIT_RENDER = 3
@@ -102,7 +107,9 @@ MAP_EXTS = (".nii.gz", ".nii")
 SURF_EXTS = (".shape.gii", ".func.gii")
 FEATURE_EXTS = (".csv", ".parquet")
 TABLE_SUFFIXES = ("_events.tsv", "_beh.tsv")
-_ALL_EXTS = MAP_EXTS + SURF_EXTS + FEATURE_EXTS + (".gii", ".tsv", ".json", ".html")
+RESULT_SPEC_EXT = resultspage.SPEC_EXT       # before .json: longest wins
+_ALL_EXTS = (MAP_EXTS + SURF_EXTS + FEATURE_EXTS
+             + (".gii", ".tsv", RESULT_SPEC_EXT, ".json", ".html"))
 
 FEATURE_EXTRACTORS = ("viz2psy", "aud2psy", "word2psy")
 
@@ -157,6 +164,7 @@ def parse_entities(name):
 @dataclass
 class Target:
     kind: str                       # volume | surface | features | movies
+                                    # | results (maps = the specs)
     maps: list                      # Path(s); one for a file, many for a dir
     entities: dict = field(default_factory=dict)   # shared, filename order
     suffix: str = None              # None when variants spans several
@@ -208,12 +216,22 @@ def classify(path):
         return [_classify_surface(path)]
     if name.endswith(FEATURE_EXTS):
         return [_classify_features(path)]
+    if name.endswith(RESULT_SPEC_EXT):
+        return [_results_target([path], source=path)]
     if name.endswith(TABLE_SUFFIXES):
         raise Unplaceable(
-            f"{path} is a behavioral/events table; tables are not in "
-            "mmmview's first cut — use the MCP plot tools "
+            f"{path} is a behavioral/events table; mmmview draws result "
+            "tables, not per-trial ones — use the MCP plot tools "
             "(plot_timeline_responses, plot_accuracy_by_condition, "
             "plot_rt_distribution, ...) on it")
+    if name.endswith(resultspage.TABLE_EXT):
+        specs = resultspage.specs_for_table(path)
+        if not specs:
+            raise Unplaceable(
+                f"no Vega-Lite spec reads {name}; write "
+                f"{split_name(name)[0]}{RESULT_SPEC_EXT} beside it (contract: "
+                "src/python/resultsview/page.py) and mmmview will draw it")
+        return [_results_target(specs, source=path)]
     raise Unplaceable(f"cannot place {path}; pass --underlay/--mesh, or see "
                       "build_brain_viewer.py")
 
@@ -265,6 +283,11 @@ def _classify_dir(path):
                 singles.append(_classify_surface(p))
             except Unplaceable:
                 continue        # a directory skips what it cannot place
+    specs = sorted(p for p in path.iterdir()
+                   if p.is_file() and p.name.endswith(RESULT_SPEC_EXT))
+    results = [_results_target(specs, source=path)] if specs else []
+    if not singles and results:
+        return results
     if not singles:
         # a movies feature-table directory, or a composed-run root holding
         # one as features/ (the tb-timelines compose layout: features/ +
@@ -274,8 +297,9 @@ def _classify_dir(path):
                                      for p in cand.iterdir() if p.is_file()):
                 return [_movies_target(cand, source=path)]
         raise Unplaceable(f"no brain maps (*.nii.gz, *.shape.gii, "
-                          f"*.func.gii) and no movies feature tables "
-                          f"(movies_*_features.*) in {path}; pass one file")
+                          f"*.func.gii), no movies feature tables "
+                          f"(movies_*_features.*) and no result specs "
+                          f"(*{RESULT_SPEC_EXT}) in {path}; pass one file")
     subs = {t.entities.get("sub") for t in singles}
     if len(subs) > 1:
         raise Unplaceable(f"maps in {path} span several subjects "
@@ -306,7 +330,18 @@ def _classify_dir(path):
                           suffix=vnames[0] if len(vnames) == 1 else None,
                           source=path,
                           variants=vnames if len(vnames) > 1 else None))
-    return out
+    return out + results
+
+
+def _results_target(specs, source):
+    """A results page over one or more specs. Every spec is validated here
+    so a broken one fails at classify with the contract's own message."""
+    for s in specs:
+        try:
+            resultspage.load_spec(s)
+        except resultspage.SpecError as exc:
+            raise Unplaceable(str(exc))
+    return Target("results", list(specs), {}, None, source=source)
 
 
 def find_sidecar(path):
@@ -774,6 +809,8 @@ def resolve(target, roots, opts=None):
         return _resolve_features(target, roots, opts)
     if target.kind == "movies":
         return _resolve_movies(target, roots, opts)
+    if target.kind == "results":
+        return _resolve_results(target, opts)
 
     out_dir = Path(opts.out_dir) if opts.out_dir else viz_dir_for(target.source)
     out = out_dir / bundle_name(
@@ -948,6 +985,44 @@ def _resolve_movies(target, roots, opts):
                 messages)
 
 
+RESULTS_MARK = "_desc-viewer_results"
+
+
+def results_name(source):
+    """<dir>_desc-viewer_results.html for a directory, <stem>_... for a
+    table or spec."""
+    source = Path(source)
+    stem = source.name if source.is_dir() else split_name(source.name)[0]
+    return f"{stem}{RESULTS_MARK}.html"
+
+
+def _resolve_results(target, opts):
+    src = target.source
+    out_dir = Path(opts.out_dir) if opts.out_dir else viz_dir_for(src)
+    tables = []
+    for s in target.maps:
+        t = resultspage.load_spec(s)["table"]
+        if t not in tables:
+            tables.append(t)
+    inputs = {p.name: p for p in list(target.maps) + tables}
+    h = hashlib.sha256()
+    h.update(f"results-v{resultspage.PAGE_VERSION}|".encode())
+    h.update(json.dumps(resultspage.VEGA_VERSIONS, sort_keys=True).encode())
+    for p in sorted(str(p) for p in inputs.values()):
+        h.update(p.encode())
+        h.update(_sha(p).encode())
+    key = h.hexdigest()
+    notes = "\n".join(
+        [f"built {datetime.date.today().isoformat()} by "
+         "mmmdata/scripts/mmmview.py (workbench mmmview-browse, increment 6)",
+         f"mmmview-key: {key}"]
+        + [f"  {n}" for n in inputs])
+    title = f"{Path(src).name} — results"
+    # command is the regenerate recipe shown on the page; render never runs it
+    return Plan("results", out_dir / results_name(src), title, inputs, [],
+                ["mmmview", str(src)], [], key, notes)
+
+
 # ---------------------------------------------------------------------------
 # stage 3 — render and open
 # ---------------------------------------------------------------------------
@@ -1111,6 +1186,16 @@ def render(plan, force=False):
             raise RenderError(f"{plan.command[0]} exited 0 but wrote no "
                               f"{plan.out}")
         return plan.out, True
+    if plan.renderer == "results":
+        specs = [p for n, p in plan.inputs.items()
+                 if n.endswith(RESULT_SPEC_EXT)]
+        try:
+            resultspage.build_results_page(
+                specs, plan.out, title=plan.title, notes=plan.notes,
+                command=" ".join(shlex.quote(c) for c in plan.command))
+        except Exception as exc:
+            raise RenderError(f"{type(exc).__name__}: {exc}")
+        return plan.out, True
     floor = _floor_from(plan)
     try:
         if plan.renderer == "volume":
@@ -1223,6 +1308,8 @@ go();
 def _index_label(name):
     """Display label for a bundle filename: its entities minus the
     constant-per-directory sub- and the desc-viewer marker."""
+    if name.endswith(RESULTS_MARK + ".html"):
+        return name[: -len(RESULTS_MARK + ".html")] + " (results)"
     ents, suffix, _ = parse_entities(name)
     bits = [f"{k}-{v}" for k, v in ents.items() if k not in ("sub", "desc")]
     if suffix:
@@ -1357,7 +1444,9 @@ def _viewable_entries(child, roots, opts):
         return []
     entries = []
     for t in targets:
-        label = _label(t.entities, t.suffix, family_of(t.entities, t.suffix))
+        label = (f"{len(t.maps)} result chart{'s' if len(t.maps) > 1 else ''}"
+                 if t.kind == "results" else
+                 _label(t.entities, t.suffix, family_of(t.entities, t.suffix)))
         out = None
         try:
             plan = resolve(t, roots, opts)
@@ -1978,7 +2067,9 @@ def _claims_for(viz, roots, opts):
         for child in sorted(data_dir.iterdir()):
             if not child.is_file():
                 continue
-            if not child.name.endswith(MAP_EXTS + SURF_EXTS + FEATURE_EXTS):
+            if not child.name.endswith(MAP_EXTS + SURF_EXTS + FEATURE_EXTS
+                                       + (RESULT_SPEC_EXT,
+                                          resultspage.TABLE_EXT)):
                 continue
             try:
                 for t in classify(child):
@@ -2164,7 +2255,8 @@ def main(argv=None):
     # a viz dir holding several bundles gets a pulldown index; open that
     # (preselecting this run's first bundle) instead of "the first of N"
     index = None
-    bundle_outs = [p.out for p in plans if p.renderer in ("volume", "surface")]
+    bundle_outs = [p.out for p in plans
+                   if p.renderer in ("volume", "surface", "results")]
     for d in sorted({o.parent for o in bundle_outs}):
         got = write_index(d)
         if got:
