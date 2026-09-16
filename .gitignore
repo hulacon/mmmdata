@@ -6,6 +6,7 @@
 vendor/
 # ...but the viewer's pinned NiiVue + template are deliberate
 !src/python/neuroimaging/vendor/
+!src/python/resultsview/vendor/
 
 # Jekyll (root-level, in case of accidental builds)
 _site/
