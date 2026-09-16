@@ -1852,3 +1852,159 @@ class TestResults:
         out = capsys.readouterr().out
         assert "results)" in out
         assert (results_dir / "viz" / "index.html").exists()
+
+
+# ---------------------------------------------------------------------------
+# "Refresh from current data" (mmmview-browse increment 7): served pages ask
+# /__status and POST /__refresh; the truth is reap's (claims + key)
+# ---------------------------------------------------------------------------
+
+def _built_results(roots, d, target=None):
+    (t,) = classify(target or d)
+    plan = resolve(t, roots, Opts())
+    render(plan)
+    return plan
+
+
+class TestFreshness:
+    def test_current_page(self, roots, results_dir):
+        plan = _built_results(roots, results_dir)
+        s = mmmview.page_status(plan.out, roots)
+        assert s["overall"] == "current" and s["refreshable"]
+        assert s["items"] == [{"name": plan.out.name, "state": "current",
+                               "basis": "key", "built": s["items"][0]["built"]}]
+        assert s["items"][0]["built"]           # parsed from the notes
+
+    def test_changed_table_is_stale(self, roots, results_dir):
+        plan = _built_results(roots, results_dir)
+        touch(results_dir / "acc.tsv", RESULT_TABLE + "03\tsingle\t0.55\n")
+        mmmview._SHA_CACHE.clear()
+        s = mmmview.page_status(plan.out, roots)
+        assert s["overall"] == "stale"
+        assert "data changed since this was built" in s["text"]
+
+    def test_index_aggregates_its_bundles(self, roots, results_dir):
+        _built_results(roots, results_dir)
+        _built_results(roots, results_dir, results_dir / "acc.tsv")
+        idx = mmmview.write_index(results_dir / "viz")
+        touch(results_dir / "dprime.tsv", RESULT_TABLE + "03\tsingle\t0.55\n")
+        mmmview._SHA_CACHE.clear()
+        s = mmmview.page_status(idx, roots)
+        states = {i["name"]: i["state"] for i in s["items"]}
+        assert states == {"acc_desc-viewer_results.html": "current",
+                          "group_desc-viewer_results.html": "stale"}
+        assert s["text"] == "1 of 2 outputs are stale"
+
+    def test_unclaimed_page_cannot_be_verified(self, roots, results_dir,
+                                               tmp_path):
+        (t,) = classify(results_dir)
+        plan = resolve(t, roots, Opts(out_dir=str(tmp_path / "else" / "viz")))
+        render(plan)
+        s = mmmview.page_status(plan.out, roots)
+        assert s["overall"] == "unknown" and not s["refreshable"]
+        assert s["items"][0]["state"] == "orphan"
+
+    def test_refresh_rebuilds_only_stale_unless_forced(self, roots,
+                                                      results_dir):
+        plan = _built_results(roots, results_dir)
+        assert mmmview.refresh_page(plan.out, roots)["current"] == \
+            [plan.out.name]
+        touch(results_dir / "acc.tsv", RESULT_TABLE + "03\tsingle\t0.55\n")
+        mmmview._SHA_CACHE.clear()
+        res = mmmview.refresh_page(plan.out, roots)
+        assert res["rebuilt"] == [plan.out.name] and not res["errors"]
+        assert mmmview.page_status(plan.out, roots)["overall"] == "current"
+        assert mmmview.refresh_page(plan.out, roots, force=True)["rebuilt"] \
+            == [plan.out.name]
+
+    def test_refresh_never_deletes_orphans(self, roots, results_dir):
+        viz = results_dir / "viz"
+        orphan = touch(viz / "gone_desc-viewer_results.html",
+                       "<html>mmmview-key: " + "0" * 64 + "</html>")
+        _built_results(roots, results_dir)
+        idx = mmmview.write_index(viz)
+        res = mmmview.refresh_page(idx, roots)
+        assert res["orphans"] == ["gone_desc-viewer_results.html"]
+        assert orphan.exists()
+
+    def test_render_errors_are_collected(self, roots, results_dir,
+                                         monkeypatch):
+        plan = _built_results(roots, results_dir)
+
+        def boom(plan, force=False):
+            raise mmmview.RenderError("renderer exploded\nstack")
+        monkeypatch.setattr(mmmview, "render", boom)
+        res = mmmview.refresh_page(plan.out, roots, force=True)
+        assert res["errors"] == [{"name": plan.out.name,
+                                  "error": "renderer exploded"}]
+
+    def test_widget_is_in_index_and_results_pages(self, roots, results_dir):
+        plan = _built_results(roots, results_dir)
+        _built_results(roots, results_dir, results_dir / "acc.tsv")
+        idx = mmmview.write_index(results_dir / "viz")
+        for page in (idx, plan.out):
+            html = page.read_text()
+            assert "Refresh from current data" in html
+            assert '"X-mmmview": "1"' in html
+
+
+class TestRefreshEndpoints:
+    @pytest.fixture
+    def served(self, roots, tmp_path):
+        import threading
+        d = tmp_path / "served" / "group"
+        for stem in ("acc", "dprime"):
+            touch(d / f"{stem}.tsv", RESULT_TABLE)
+            touch(d / f"{stem}.vl.json", result_spec())
+        plan = _built_results(roots, d)
+        srv = mmmview.make_server(tmp_path / "served", roots, Opts(),
+                                  "127.0.0.1", 0)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        yield d, plan, srv.server_address[1]
+        srv.shutdown()
+        srv.server_close()
+
+    def call(self, port, method, path, headers=None):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        c.request(method, path, headers=headers or {})
+        r = c.getresponse()
+        body = r.read()
+        c.close()
+        return r.status, json.loads(body) if body else None
+
+    PAGE = "/group/viz/group_desc-viewer_results.html"
+
+    def test_status_json(self, served):
+        _, _, port = served
+        status, body = self.call(port, "GET", f"/__status?page={self.PAGE}")
+        assert status == 200 and body["overall"] == "current"
+
+    def test_refresh_needs_the_header(self, served):
+        _, _, port = served
+        status, _ = self.call(port, "POST", f"/__refresh?page={self.PAGE}")
+        assert status == 403
+
+    def test_refresh_is_post_only(self, served):
+        _, _, port = served
+        status, _ = self.call(port, "GET", f"/__refresh?page={self.PAGE}")
+        assert status == 405
+
+    def test_refresh_rebuilds_a_stale_page(self, served):
+        d, plan, port = served
+        touch(d / "acc.tsv", RESULT_TABLE + "03\tsingle\t0.55\n")
+        mmmview._SHA_CACHE.clear()
+        status, body = self.call(port, "POST",
+                                 f"/__refresh?page={self.PAGE}",
+                                 {"X-mmmview": "1"})
+        assert status == 200 and body["rebuilt"] == [plan.out.name]
+        _, st = self.call(port, "GET", f"/__status?page={self.PAGE}")
+        assert st["overall"] == "current"
+
+    @pytest.mark.parametrize("page,code", [("/../../etc/passwd", 403),
+                                           ("/group/acc.tsv", 404),
+                                           ("/group/viz/nope.html", 404)])
+    def test_bad_pages_are_refused(self, served, page, code):
+        _, _, port = served
+        status, _ = self.call(port, "GET", f"/__status?page={page}")
+        assert status == code

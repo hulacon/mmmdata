@@ -46,7 +46,7 @@ from pathlib import Path
 SPEC_EXT = ".vl.json"
 TABLE_EXT = ".tsv"
 SCHEMA_VERSION = 1
-PAGE_VERSION = 1          # bump when the page shell or the theme changes
+PAGE_VERSION = 2          # bump when the page shell or the theme changes
 
 VENDOR_DIR = Path(__file__).resolve().parent / "vendor"
 VENDOR_JS = ("vega.min.js", "vega-lite.min.js", "vega-embed.min.js")
@@ -346,6 +346,7 @@ __NOTES__
 <h1>__TITLE__</h1>
 <p>regenerate with: <code>__COMMAND__</code></p>
 <p>built __DATE__ by mmmview · Vega __VEGA__, Vega-Lite __VEGALITE__</p>
+__HEADER_EXTRA__
 </header>
 __NAV__
 <main>
@@ -427,9 +428,11 @@ def vendor_js():
 
 
 def build_results_page(spec_paths, out, title="results", notes="",
-                       command=""):
+                       command="", header_extra=""):
     """Validate every spec, then write one page with a chart section each.
-    Raises SpecError before writing anything if any spec fails."""
+    Raises SpecError before writing anything if any spec fails.
+    header_extra is trusted HTML placed in the header (mmmview passes its
+    Refresh widget)."""
     loaded = [load_spec(p) for p in spec_paths]
     if not loaded:
         raise SpecError("no specs to draw")
@@ -457,6 +460,7 @@ def build_results_page(spec_paths, out, title="results", notes="",
             ("__DATE__", datetime.date.today().isoformat()),
             ("__VEGA__", VEGA_VERSIONS["vega"]),
             ("__VEGALITE__", VEGA_VERSIONS["vega-lite"]),
+            ("__HEADER_EXTRA__", header_extra),
             ("__NAV__", nav),
             ("__SECTIONS__", "\n".join(sections)),
             ("__CHARTS__", _json_for_script(charts)),

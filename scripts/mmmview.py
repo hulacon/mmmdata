@@ -60,6 +60,12 @@ over every bundle present, shown in an iframe — regenerated from the
 directory listing whenever a bundle lands, and opened (preselecting the
 bundle just built) instead of "the first of N outputs".
 
+Under `mmmview serve`, index and results pages check on load whether they
+are current with the data (the same claims + key reap uses) and offer
+"Refresh from current data", which rebuilds stale outputs (or all, with
+"rebuild even if current"). Opened as files, they say freshness is checked
+only when served.
+
 Roots come from config/base.toml (+ local.toml): paths.output_dir,
 paths.bids_project_dir, paths.stimfeat_env.
 """
@@ -75,6 +81,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass, field
@@ -1008,6 +1015,8 @@ def _resolve_results(target, opts):
     h = hashlib.sha256()
     h.update(f"results-v{resultspage.PAGE_VERSION}|".encode())
     h.update(json.dumps(resultspage.VEGA_VERSIONS, sort_keys=True).encode())
+    # the Refresh widget is part of the page: editing it makes pages stale
+    h.update(hashlib.sha256(REFRESH_WIDGET.encode()).hexdigest().encode())
     for p in sorted(str(p) for p in inputs.values()):
         h.update(p.encode())
         h.update(_sha(p).encode())
@@ -1192,7 +1201,8 @@ def render(plan, force=False):
         try:
             resultspage.build_results_page(
                 specs, plan.out, title=plan.title, notes=plan.notes,
-                command=" ".join(shlex.quote(c) for c in plan.command))
+                command=" ".join(shlex.quote(c) for c in plan.command),
+                header_extra=REFRESH_WIDGET)
         except Exception as exc:
             raise RenderError(f"{type(exc).__name__}: {exc}")
         return plan.out, True
@@ -1261,6 +1271,99 @@ def _floor_from(plan):
 # viz-dir index — one pulldown over every bundle in the directory
 # ---------------------------------------------------------------------------
 
+# "Refresh from current data" — served pages only (workbench mmmview-browse,
+# increment 7). Shared by the index header and results pages. It asks the
+# server that is serving it (`mmmview serve`) whether the page is current,
+# and POSTs a rebuild on request; over file:// it only says so.
+FRESH_HEADER = "X-mmmview"
+REFRESH_WIDGET = """<span class="mmm-fresh" id="mmm-fresh">
+<span id="mmm-fresh-state" class="mmm-unknown">checking freshness…</span>
+<button id="mmm-refresh" type="button" hidden>Refresh from current data</button>
+<label id="mmm-force-label" hidden><input type="checkbox" id="mmm-force"> rebuild even if current</label>
+</span>
+<style>
+  .mmm-fresh { display:inline-flex; align-items:center; gap:8px;
+               flex-wrap:wrap; font-size:12px; }
+  .mmm-fresh button { font:inherit; padding:3px 9px; border-radius:6px;
+                      border:1px solid #44445a; background:#23232e;
+                      color:#e8e8ee; cursor:pointer; }
+  .mmm-fresh button:disabled { opacity:.6; cursor:progress; }
+  .mmm-fresh label { color:#9a9aae; }
+  .mmm-current { color:#81c995; } .mmm-stale { color:#fdd663; }
+  .mmm-unknown { color:#9a9aae; } .mmm-error { color:#f28b82; }
+  .mmm-spin { display:inline-block; width:10px; height:10px;
+              border:2px solid #9a9aae; border-top-color:transparent;
+              border-radius:50%; animation:mmmspin .8s linear infinite;
+              vertical-align:-1px; margin-right:5px; }
+  @keyframes mmmspin { to { transform:rotate(360deg); } }
+</style>
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const state = $("mmm-fresh-state"), btn = $("mmm-refresh"),
+        force = $("mmm-force"), forceLabel = $("mmm-force-label");
+  const say = (text, cls) => { state.textContent = text;
+                               state.className = "mmm-" + cls; };
+  // inside an index that already carries this widget, defer to it
+  try {
+    if (window.parent !== window &&
+        window.parent.document.getElementById("mmm-fresh")) {
+      $("mmm-fresh").hidden = true;
+      return;
+    }
+  } catch (e) { /* cross-origin parent: keep our own */ }
+  if (!/^https?:$/.test(location.protocol)) {
+    say("opened as a file — freshness is checked only under mmmview serve",
+        "unknown");
+    return;
+  }
+  const q = "?page=" + encodeURIComponent(location.pathname);
+  const hdr = {"__HEADER__": "1"};
+  const label = (items) => {
+    const pick = $("pick");
+    if (!pick) return;
+    for (const o of pick.options) {
+      if (!o.dataset.label) o.dataset.label = o.textContent;
+      const it = items.find((i) => i.name === o.value);
+      o.textContent = o.dataset.label +
+        (it && it.state !== "current" ? " — " + it.state : "");
+    }
+  };
+  fetch("/__status" + q, {headers: hdr})
+    .then((r) => r.ok ? r.json() : Promise.reject(r.status))
+    .then((s) => {
+      say(s.text, s.overall);
+      label(s.items || []);
+      if (s.refreshable) { btn.hidden = false; forceLabel.hidden = false; }
+    })
+    .catch(() => say("freshness unknown (not served by mmmview serve)",
+                     "unknown"));
+  btn.addEventListener("click", () => {
+    btn.disabled = true;
+    state.className = "mmm-unknown";
+    state.innerHTML = '<span class="mmm-spin"></span>rebuilding from current data…';
+    fetch("/__refresh" + q + (force.checked ? "&force=1" : ""),
+          {method: "POST", headers: hdr})
+      .then((r) => r.json())
+      .then((res) => {
+        if (res.errors && res.errors.length) {
+          say("refresh failed: " + res.errors.map((e) => e.name + ": " +
+              e.error).join("; "), "error");
+          btn.disabled = false;
+          return;
+        }
+        const pick = $("pick");
+        if (pick) location.hash = encodeURIComponent(pick.value);
+        location.reload();
+      })
+      .catch((err) => { say("refresh failed: " + err, "error");
+                        btn.disabled = false; });
+  });
+})();
+</script>""".replace("__HEADER__", FRESH_HEADER)
+
+
 _INDEX_TEMPLATE = """<!doctype html>
 <html lang="en">
 <head>
@@ -1286,7 +1389,9 @@ _INDEX_TEMPLATE = """<!doctype html>
 <body>
 <header><h1>__TITLE__</h1><select id="pick">
 __OPTIONS__
-</select></header>
+</select>
+__FRESH__
+</header>
 <iframe id="view" src=""></iframe>
 <script>
 "use strict";
@@ -1341,7 +1446,8 @@ def write_index(viz_dir):
                         f'{_agent_caption(a)}</option>' for a in agents)
                     + "\n</optgroup>")
     html = (_INDEX_TEMPLATE.replace("__TITLE__", viz_dir.parent.name)
-                           .replace("__OPTIONS__", options))
+                           .replace("__OPTIONS__", options)
+                           .replace("__FRESH__", REFRESH_WIDGET))
     idx = viz_dir / "index.html"
     if not idx.exists() or idx.read_text() != html:
         idx.write_text(html)
@@ -1771,6 +1877,8 @@ OPEN_HINT = ("nothing here can open a browser (no $BROWSER, no $DISPLAY). "
 # ---------------------------------------------------------------------------
 
 BUILD_PATH = "/__build"
+STATUS_PATH = "/__status"
+REFRESH_PATH = "/__refresh"
 
 
 class _BrowseHandler(SimpleHTTPRequestHandler):
@@ -1822,6 +1930,10 @@ class _BrowseHandler(SimpleHTTPRequestHandler):
         split = urllib.parse.urlsplit(self.path)
         if split.path == BUILD_PATH:
             return self.serve_build(split.query)
+        if split.path == STATUS_PATH:
+            return self.serve_status(split.query)
+        if split.path == REFRESH_PATH:
+            return self.send_json(405, {"error": "POST to refresh"})
         path, reason = self.safe_path(split.path)
         if reason:
             return self.send_error(403, reason)
@@ -1871,6 +1983,53 @@ class _BrowseHandler(SimpleHTTPRequestHandler):
             return self.send_error(422, f"{path} built outside the served "
                                         "root; open it directly")
         return self.redirect(url)
+
+    def do_POST(self):
+        split = urllib.parse.urlsplit(self.path)
+        if split.path != REFRESH_PATH:
+            return self.send_json(404, {"error": "no such endpoint"})
+        # a cross-origin page cannot set this header without a CORS
+        # preflight this server never answers — so no drive-by rebuilds
+        if self.headers.get(FRESH_HEADER) != "1":
+            return self.send_json(403, {"error": f"missing {FRESH_HEADER} "
+                                                 "header"})
+        page, err = self._page_from(split.query)
+        if err:
+            return self.send_json(*err)
+        force = (urllib.parse.parse_qs(split.query).get("force")
+                 or ["0"])[0] == "1"
+        with self.server.mmm_refresh_lock:
+            res = refresh_page(page, self.server.mmm_roots,
+                               self.server.mmm_opts, force=force)
+        return self.send_json(200, res)
+
+    def serve_status(self, query):
+        page, err = self._page_from(query)
+        if err:
+            return self.send_json(*err)
+        return self.send_json(200, page_status(page, self.server.mmm_roots,
+                                               self.server.mmm_opts))
+
+    def _page_from(self, query):
+        """(page Path, None) for a served mmmview page in a viz dir, else
+        (None, (status, body))."""
+        want = (urllib.parse.parse_qs(query).get("page") or [""])[0]
+        path, reason = self.safe_path(want)
+        if reason:
+            return None, (403, {"error": reason})
+        if (not path.is_file() or not path.name.endswith(".html")
+                or path.parent.name not in VIZ_DIRS):
+            return None, (404, {"error": "not an mmmview page in a viz dir"})
+        return path, None
+
+    def send_json(self, status, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def redirect(self, url):
         self.send_response(303)
@@ -1944,6 +2103,7 @@ def make_server(root, roots, opts, bind="127.0.0.1", port=8471):
     handler = functools.partial(_BrowseHandler, directory=str(root))
     srv = ThreadingHTTPServer((bind, port), handler)
     srv.mmm_root, srv.mmm_roots, srv.mmm_opts = root, roots, opts
+    srv.mmm_refresh_lock = threading.Lock()   # one rebuild at a time
     return srv
 
 
@@ -1951,7 +2111,10 @@ def serve_main(argv):
     ap = argparse.ArgumentParser(
         prog="mmmview serve",
         description="serve the dataset tree: browse pages per request, "
-                    "build-on-demand links, HTTP Range for media")
+                    "build-on-demand links, HTTP Range for media, and "
+                    "freshness checks behind the \"Refresh from current "
+                    "data\" button on index and results pages "
+                    "(GET /__status, POST /__refresh)")
     ap.add_argument("root", nargs="?", help="directory to serve "
                     "(default: the configured BIDS root)")
     ap.add_argument("--port", type=int, default=8471)
@@ -2134,6 +2297,103 @@ def _regenerate(viz, roots, opts):
     if (viz / BROWSE_PAGE).exists():
         write_browse(viz.parent, roots, opts)
     return notes
+
+
+# ---------------------------------------------------------------------------
+# freshness — "Refresh from current data" (increment 7). Same truth as reap:
+# what the data claims (_claims_for) against the key the page carries.
+# ---------------------------------------------------------------------------
+
+_BUILT = re.compile(r"built (\d{4}-\d{2}-\d{2})")
+
+
+def _bundle_state(f, plan):
+    """(state, basis) for one output file: current | stale | orphan |
+    unknown, judged by the mmmview-key or, for external dashboards, mtime."""
+    text = _read_head(f)
+    if plan is None:
+        return ("orphan" if KEY_MARK in text else "unknown"), None
+    if plan.renderer in ("features", "movies"):
+        return ("current" if is_current(plan) else "stale"), "mtime"
+    return ("current" if f"{KEY_MARK} {plan.key}" in text else "stale"), "key"
+
+
+def _page_targets(page):
+    """The output files a page answers for: every bundle in its viz dir for
+    an index, the page itself otherwise."""
+    page = Path(page)
+    if page.name == "index.html":
+        return sorted(p for p in page.parent.iterdir()
+                      if p.is_file() and "_desc-viewer" in p.name
+                      and p.name.endswith(".html"))
+    return [page]
+
+
+def page_status(page, roots, opts=None):
+    """What the Refresh widget shows: per-output state and a one-line
+    summary. Pure data; the server serializes it."""
+    page = Path(page)
+    opts = opts or Opts()
+    claims = _claims_for(page.parent, roots, opts)
+    items = []
+    for f in _page_targets(page):
+        st, basis = _bundle_state(f, claims.get(f.name))
+        m = _BUILT.search(_read_head(f))
+        items.append({"name": f.name, "state": st, "basis": basis,
+                      "built": m.group(1) if m else None})
+    counts = {}
+    for it in items:
+        counts[it["state"]] = counts.get(it["state"], 0) + 1
+    claimed = [it for it in items if it["state"] in ("current", "stale")]
+    if not items:
+        overall, text = "unknown", "no mmmview outputs here"
+    elif not claimed:
+        overall = "unknown"
+        text = ("cannot verify: no data mmmview can see claims this page "
+                "(built with --out-dir, or its data moved)")
+    elif counts.get("stale"):
+        overall = "stale"
+        n = len(items)
+        built = sorted({it["built"] for it in items
+                        if it["state"] == "stale" and it["built"]})
+        text = (f"data changed since this was built"
+                + (f" ({', '.join(built)})" if built else "")
+                if n == 1 else f"{counts['stale']} of {n} outputs are stale")
+    else:
+        overall = "current"
+        text = ("current with the data" if len(items) == 1
+                else f"all {len(claimed)} checked outputs current")
+    if any(it["basis"] == "mtime" for it in items):
+        text += " · dashboards judged by file time, not content"
+    if counts.get("orphan"):
+        text += f" · {counts['orphan']} no longer claimed (mmmview reap)"
+    return {"page": page.name, "overall": overall, "text": text,
+            "items": items, "refreshable": bool(claimed)}
+
+
+def refresh_page(page, roots, opts=None, force=False):
+    """Rebuild what a page answers for from the current data: stale
+    outputs, or all claimed ones with force. Orphans are reported, never
+    deleted (that is reap's job). Errors are collected per output."""
+    page = Path(page)
+    opts = opts or Opts()
+    claims = _claims_for(page.parent, roots, opts)
+    out = {"rebuilt": [], "current": [], "orphans": [], "errors": []}
+    for f in _page_targets(page):
+        plan = claims.get(f.name)
+        if plan is None:
+            out["orphans"].append(f.name)
+            continue
+        try:
+            _, built = render(plan, force=force)
+        except RenderError as exc:
+            out["errors"].append({"name": f.name,
+                                  "error": str(exc).splitlines()[0]})
+            continue
+        out["rebuilt" if built else "current"].append(f.name)
+    if (page.parent / "index.html").exists():
+        write_index(page.parent)
+    return out
 
 
 def reap_main(argv):
