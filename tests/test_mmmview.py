@@ -1357,3 +1357,128 @@ class TestAgentArtifacts:
         self.artifact(viz)
         with pytest.raises(Unplaceable):
             classify(viz)
+
+
+# ---------------------------------------------------------------------------
+# catalog annotation (mmmview-browse increment 5): enrichment only — every
+# page must render the same without it
+# ---------------------------------------------------------------------------
+
+def make_catalog(db, rows, started_at="2026-01-02T03:04:05+00:00"):
+    """A minimal Contract A catalog: the `files` columns the annotation
+    reads, plus a sweep_meta report. rows = (dataset_relpath, path, suffix)."""
+    duckdb = pytest.importorskip("duckdb")
+    db.parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE files (dataset_relpath VARCHAR, path VARCHAR, "
+                "suffix VARCHAR)")
+    con.executemany("INSERT INTO files VALUES (?, ?, ?)", rows)
+    con.execute("CREATE TABLE sweep_meta (key VARCHAR, value VARCHAR)")
+    con.execute("INSERT INTO sweep_meta VALUES ('report', ?)",
+                [json.dumps({"started_at": started_at})])
+    con.close()
+    return db
+
+
+@pytest.fixture
+def cataloged(tmp_path):
+    """BIDS root with raw sub-## dirs and an fMRIPrep derivative, and a
+    catalog describing both (plus rows for a sibling derivative that must
+    not leak into fMRIPrep's counts)."""
+    bids = tmp_path / "ds"
+    deriv = bids / "derivatives"
+    for sub in ("sub-01", "sub-02"):
+        (bids / sub / "ses-01").mkdir(parents=True)
+    (deriv / "fmriprep" / "sub-01" / "ses-01").mkdir(parents=True)
+    (deriv / "fmriprep" / "logs").mkdir(parents=True)
+    rows = [(".", "sub-01/ses-01/func/a_bold.nii.gz", "bold"),
+            (".", "sub-01/ses-01/func/b_bold.nii.gz", "bold"),
+            (".", "sub-01/ses-01/func/a_events.tsv", "events"),
+            (".", "sub-01/ses-01/anat/a_T1w.nii.gz", "T1w"),
+            (".", "sub-010/ses-01/func/a_bold.nii.gz", "bold"),
+            ("derivatives/fmriprep", "sub-01/ses-01/func/a_boldref.nii.gz",
+             "boldref"),
+            ("derivatives/mriqc", "sub-01/ses-01/func/a_bold.json", "bold")]
+    db = make_catalog(bids / "inventory" / "catalog.duckdb", rows)
+    return Roots(deriv=deriv, bids=bids, catalog_db=db)
+
+
+def _subdir(model, name):
+    return next(s for s in model["subdirs"] if s["name"] == name)
+
+
+class TestCatalogAnnotation:
+    def test_subject_rows_get_file_counts_by_suffix(self, cataloged):
+        model = mmmview.browse_model(cataloged.bids, cataloged)
+        assert _subdir(model, "sub-01")["counts"] == {"bold": 2, "events": 1,
+                                                     "T1w": 1}
+        assert _subdir(model, "derivatives")["counts"] is None
+        assert model["catalog_date"] == "2026-01-02"
+
+    def test_a_label_prefix_does_not_capture_a_longer_label(self, cataloged):
+        model = mmmview.browse_model(cataloged.bids, cataloged)
+        assert _subdir(model, "sub-02")["counts"] is None
+
+    def test_derivative_rows_count_only_their_own_dataset(self, cataloged):
+        model = mmmview.browse_model(cataloged.deriv / "fmriprep", cataloged)
+        assert _subdir(model, "sub-01")["counts"] == {"boldref": 1}
+        assert _subdir(model, "logs")["counts"] is None
+
+    def test_session_rows_are_annotated_below_a_subject(self, cataloged):
+        model = mmmview.browse_model(cataloged.bids / "sub-01", cataloged)
+        assert _subdir(model, "ses-01")["counts"]["bold"] == 2
+
+    def test_counts_resolve_through_a_derivatives_root_outside_bids(
+            self, cataloged, tmp_path):
+        # the Mac staging layout: output_dir is not <bids>/derivatives
+        staged = tmp_path / "staged"
+        (staged / "fmriprep" / "sub-01").mkdir(parents=True)
+        roots = Roots(deriv=staged, bids=cataloged.bids,
+                      catalog_db=cataloged.catalog_db)
+        model = mmmview.browse_model(staged / "fmriprep", roots)
+        assert _subdir(model, "sub-01")["counts"] == {"boldref": 1}
+
+    def test_page_shows_counts_and_the_sweep_date(self, cataloged):
+        html = mmmview.write_browse(cataloged.bids, cataloged).read_text()
+        assert "4 files" in html and "2 bold" in html
+        assert "catalog swept 2026-01-02" in html
+
+    def test_missing_catalog_renders_the_same_page_silently(
+            self, cataloged, capsys):
+        with_db = mmmview.write_browse(cataloged.bids, cataloged).read_text()
+        bare = Roots(deriv=cataloged.deriv, bids=cataloged.bids,
+                     catalog_db=cataloged.bids / "nope.duckdb")
+        page = mmmview.write_browse(cataloged.bids, bare)
+        html = page.read_text()
+        assert "files" not in html.split("<main>")[1].split("Subdirectories")[0]
+        assert "catalog swept" not in html and "2 bold" not in html
+        assert "sub-01/" in html and "sub-01/" in with_db
+        assert capsys.readouterr().err == ""
+
+    def test_unreadable_catalog_renders_without_counts_and_notes_it(
+            self, cataloged, capsys, monkeypatch):
+        monkeypatch.setattr(mmmview, "_catalog_note_sent", False)
+        cataloged.catalog_db.write_text("not a database")
+        model = mmmview.browse_model(cataloged.bids, cataloged)
+        assert _subdir(model, "sub-01")["counts"] is None
+        assert model["catalog_date"] is None
+        mmmview.browse_model(cataloged.bids, cataloged)
+        err = capsys.readouterr().err
+        assert err.count("catalog annotation skipped") == 1
+
+    def test_duckdb_import_failure_renders_without_counts(
+            self, cataloged, capsys, monkeypatch):
+        monkeypatch.setattr(mmmview, "_catalog_note_sent", False)
+        # hide an already-imported module too: `from core import catalog`
+        # reads the package attribute before sys.modules
+        import core
+        monkeypatch.delattr(core, "catalog", raising=False)
+        monkeypatch.setitem(sys.modules, "core.catalog", None)
+        model = mmmview.browse_model(cataloged.bids, cataloged)
+        assert _subdir(model, "sub-01")["counts"] is None
+        assert "catalog annotation skipped" in capsys.readouterr().err
+
+    def test_serve_mode_pages_carry_the_same_annotation(self, cataloged):
+        model = mmmview.browse_model(cataloged.bids, cataloged)
+        html = mmmview.render_browse(model, str, dir_link=str)
+        assert "2 bold" in html

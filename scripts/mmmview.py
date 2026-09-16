@@ -1182,6 +1182,81 @@ def _viewable_entries(child, roots, opts):
     return entries
 
 
+_ENTITY_DIR = re.compile(r"^(sub|ses)-[A-Za-z0-9]+$")
+_catalog_note_sent = False
+
+
+def _catalog_note(exc):
+    """One stderr line per process: serve mode rebuilds pages per request,
+    and a broken catalog is worth saying once, not on every click."""
+    global _catalog_note_sent
+    if not _catalog_note_sent:
+        print(f"mmmview: catalog annotation skipped ({exc})", file=sys.stderr)
+        _catalog_note_sent = True
+
+
+def _catalog_relpath(directory, roots):
+    """*directory* as the catalog keys it: relative to the BIDS root, where
+    derivatives sit under `derivatives/`. A derivatives root configured
+    outside the BIDS root (an off-cluster staging copy) is taken to mirror
+    that layout. Shortest relative path wins, as in _rel_to_root. None when
+    neither root contains it."""
+    best = None
+    for root, prefix in ((roots.bids, ""), (roots.deriv, "derivatives")):
+        if not root:
+            continue
+        try:
+            rel = Path(directory).relative_to(Path(root))
+        except ValueError:
+            continue
+        if best is None or len(str(rel)) < len(str(best[0])):
+            best = (rel, prefix)
+    if best is None:
+        return None
+    rel, prefix = best
+    parts = [x for x in (prefix, *rel.parts) if x not in ("", ".")]
+    return "/".join(parts)
+
+
+def catalog_counts(directory, names, roots):
+    """File counts by suffix for the sub-##/ses-## children of *directory*,
+    read from the Contract A catalog: ({child name: {suffix: n}}, sweep
+    date). Enrichment only — a missing catalog is silently ({}, None), and
+    any other failure is the same plus one stderr note. Never raises."""
+    wanted = {n for n in names if _ENTITY_DIR.match(n)}
+    db = roots.catalog_db
+    if not wanted or not db or not Path(db).exists():
+        return {}, None
+    rel = _catalog_relpath(directory, roots)
+    if rel is None:
+        return {}, None
+    prefix = f"{rel}/" if rel else ""
+    try:
+        from core import catalog
+        sql = ("WITH f AS (SELECT CASE WHEN dataset_relpath IS NULL OR "
+               "dataset_relpath IN ('', '.') THEN path ELSE dataset_relpath "
+               "|| '/' || path END AS relpath, suffix FROM files) "
+               "SELECT split_part(substr(relpath, ?), '/', 1) AS child, "
+               "coalesce(suffix, '(none)') AS suffix, count(*) AS n FROM f "
+               "WHERE starts_with(relpath, ?) GROUP BY ALL")
+        _, rows = catalog.run_select(db, sql, [len(prefix) + 1, prefix])
+        _, meta = catalog.run_select(
+            db, "SELECT value FROM sweep_meta WHERE key = 'report'")
+    except Exception as exc:
+        _catalog_note(exc)
+        return {}, None
+    counts = {}
+    for r in rows:
+        if r["child"] in wanted:
+            counts.setdefault(r["child"], {})[r["suffix"]] = int(r["n"])
+    date = None
+    try:
+        date = json.loads(meta[0]["value"])["started_at"][:10]
+    except Exception:
+        pass
+    return counts, date
+
+
 def browse_model(directory, roots, opts=None):
     """The data behind a browse page: subdirectories, what is viewable
     here, and the bundles already in this directory's viz dir. Pure data —
@@ -1192,7 +1267,8 @@ def browse_model(directory, roots, opts=None):
     model = {"dir": directory, "rel": _rel_to_root(directory, roots),
              "date": datetime.date.today().isoformat(),
              "command": f"mmmview {directory}",
-             "subdirs": [], "viewable": [], "bundles": [], "agents": []}
+             "subdirs": [], "viewable": [], "bundles": [], "agents": [],
+             "catalog_date": None}
     try:
         children = sorted(directory.iterdir())
     except OSError:
@@ -1216,6 +1292,10 @@ def browse_model(directory, roots, opts=None):
                 model["bundles"].append({"name": p.name, "path": p,
                                          "label": _index_label(p.name)})
     model["agents"] = agent_artifacts(viz)
+    counts, model["catalog_date"] = catalog_counts(
+        directory, [sd["name"] for sd in model["subdirs"]], roots)
+    for sd in model["subdirs"]:
+        sd["counts"] = counts.get(sd["name"])
     return model
 
 
@@ -1267,6 +1347,23 @@ def _recipe(path):
     return f"<code>mmmview {_escape(str(path))}</code>"
 
 
+_COUNTS_SHOWN = 6
+
+
+def _counts_caption(counts):
+    """`4 files — 2 bold · 1 events · 1 T1w`, largest first, the tail
+    folded into `+k more`. Empty when there are no counts."""
+    if not counts:
+        return ""
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
+    bits = [f"{n} {suffix}" for suffix, n in ranked[:_COUNTS_SHOWN]]
+    if len(ranked) > _COUNTS_SHOWN:
+        bits.append(f"+{len(ranked) - _COUNTS_SHOWN} more")
+    total = sum(counts.values())
+    text = f"{total} file{'s' if total != 1 else ''} — " + " · ".join(bits)
+    return f'<span class="kind">{_escape(text)}</span>'
+
+
 def _browse_sections(model, link, build_link=None, dir_link=None):
     """HTML for the page body. `link(Path) -> href` places an existing
     file; `build_link(Path) -> href` offers to build one on demand (serve
@@ -1284,13 +1381,21 @@ def _browse_sections(model, link, build_link=None, dir_link=None):
     rows = []
     for sd in model["subdirs"]:
         name = _escape(sd["name"])
+        counts = _counts_caption(sd.get("counts"))
         if dir_link is not None:
-            rows.append(f'<a href="{_escape(dir_link(sd["path"]))}">{name}/</a>')
+            rows.append(f'<a href="{_escape(dir_link(sd["path"]))}">{name}/</a>'
+                        f"{counts}")
         elif sd["page"] is not None:
-            rows.append(f'<a href="{_escape(link(sd["page"]))}">{name}/</a>')
+            rows.append(f'<a href="{_escape(link(sd["page"]))}">{name}/</a>'
+                        f"{counts}")
         else:
-            rows.append(f"{name}/ {_recipe(sd['path'])}")
-    section("Subdirectories", rows)
+            rows.append(f"{name}/{counts} {_recipe(sd['path'])}")
+    title = "Subdirectories"
+    if model.get("catalog_date") and any(sd.get("counts")
+                                         for sd in model["subdirs"]):
+        title += (f' <span class="kind">file counts: catalog swept '
+                  f'{_escape(model["catalog_date"])}</span>')
+    section(title, rows)
 
     rows = []
     for v in model["viewable"]:
