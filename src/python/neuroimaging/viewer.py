@@ -128,7 +128,7 @@ def _norm_spec(spec, defaults):
 # ---------------------------------------------------------------------------
 
 def build_volume_viewer(underlay, overlays, out, title="brain viewer",
-                        notes=""):
+                        notes="", overlay_title=None, variant_title=None):
     """underlay: path or dict spec; overlays: list of dict specs.
 
     Overlay spec keys: ``path`` OR ``image`` (in-memory nibabel image, e.g.
@@ -136,7 +136,10 @@ def build_volume_viewer(underlay, overlays, out, title="brain viewer",
     ``cal_max``, ``opacity``, ``visible``, ``angle_legend``, ``variant``
     (a family name shared by a set of same-labeled overlays; two or more
     distinct variants make the viewer show a second, variant radio group,
-    and volume mode then decodes only the active variant's maps).
+    and volume mode then decodes only the active variant's maps), ``lut``
+    (a NiiVue label colormap ``{R,G,B,A,I,labels}``: the map is drawn as
+    named integer regions, with no threshold or colorbar).
+    ``overlay_title``/``variant_title`` rename the two radio groups.
     """
     if not isinstance(underlay, dict):
         underlay = {"path": underlay}
@@ -173,11 +176,13 @@ def build_volume_viewer(underlay, overlays, out, title="brain viewer",
             "cal_min": spec["cal_min"], "cal_max": spec["cal_max"],
             "opacity": spec["opacity"], "visible": bool(spec["visible"]),
             "isUnderlay": False, "angle_legend": bool(spec["angle_legend"]),
-            "variant": spec["variant"],
+            "variant": spec["variant"], "lut": spec.get("lut"),
         })
 
     return _render({"mode": "volume", "title": title, "notes": notes,
-                    "volumes": vols, "meshes": []}, out)
+                    "volumes": vols, "meshes": [],
+                    "overlay_title": overlay_title,
+                    "variant_title": variant_title}, out)
 
 
 def build_surface_viewer(mesh, layers, out, title="brain viewer", notes=""):

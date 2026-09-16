@@ -177,6 +177,8 @@ def _variant_rank(v):
 
 def family_of(entities, suffix):
     """Display family from the entity that names the quantity."""
+    if suffix == "dseg":
+        return "dseg"
     if entities.get("desc") in PRF_DESCS and suffix and suffix.endswith("prf"):
         return "prf"
     stat = entities.get("stat")
@@ -239,8 +241,9 @@ def _classify_surface(path):
 
 def _group_key(target):
     e = target.entities
-    return (target.kind, e.get("space"), e.get("hemi"), e.get("ses"),
-            e.get("task"), e.get("run"), target.suffix)
+    return (target.kind, e.get("tpl"), e.get("atlas"), e.get("space"),
+            e.get("hemi"), e.get("ses"), e.get("task"), e.get("run"),
+            target.suffix)
 
 
 def _classify_dir(path):
@@ -250,7 +253,11 @@ def _classify_dir(path):
             continue
         if p.name.endswith(MAP_EXTS):
             t = _classify_map(p)
-            if "sub" in t.entities:     # entity-less volumes cannot be grouped
+            # entity-less volumes cannot be grouped; a template's label
+            # maps (tpl-*_dseg) can — the template T1w beside them is
+            # their underlay, not a map
+            if "sub" in t.entities or ("tpl" in t.entities
+                                       and t.suffix == "dseg"):
                 singles.append(t)
         elif p.name.endswith(SURF_EXTS):
             try:
@@ -434,9 +441,12 @@ DISPLAY_PROFILES = {
     "glm-effect": {"tails": True, "cal_min": 0.0, "threshold": None,
                    "pos": "warm", "neg": "winter"},
     "unknown": {"tails": False, "colormap": "viridis", "cal_min": 0.0},
+    # integer regions coloured and named from the sibling <stem>.tsv
+    # (index/name/color); no threshold, no colorbar
+    "dseg": {"tails": False, "labels": True, "opacity": 0.6},
 }
 _FAMILY_ORDER = {"prf": 0, "glm-z": 1, "glm-t": 2, "glm-effect": 3,
-                 "unknown": 4}
+                 "unknown": 4, "dseg": 5}
 
 
 def display_for(map_path, entities, suffix, r2_floor):
@@ -463,6 +473,13 @@ def display_for(map_path, entities, suffix, r2_floor):
         else:
             entry["message"] = (f"no R2 map beside {Path(map_path).name}; "
                                 "drawn unmasked")
+    elif family == "dseg":
+        tsv = Path(map_path).with_name(split_name(Path(map_path).name)[0]
+                                       + ".tsv")
+        entry["lut"] = tsv if tsv.exists() else None
+        if entry["lut"] is None:
+            entry["message"] = (f"no lookup table ({tsv.name}) beside "
+                                f"{Path(map_path).name}; regions numbered")
     elif family == "unknown":
         entry["message"] = (f"no display profile for {Path(map_path).name} "
                             "(desc/stat names no known family), using default")
@@ -483,6 +500,111 @@ def _sorted_display(entries):
                                           str(e["map"])))
 
 
+def _natural(text):
+    """Sort key that orders scale-200 before scale-1000."""
+    return [int(t) if t.isdigit() else t
+            for t in re.split(r"(\d+)", text or "")]
+
+
+def _label_axes(display):
+    """Selector axes for a set of label maps: the entities that vary
+    across them. The last varying entity (filename order) becomes the
+    variant radio group, the rest name the overlay; one varying entity is
+    an overlay list alone. Sets entry label/variant in place, sorts
+    naturally, and returns (overlay_title, variant_title)."""
+    ents = [parse_entities(e["map"].name)[0] for e in display]
+    keys = [k for k in ents[0] if len({x.get(k) for x in ents}) > 1] \
+        if len(ents) > 1 else []
+    for k in (k for x in ents for k in x):
+        if k not in keys and len({x.get(k) for x in ents}) > 1:
+            keys.append(k)
+    lab_keys, var_key = (keys[:-1], keys[-1]) if len(keys) > 1 else (keys, None)
+    for e, x in zip(display, ents):
+        e["label"] = " ".join(f"{k}-{x.get(k)}" for k in lab_keys) or \
+            e["label"]
+        e["variant"] = f"{var_key}-{x.get(var_key)}" if var_key else None
+    display.sort(key=lambda e: (_natural(e["variant"]), _natural(e["label"])))
+    return (" ".join(lab_keys) or None, var_key)
+
+
+def find_template_underlay(entities, start):
+    """TemplateFlow T1w for a tpl-* map: tpl-<name>[_res-NN]_T1w.nii.gz
+    in the map's directory or any ancestor up to the tpl-<name> directory.
+    Resolution matches numerically (TemplateFlow spells res-02 where
+    derived atlases often say res-2)."""
+    tpl, res = entities["tpl"], entities.get("res")
+    dirs = []
+    for d in (Path(start), *Path(start).parents):
+        dirs.append(d)
+        if d.name == f"tpl-{tpl}":
+            break
+    else:
+        dirs = dirs[:2]
+
+    def same_res(v):
+        if res is None or v is None:
+            return res == v
+        return (int(v) == int(res)) if (v.isdigit() and res.isdigit()) \
+            else v == res
+
+    for d in dirs:
+        cands = []
+        for p in sorted(d.glob(f"tpl-{tpl}*_T1w.nii.gz")):
+            ents, sfx, _ = parse_entities(p.name)
+            if sfx == "T1w" and set(ents) <= {"tpl", "res"} and \
+                    same_res(ents.get("res")):
+                cands.append(p)
+        if len(cands) == 1:
+            return cands[0]
+        if len(cands) > 1:
+            raise Unplaceable(f"template underlay for tpl-{tpl} is ambiguous "
+                              f"({', '.join(p.name for p in cands)}); pass "
+                              "--underlay NII")
+    want = (f"tpl-{tpl}_res-{int(res):02d}_T1w.nii.gz"
+            if res and res.isdigit() else f"tpl-{tpl}_T1w.nii.gz")
+    raise Unplaceable(f"no template T1w for tpl-{tpl} (expected {want} beside "
+                      f"the maps or in the tpl-{tpl} directory — TemplateFlow "
+                      "carries it); pass --underlay NII")
+
+
+def label_lut(entry):
+    """NiiVue label colormap for a dseg entry: {R,G,B,A,I,labels}, index 0
+    transparent background. Colours come from the table's `color` column
+    with lightness spread per region — atlas tables often give every
+    parcel of a network the same colour, which would hide parcel
+    boundaries; the hue (the network) is kept. Without a table, regions
+    are the map's integer values, numbered, on golden-ratio hues."""
+    import colorsys
+    import csv
+    rows = []
+    if entry.get("lut") is not None:
+        with open(entry["lut"], newline="") as f:
+            for r in csv.DictReader(f, delimiter="\t"):
+                if r.get("index", "").strip().lstrip("-").isdigit():
+                    rows.append((int(r["index"]), r.get("name") or r["index"],
+                                 (r.get("color") or "").strip()))
+    else:
+        import nibabel as nib
+        vals = np.unique(np.asarray(nib.load(str(entry["map"])).dataobj))
+        rows = [(int(v), str(int(v)), "") for v in vals if int(v) > 0]
+    rows = sorted(r for r in rows if r[0] > 0)
+    lut = {"R": [0], "G": [0], "B": [0], "A": [0], "I": [0], "labels": [""]}
+    for idx, name, color in rows:
+        spread = ((idx * 0.6180339887) % 1.0) - 0.5
+        if len(color) == 7 and color.startswith("#"):
+            rgb = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+            h, l, s = colorsys.rgb_to_hls(*rgb)
+            l = min(0.82, max(0.3, l + 0.36 * spread))
+            s = max(s, 0.45)
+        else:
+            h, l, s = (idx * 0.6180339887) % 1.0, 0.55 + 0.2 * spread, 0.75
+        r, g, b = (round(c * 255) for c in colorsys.hls_to_rgb(h, l, s))
+        for k, v in zip("RGBAI", (r, g, b, 255, idx)):
+            lut[k].append(v)
+        lut["labels"].append(name)
+    return lut
+
+
 def find_underlay(entities, roots):
     """fMRIPrep underlay for a volume map by its space- entity."""
     sub = entities.get("sub")
@@ -492,6 +614,10 @@ def find_underlay(entities, roots):
     fp = roots.deriv / "fmriprep"
     anat = fp / f"sub-{sub}" / "anat"
     space = entities.get("space")
+    # fMRIPrep writes native-anatomical outputs (dseg, probseg, masks)
+    # without a space- entity; with no task- they cannot be functional
+    if space is None and not entities.get("task"):
+        space = "T1w"
     if space == "T1w":
         cands = [p for p in sorted(anat.glob(f"sub-{sub}*_desc-preproc_T1w.nii.gz"))
                  if "_space-" not in p.name and "_ses-" not in p.name]
@@ -655,19 +781,33 @@ def resolve(target, roots, opts=None):
         entry["variant"] = sfx if target.variants else None
         display.append(entry)
     display = _sorted_display(display)
+    axes = (None, None)
+    if display and all(e["family"] == "dseg" for e in display):
+        axes = _label_axes(display)
+    for e in display:
+        e["axes"] = axes
     messages = [e["message"] for e in display if e["message"]]
     inputs = {"maps": list(target.maps)}
     sub = target.entities.get("sub", "?")
+    tpl = None if "sub" in target.entities else target.entities.get("tpl")
     if target.kind == "volume":
         if opts.underlay:
             underlay = Path(opts.underlay)
             if not underlay.exists():
                 raise Unplaceable(f"--underlay {underlay} does not exist")
+        elif tpl:
+            underlay = find_template_underlay(target.entities,
+                                              target.maps[0].parent)
         else:
             underlay = find_underlay(target.entities, roots)
         inputs["underlay"] = underlay
-        space = target.entities.get("space") or "func"
-        title = f"sub-{sub} {_title_bits(target)} ({space})"
+        if tpl:
+            res = target.entities.get("res")
+            title = (f"tpl-{tpl} {_title_bits(target)}"
+                     + (f" (res-{res})" if res else ""))
+        else:
+            space = target.entities.get("space") or "func"
+            title = f"sub-{sub} {_title_bits(target)} ({space})"
         srcs = [underlay] + list(target.maps)
     else:
         if opts.mesh:
@@ -682,7 +822,8 @@ def resolve(target, roots, opts=None):
         title = (f"sub-{sub} {_title_bits(target)} hemi-"
                  f"{target.entities.get('hemi')} ({mesh.name})")
         srcs = [mesh, curv] + list(target.maps)
-    masks = sorted({e["mask"] for e in display if e["mask"]})
+    masks = sorted({e["mask"] for e in display if e["mask"]}
+                   | {e["lut"] for e in display if e.get("lut")})
     key = _key(srcs + masks, display, opts)
     notes = _provenance(srcs + masks, display, key, opts)
     return Plan(target.kind, out, title, inputs, display, None, messages,
@@ -692,7 +833,8 @@ def resolve(target, roots, opts=None):
 def _title_bits(target):
     e = target.entities
     bits = [f"{k}-{v}" for k, v in e.items()
-            if k in ("ses", "task", "run", "contrast", "stat", "desc")]
+            if k in ("ses", "task", "run", "atlas", "contrast", "stat",
+                     "desc")]
     if target.variants:
         bits.append("+".join(target.variants))
     elif target.suffix:
@@ -850,6 +992,11 @@ def _volume_specs(entry, floor):
                    else data)
             spec["cal_max"] = _p99(ref) or _p99(data)
         return [spec]
+    if prof.get("labels"):
+        # embedded as-is: label values must stay integers for the lookup
+        return [{"path": path, "name": path.name, "label": entry["label"],
+                 "colormap": "gray", "cal_min": 0.0, "cal_max": None,
+                 "opacity": prof["opacity"], "lut": label_lut(entry)}]
     img = nib.load(str(path))
     data = np.asarray(img.dataobj, dtype=np.float32)
     if not prof.get("tails"):
@@ -956,9 +1103,12 @@ def render(plan, force=False):
                 overlays += specs
             for i, o in enumerate(overlays):
                 o["visible"] = i == 0
+            axes = plan.display[0].get("axes", (None, None)) \
+                if plan.display else (None, None)
             viewer.build_volume_viewer(
                 {"path": plan.inputs["underlay"], "label": "underlay"},
-                overlays, plan.out, title=plan.title, notes=plan.notes)
+                overlays, plan.out, title=plan.title, notes=plan.notes,
+                overlay_title=axes[0], variant_title=axes[1])
         else:
             layers = []
             if plan.inputs.get("curv"):

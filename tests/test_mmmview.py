@@ -1482,3 +1482,155 @@ class TestCatalogAnnotation:
         model = mmmview.browse_model(cataloged.bids, cataloged)
         html = mmmview.render_browse(model, str, dir_link=str)
         assert "2 bold" in html
+
+
+# ---------------------------------------------------------------------------
+# label maps (dseg): template atlases over their TemplateFlow T1w, regions
+# named from the sibling lookup table
+# ---------------------------------------------------------------------------
+
+TPL = "tpl-MNI152NLin2009cAsym"
+
+
+def _dseg(path, n_labels):
+    data = np.zeros((4, 4, 3), np.int16)
+    data.flat[1:n_labels + 1] = np.arange(1, n_labels + 1)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    nib.save(nib.Nifti1Image(data, np.eye(4)), path)
+    return path
+
+
+def _lut(path, names, color="#781283"):
+    rows = ["index\tname\tcolor"] + [f"{i}\t{n}\t{color}"
+                                     for i, n in enumerate(names, 1)]
+    return touch(path, "\n".join(rows) + "\n")
+
+
+@pytest.fixture
+def atlas_dir(tmp_path):
+    """An atlases-style tpl-*/anat directory: Schaefer-like dsegs in two
+    network solutions at three scales (named so a lexical sort would put
+    1000 before 200), each with its LUT, plus the TemplateFlow T1w —
+    which spells resolution res-02 where the atlases say res-2."""
+    anat = tmp_path / "atlases" / TPL / "anat"
+    for seg in ("7n", "17n"):
+        for scale in ("100", "200", "1000"):
+            stem = f"{TPL}_atlas-Schaefer2018_seg-{seg}_scale-{scale}_res-2_dseg"
+            _dseg(anat / f"{stem}.nii.gz", 3)
+            _lut(anat / f"{stem}.tsv",
+                 [f"{seg}_LH_Vis_1", f"{seg}_LH_Vis_2", f"{seg}_LH_Vis_3"])
+    t1 = anat / f"{TPL}_res-02_T1w.nii.gz"
+    nib.save(nib.Nifti1Image(np.ones((4, 4, 3), np.float32), np.eye(4)), t1)
+    return anat
+
+
+class TestLabelMaps:
+    @pytest.mark.parametrize("ents", [{"tpl": "MNI152NLin2009cAsym"},
+                                      {"sub": "07", "desc": "aparcaseg"}])
+    def test_dseg_family(self, ents):
+        assert family_of(ents, "dseg") == "dseg"
+
+    def test_atlas_directory_is_one_target_without_the_template(
+            self, atlas_dir):
+        [t] = classify(atlas_dir)
+        assert t.kind == "volume" and t.suffix == "dseg"
+        assert len(t.maps) == 6
+        assert all(m.name.endswith("_dseg.nii.gz") for m in t.maps)
+        assert t.entities == {"tpl": "MNI152NLin2009cAsym",
+                              "atlas": "Schaefer2018", "res": "2"}
+
+    def test_two_atlases_in_one_directory_are_two_targets(self, atlas_dir):
+        _dseg(atlas_dir / f"{TPL}_atlas-HarvardOxford_res-2_dseg.nii.gz", 2)
+        atlases = sorted(t.entities["atlas"] for t in classify(atlas_dir))
+        assert atlases == ["HarvardOxford", "Schaefer2018"]
+
+    def test_template_underlay_matches_resolution_numerically(
+            self, roots, atlas_dir):
+        plan = resolve(classify(atlas_dir)[0], roots)
+        assert plan.inputs["underlay"] == atlas_dir / f"{TPL}_res-02_T1w.nii.gz"
+        assert plan.out == (atlas_dir / "viz" / f"{TPL}_atlas-Schaefer2018_"
+                            "res-2_desc-viewer_dseg.html")
+        assert TPL in plan.title and "atlas-Schaefer2018" in plan.title
+
+    def test_template_underlay_is_found_in_the_tpl_root(self, roots,
+                                                        atlas_dir):
+        t1 = atlas_dir / f"{TPL}_res-02_T1w.nii.gz"
+        t1.rename(atlas_dir.parent / t1.name)
+        plan = resolve(classify(atlas_dir)[0], roots)
+        assert plan.inputs["underlay"] == atlas_dir.parent / t1.name
+
+    def test_missing_template_names_the_flag_and_the_file(self, roots,
+                                                          atlas_dir):
+        (atlas_dir / f"{TPL}_res-02_T1w.nii.gz").unlink()
+        with pytest.raises(Unplaceable) as e:
+            resolve(classify(atlas_dir)[0], roots)
+        assert "--underlay" in str(e.value)
+        assert f"{TPL}_res-02_T1w.nii.gz" in str(e.value)
+
+    def test_selector_axes_are_the_varying_entities_in_natural_order(
+            self, roots, atlas_dir):
+        plan = resolve(classify(atlas_dir)[0], roots)
+        labels = list(dict.fromkeys(e["label"] for e in plan.display))
+        variants = list(dict.fromkeys(e["variant"] for e in plan.display))
+        assert labels == ["seg-7n", "seg-17n"]
+        assert variants == ["scale-100", "scale-200", "scale-1000"]
+
+    def test_bundle_config_carries_named_regions(self, roots, atlas_dir):
+        plan = resolve(classify(atlas_dir)[0], roots)
+        out, built = render(plan)
+        cfg = _config(out.read_text())
+        assert cfg["overlay_title"] == "seg" and cfg["variant_title"] == "scale"
+        overlays = [v for v in cfg["volumes"] if not v["isUnderlay"]]
+        assert len(overlays) == 6
+        lut = overlays[0]["lut"]
+        assert lut["I"][0] == 0 and lut["A"][0] == 0      # background clear
+        assert lut["labels"][1:] == ["7n_LH_Vis_1", "7n_LH_Vis_2",
+                                     "7n_LH_Vis_3"]
+        assert overlays[0]["visible"] and overlays[0]["cal_max"] is None
+        # one network colour in the table; parcels still tell apart
+        rgb = set(zip(lut["R"][1:], lut["G"][1:], lut["B"][1:]))
+        assert len(rgb) == 3
+
+    def test_parcel_colours_keep_the_network_hue(self, roots, atlas_dir):
+        import colorsys
+        plan = resolve(classify(atlas_dir)[0], roots)
+        lut = mmmview.label_lut(plan.display[0])
+        base_h = colorsys.rgb_to_hls(0x78 / 255, 0x12 / 255, 0x83 / 255)[0]
+        for r, g, b in zip(lut["R"][1:], lut["G"][1:], lut["B"][1:]):
+            h = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)[0]
+            assert abs(h - base_h) < 0.02
+
+    def test_lookup_table_edit_rebuilds(self, roots, atlas_dir):
+        plan = resolve(classify(atlas_dir)[0], roots)
+        render(plan)
+        tsv = next(atlas_dir.glob("*seg-7n_scale-100_res-2_dseg.tsv"))
+        _lut(tsv, ["renamed_1", "renamed_2", "renamed_3"])
+        plan2 = resolve(classify(atlas_dir)[0], roots)
+        assert plan2.key != plan.key
+        assert tsv.name in plan2.notes
+
+    def test_spaceless_anatomical_dseg_gets_the_native_t1w(self, roots,
+                                                           tmp_path):
+        p = _dseg(tmp_path / "anat" / "sub-07_acq-MPR_desc-aparcaseg_dseg.nii.gz",
+                  2)
+        plan = resolve(classify(p)[0], roots)
+        assert plan.inputs["underlay"].name == "sub-07_acq-MPR_desc-preproc_T1w.nii.gz"
+
+    def test_dseg_without_a_table_gets_numbered_regions(self, roots,
+                                                        tmp_path):
+        p = _dseg(tmp_path / "anat" / "sub-07_desc-aparcaseg_dseg.nii.gz", 4)
+        u = tmp_path / "u.nii.gz"
+        nib.save(nib.Nifti1Image(np.ones((4, 4, 3), np.float32), np.eye(4)), u)
+        plan = resolve(classify(p)[0], roots, Opts(underlay=str(u)))
+        assert any("lookup table" in m for m in plan.messages)
+        lut = mmmview.label_lut(plan.display[0])
+        assert lut["labels"][1:] == ["1", "2", "3", "4"]
+        assert len(set(zip(lut["R"], lut["G"], lut["B"]))) == 5
+
+    def test_cli_on_an_atlas_directory_builds_a_bundle_not_a_browse_page(
+            self, roots, atlas_dir, capsys, monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        assert mmmview.main([str(atlas_dir), "--no-open"]) == 0
+        assert "wrote" in capsys.readouterr().out
+        assert list((atlas_dir / "viz").glob("*_desc-viewer_dseg.html"))
+        assert not (atlas_dir / "viz" / "browse.html").exists()

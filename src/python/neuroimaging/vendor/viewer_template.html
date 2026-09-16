@@ -49,10 +49,10 @@
 <main>
   <div id="viewport"><canvas id="gl"></canvas></div>
   <aside>
-    <h2>Overlay</h2>
+    <h2 id="overlaytitle">Overlay</h2>
     <div id="layers"></div>
     <div id="variantbox" style="display:none">
-      <h2>Variant</h2>
+      <h2 id="varianttitle">Variant</h2>
       <div id="variants"></div>
     </div>
     <h2>Opacity</h2>
@@ -120,7 +120,21 @@ const nv = new niivue.Niivue({
   isAlphaClipDark: true,           // volume overlays: hide below cal_min
   multiplanarShowRender: niivue.SHOW_RENDER.ALWAYS,
 });
-nv.onLocationChange = d => { $("loc").textContent = (d && d.string) || ""; };
+// Label maps: NiiVue's own readout names every loaded volume (the hidden
+// selector siblings and the underlay value too), so a label overlay reads
+// out only the active map's region name, at the crosshair's mm position.
+nv.onLocationChange = d => {
+  let text = (d && d.string) || "";
+  const a = typeof activeEntry === "function" ? activeEntry() : null;
+  const vi = a && a.lut ? nvIndex.get(a.i) : undefined;
+  if (d && d.values && vi !== undefined && d.values[vi]) {
+    const v = Math.round(d.values[vi].value);
+    const mm = (d.mm || []).slice(0, 3).map(x => x.toFixed(0)).join("×");
+    text = mm + " mm   " + (v > 0 ? (a.lut.labels[a.lut.I.indexOf(v)] || v)
+                                   : "outside regions");
+  }
+  $("loc").textContent = text;
+};
 
 // Exclusive stat-layer toggle; shade layers and the underlay stay put.
 // The toggle is two-dimensional when entries carry a variant (several map
@@ -158,6 +172,7 @@ async function loadVariant(v) {
     const img = await niivue.NVImage.loadFromBase64({
       base64: e.base64, name: e.name });
     img.colormap = e.colormap;
+    if (e.lut) img.setColormapLabel(e.lut);    // named integer regions
     img.cal_min = e.i in thr ? thr[e.i]           // threshold survives the
       : (e.cal_min === null ? 0 : e.cal_min);     // variant switch
     if (e.cal_max !== null) img.cal_max = e.cal_max;
@@ -178,7 +193,7 @@ async function applyActive() {
     if (CONFIG.mode === "volume") {
       const vi = nvIndex.get(e.i);
       if (vi === undefined) continue;   // not the loaded variant
-      nv.volumes[vi].colorbarVisible = on;
+      nv.volumes[vi].colorbarVisible = on && !e.lut;
       nv.setOpacity(vi, on ? alpha : 0);
     } else {
       const id = nv.meshes[0].id;
@@ -190,6 +205,7 @@ async function applyActive() {
   $("wheelbox").style.display = a && a.angle_legend ? "block" : "none";
   nv.updateGLVolume();
   syncThresh();
+  if (CONFIG.mode === "volume") nv.createOnLocationChange();
 }
 
 // Live threshold = the active layer's cal_min. The bundle embeds the full
@@ -224,6 +240,8 @@ $("thresh").addEventListener("input", () => {
   $("threshcap").textContent = fmtThr(v);
 });
 function buildControls() {
+  if (CONFIG.overlay_title) $("overlaytitle").textContent = CONFIG.overlay_title;
+  if (CONFIG.variant_title) $("varianttitle").textContent = CONFIG.variant_title;
   const mkRadio = (box, group, label, checked, onpick) => {
     const l = document.createElement("label"); l.className = "row";
     const r = document.createElement("input");
