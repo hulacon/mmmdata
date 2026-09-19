@@ -31,6 +31,12 @@ venv_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/.venv"
 # mmmview shells out to the three *2psy dashboard CLIs from its bin/.
 stimfeat_env = "/gpfs/projects/hulacon/shared/envs/stimfeat"
 
+# MATLAB toolboxes for the pRF fit (analyzePRF + its knkutils dependency),
+# pinned clones outside the BIDS tree; commits are recorded in every fit
+# sidecar. fit_prf_analyzeprf.sbatch exports them for prf_analyzeprf_fit.m.
+analyzeprf_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/external/analyzePRF"
+knkutils_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/external/knkutils"
+
 # Output directories
 output_dir = "/gpfs/projects/hulacon/shared/mmmdata/derivatives"
 inventory_dir = "/gpfs/projects/hulacon/shared/mmmdata/inventory"

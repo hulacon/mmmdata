@@ -882,6 +882,83 @@ def load_run_psc(subject, session, run, space, mask, reference):
     return (100.0 * (data - mean) / mean).T                      # (N_TR, n_vox)
 
 
+def build_fit_mask(subject, units, space, grid_session, occipital_only=False):
+    """The fit mask on the reference grid: every run's brain mask intersected.
+
+    Returns (mask, reference_img, grid_run, resampled) where `resampled` names
+    the runs whose grid differed from the reference and were resampled onto it.
+    Shared by the Python fit and by prf_analyzeprf_export.py so the two backends
+    fit exactly the same voxels.
+    """
+    import nibabel as nib
+
+    grid_run = next(r for s, r in units if s == grid_session)
+    reference = nib.load(str(mask_path(subject, grid_session, grid_run, space)))
+
+    print(f"  loading BOLD (grid: ses-{grid_session} run-{grid_run:02d}, "
+          f"{reference.shape[:3]} @ {np.round(reference.header.get_zooms()[:3], 3)})")
+    mask = np.asarray(reference.dataobj) > 0
+    resampled = []
+    for ses, run in units:
+        img = nib.load(str(mask_path(subject, ses, run, space)))
+        if not _same_grid(img, reference):
+            # In an fMRIPrep OUTPUT space a grid difference is expected and
+            # meaningful (sub-03's FOV), and resampling onto the reference is
+            # the documented fix. In NATIVE space it is not: runs of a session
+            # share the native grid exactly for every subject, so a mismatch
+            # here means the wrong file was picked up. Resampling would paper
+            # over that, so refuse instead -- this is the guard the pre-pooling
+            # version of this script carried, kept for the path it protects.
+            if space is None:
+                sys.exit(
+                    f"ERROR: ses-{ses} run-{run:02d} does not share the native grid of "
+                    f"ses-{grid_session} run-{grid_run:02d} "
+                    f"({img.shape[:3]} vs {reference.shape[:3]}, max |affine diff| = "
+                    f"{np.abs(img.affine - reference.affine).max():.3f} mm).\n"
+                    "       Within a session native grids always agree; across sessions\n"
+                    "       they never do. Fit one session at a time, or pass\n"
+                    "       --sessions with --space T1w to pool on a common grid.")
+            resampled.append(f"ses-{ses}/run-{run:02d}")
+            print(f"    NOTE: ses-{ses} run-{run:02d} is on a different grid "
+                  f"({img.shape[:3]} @ {np.round(img.header.get_zooms()[:3], 3)}); "
+                  "resampling onto the reference")
+            img = resample_to_grid(img, reference, "nearest")
+        mask &= np.asarray(img.dataobj) > 0
+    if occipital_only:
+        # posterior third along the second axis; a pilot convenience, and the
+        # sidecar records that the map is not whole-brain.
+        cut = int(mask.shape[1] / 3)
+        keep = np.zeros_like(mask)
+        keep[:, :cut, :] = True
+        mask &= keep
+    print(f"    mask: {int(mask.sum())} voxels")
+    return mask, reference, grid_run, resampled
+
+
+def pooled_blocks(subject, designs, groups, space, mask, reference, confounds="none"):
+    """One (N_TR, n_vox) block per group: the mean of its runs' cleaned PSC.
+
+    Per run: PSC, then project out that run's drift (and confounds, if an arm
+    asked for them), then accumulate into its setnum's average. Cleaning
+    before averaging is the deviation from NSD that pooling across sessions
+    forces -- see the module docstring. Accumulating in place keeps only the
+    pooled blocks in memory, not all six runs. This is the data both backends
+    fit: fit_prf.py concatenates the blocks, prf_analyzeprf_export.py hands
+    them to analyzePRF as its runs.
+    """
+    n_vox = int(mask.sum())
+    blocks = [np.zeros((N_TR, n_vox), dtype=np.float32) for _ in groups]
+    for bi, g in enumerate(groups):
+        for i in g:
+            d = designs[i]
+            y = load_run_psc(subject, d["session"], d["run"], space, mask, reference)
+            conf = load_confounds(subject, d["session"], d["run"], confounds)
+            Qr = run_projector(conf)
+            blocks[bi] += y - Qr @ (Qr.T @ y)
+        blocks[bi] /= len(g)
+    return blocks
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -999,62 +1076,10 @@ def main():
     grid_session = args.grid_session or sessions[-1]
     if grid_session not in sessions:
         ap.error(f"--grid-session {grid_session} is not among {sessions}")
-    grid_run = next(r for s, r in units if s == grid_session)
-    reference = nib.load(str(mask_path(subject, grid_session, grid_run, space)))
-
-    print(f"  loading BOLD (grid: ses-{grid_session} run-{grid_run:02d}, "
-          f"{reference.shape[:3]} @ {np.round(reference.header.get_zooms()[:3], 3)})")
-    mask = np.asarray(reference.dataobj) > 0
-    resampled = []
-    for ses, run in units:
-        img = nib.load(str(mask_path(subject, ses, run, space)))
-        if not _same_grid(img, reference):
-            # In an fMRIPrep OUTPUT space a grid difference is expected and
-            # meaningful (sub-03's FOV), and resampling onto the reference is
-            # the documented fix. In NATIVE space it is not: runs of a session
-            # share the native grid exactly for every subject, so a mismatch
-            # here means the wrong file was picked up. Resampling would paper
-            # over that, so refuse instead -- this is the guard the pre-pooling
-            # version of this script carried, kept for the path it protects.
-            if space is None:
-                sys.exit(
-                    f"ERROR: ses-{ses} run-{run:02d} does not share the native grid of "
-                    f"ses-{grid_session} run-{grid_run:02d} "
-                    f"({img.shape[:3]} vs {reference.shape[:3]}, max |affine diff| = "
-                    f"{np.abs(img.affine - reference.affine).max():.3f} mm).\n"
-                    "       Within a session native grids always agree; across sessions\n"
-                    "       they never do. Fit one session at a time, or pass\n"
-                    "       --sessions with --space T1w to pool on a common grid.")
-            resampled.append(f"ses-{ses}/run-{run:02d}")
-            print(f"    NOTE: ses-{ses} run-{run:02d} is on a different grid "
-                  f"({img.shape[:3]} @ {np.round(img.header.get_zooms()[:3], 3)}); "
-                  "resampling onto the reference")
-            img = resample_to_grid(img, reference, "nearest")
-        mask &= np.asarray(img.dataobj) > 0
-    if args.occipital_only:
-        # posterior third along the second axis; a pilot convenience, and the
-        # sidecar records that the map is not whole-brain.
-        cut = int(mask.shape[1] / 3)
-        keep = np.zeros_like(mask)
-        keep[:, :cut, :] = True
-        mask &= keep
-    print(f"    mask: {int(mask.sum())} voxels")
-
-    # Per run: PSC, then project out that run's drift (and confounds, if an arm
-    # asked for them), then accumulate into its setnum's average. Cleaning
-    # before averaging is the deviation from NSD that pooling across sessions
-    # forces -- see the module docstring. Accumulating in place keeps only the
-    # pooled blocks in memory, not all six runs.
-    n_vox = int(mask.sum())
-    blocks = [np.zeros((N_TR, n_vox), dtype=np.float32) for _ in groups]
-    for bi, g in enumerate(groups):
-        for i in g:
-            d = designs[i]
-            y = load_run_psc(subject, d["session"], d["run"], space, mask, reference)
-            confounds = load_confounds(subject, d["session"], d["run"], args.confounds)
-            Qr = run_projector(confounds)
-            blocks[bi] += y - Qr @ (Qr.T @ y)
-        blocks[bi] /= len(g)
+    mask, reference, grid_run, resampled = build_fit_mask(
+        subject, units, space, grid_session, occipital_only=args.occipital_only)
+    blocks = pooled_blocks(subject, designs, groups, space, mask, reference,
+                           confounds=args.confounds)
     Y = np.concatenate(blocks, axis=0)
     del blocks
 
