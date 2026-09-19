@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=28
-#SBATCH --mem=48G
+#SBATCH --mem=112G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fit_prf_analyzeprf_%A_%a.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/fit_prf_analyzeprf_%A_%a.err
 
@@ -31,8 +31,11 @@
 #                                 files of that suffix are MOVED to
 #                                 --archive-root first, never deleted
 #
-# Cost (measured 2026-09-18, sub-04, 300 voxels): ~2 core-s per voxel ->
-# ~5.8 h on 28 cores for a 292k-voxel mask. 12 h leaves 2x headroom.
+# Cost (measured 2026-09-18, sub-04 pilot): 0.36-0.39 s/voxel/worker, ~11 min per
+# 50k chunk on 28 workers, ~1.1 h for a 292k-voxel mask; 12 h is ample. Memory:
+# the first pilot was OOM-killed at 50 GB RSS against 48 G in chunk 3 (28 MATLAB
+# workers, each with the toolboxes and a broadcast copy of the chunk); 112 G is
+# the proportionate share of a 515 G / 128-core compute node for 28 cores.
 #
 # Array task mapping (subject-major, positive then negative polarity):
 #   1: sub-03 pos   2: sub-04 pos   3: sub-05 pos   4: sub-06 pos   5: sub-07 pos

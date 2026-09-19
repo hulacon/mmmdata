@@ -107,6 +107,13 @@ for k = 1:nchunks
     save(tmp, '-struct', 'chunk', '-v7');
     movefile(tmp, out);
     done = done + 1;
+    opts_used = results.options;
+    clear results dchunk chunk;   % each chunk is on disk; hold nothing across chunks
+end
+if ~exist('opts_used', 'var')
+    % every chunk was already on disk: nothing was fitted this run, so the
+    % manifest carries only the call's constants
+    opts_used = struct('hrf', [], 'maxpolydeg', [], 'exptlowerbound', [], 'typicalgain', []);
 end
 
 % What was actually used, from analyzePRF's own record of its options.
@@ -114,10 +121,10 @@ manifest = struct();
 manifest.call = 'analyzePRF(stimulus, data, tr, struct(''seedmode'',2,''maxiter'',100,''display'',''off''))';
 manifest.seedmode = opt.seedmode;
 manifest.maxiter = opt.maxiter;
-manifest.hrf = results.options.hrf(:)';
-manifest.maxpolydeg = results.options.maxpolydeg;
-manifest.exptlowerbound = results.options.exptlowerbound;
-manifest.typicalgain = results.options.typicalgain;
+manifest.hrf = opts_used.hrf(:)';
+manifest.maxpolydeg = opts_used.maxpolydeg;
+manifest.exptlowerbound = opts_used.exptlowerbound;
+manifest.typicalgain = opts_used.typicalgain;
 manifest.negate = negate;
 manifest.n_vox = nvox;
 manifest.n_runs = numel(data);
