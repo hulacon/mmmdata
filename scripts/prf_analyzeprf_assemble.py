@@ -243,6 +243,14 @@ def main():
             "stimulus never reached them. Maps are emitted UNMASKED (NSD "
             "releases unthresholded maps too); apply this radius in any "
             "summary, figure or ROI drawn from them."),
+        "CentreBoundsNote": (
+            "analyzePRF optimises with Levenberg-Marquardt, which ignores the "
+            "parameter box, so fitted centres are UNBOUNDED: in the sub-04 pilot "
+            "512 of 9,565 R2>10% voxels sat beyond 31.5 deg (max 427 deg), all "
+            "of them extrapolations from the stimulus edge. The Python fit "
+            "bounded them (max 21 deg). Apply StimulusRadiusDeg before any "
+            "eccentricity summary; correlations across the unmasked map are "
+            "dominated by these voxels."),
         "Thresholded": False,
         "RefineThresholdR2Pct": None,
         "RefineThresholdNote": "none: every voxel is optimised (analyzePRF behaviour)",
