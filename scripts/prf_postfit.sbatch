@@ -48,8 +48,11 @@ source "${REPO_ROOT}/.venv/bin/activate"
 echo ""; echo "--- project to fsnative (both polarities)"
 python "${REPO_ROOT}/scripts/project_prf_fsnative.py" --subject "${SUBJECT}" --polarity both || exit 1
 
-echo ""; echo "--- viewer bundles (volume + both hemispheres)"
-python "${REPO_ROOT}/scripts/build_brain_viewer.py" prf --subject "${SUBJECT}" --mode both --hemi both
+# --variants prf,negprf: one bundle per mode carrying both polarities, named
+# *_desc-viewer_prfvariants.html as the previous product's were (so those are
+# replaced, not joined by a second set); the sensitivity arms stay out.
+echo ""; echo "--- viewer bundles (volume + both hemispheres, prf + negprf)"
+python "${REPO_ROOT}/scripts/build_brain_viewer.py" prf --subject "${SUBJECT}" --mode both --hemi both --variants prf,negprf
 EXIT_STATUS=$?
 
 echo ""

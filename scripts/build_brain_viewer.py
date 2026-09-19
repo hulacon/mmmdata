@@ -190,12 +190,19 @@ def _prf_unit(root, subject, session):
     if session is None:
         d = root / "prf" / f"sub-{subject}"
         base = f"sub-{subject}_task-prf"
-        anat = root / "fmriprep" / f"sub-{subject}" / "anat"
-        # fMRIPrep's subject-level T1w carries an acq- entity in this dataset
-        # and no space- (it IS the T1w space); pick it without hardcoding acq.
-        cands = sorted(x for x in anat.glob(f"sub-{subject}*_desc-preproc_T1w.nii.gz")
-                       if "_space-" not in x.name)
-        underlay = cands[0] if cands else anat / f"sub-{subject}_desc-preproc_T1w.nii.gz"
+        fp = root / "fmriprep" / f"sub-{subject}"
+        # fMRIPrep's T1w carries an acq- entity in this dataset and no space-
+        # (it IS the T1w space); pick it without hardcoding acq. It sits at the
+        # subject level (sub-03/04/05) or, where fMRIPrep kept the session of
+        # the one T1w it used, under ses-*/anat (sub-06/07) -- one file per
+        # subject either way, so the fallback is unambiguous.
+        cands = sorted(x for pat in (f"anat/sub-{subject}*_desc-preproc_T1w.nii.gz",
+                                     f"ses-*/anat/sub-{subject}*_desc-preproc_T1w.nii.gz")
+                       for x in fp.glob(pat) if "_space-" not in x.name)
+        if len(cands) > 1:
+            sys.exit(f"ERROR: {len(cands)} candidate T1w underlays for sub-{subject}: "
+                     f"{[c.name for c in cands]}; pass the unit's session or fix the tree")
+        underlay = cands[0] if cands else fp / "anat" / f"sub-{subject}_desc-preproc_T1w.nii.gz"
         label = f"sub-{subject} (pooled)"
         space = "T1w"
     else:
