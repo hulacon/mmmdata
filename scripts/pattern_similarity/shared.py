@@ -88,11 +88,36 @@ PATTERN_SUBCORTICAL_ROIS = {
 PATTERN_ROI_NAMES = ["EVC", "EAC", "Hippocampus", "AG", "Precuneus", "mPFC"]
 
 
-def load_bilateral_roi_masks(split_hemi: bool = False):
-    """Build the 6 bilateral Harvard-Oxford ROI masks (maxprob-thr25, MNI 2mm).
+# Staged Harvard-Oxford (scripts/stage_harvard_oxford.py): resampled once onto
+# the shared res-2 grid. Keys are the `atlas-` entity; values the nilearn
+# fetch name used as the fallback and the label-name self-checks below.
+HO_ATLASES_DIR = DERIV_ROOT / "atlases"
+HO_STAGED = {
+    "HOCPA": "cort-maxprob-thr25-2mm",
+    "HOSPA": "sub-maxprob-thr25-2mm",
+}
 
-    Label values are asserted against the atlas label names at load time so a
-    nilearn atlas-version change cannot silently swap regions.
+
+def _ho_staged_path(atlases_dir: Path, atlas: str, ext: str) -> Path:
+    return (atlases_dir / "tpl-MNI152NLin2009cAsym" / "anat"
+            / f"tpl-MNI152NLin2009cAsym_atlas-{atlas}_res-2_desc-th25_dseg{ext}")
+
+
+def load_bilateral_roi_masks(split_hemi: bool = False, source: str = "auto",
+                             atlases_dir: Path | None = None):
+    """Build the 6 bilateral Harvard-Oxford ROI masks (maxprob-thr25, 2 mm).
+
+    source:
+        "staged" — the copies resampled once onto the shared res-2 grid in
+                   derivatives/atlases (grid == fMRIPrep MNI res-2 outputs);
+                   raises FileNotFoundError naming the path if absent.
+        "fetch"  — nilearn's fetch of FSL's copy on its own MNI152NLin6Asym
+                   grid, as every call site did before 2026-09 (callers then
+                   resample per BOLD image via resample_masks_to_bold).
+        "auto"   — staged if present, else fetch with a printed warning.
+
+    Label values are asserted against the atlas label names at load time so
+    an atlas-version change cannot silently swap regions.
 
     Returns:
         masks: {roi_name: bool ndarray} — or {(roi_name, hemi): ...} when
@@ -102,16 +127,46 @@ def load_bilateral_roi_masks(split_hemi: bool = False):
     """
     import nibabel as nib
     import numpy as np
-    from nilearn.datasets import fetch_atlas_harvard_oxford
 
-    def _load(atlas_name):
-        atlas = fetch_atlas_harvard_oxford(atlas_name)
-        img = atlas.maps if hasattr(atlas.maps, "affine") else nib.load(atlas.maps)
-        labels = list(atlas.labels)
+    if source not in ("auto", "staged", "fetch"):
+        raise ValueError(f"source must be auto|staged|fetch, got {source!r}")
+    atlases_dir = Path(atlases_dir) if atlases_dir else HO_ATLASES_DIR
+
+    def _read_tsv(path):
+        rows = [line.rstrip("\n").split("\t") for line in open(path)][1:]
+        labels = ["Background"] * (max(int(r[0]) for r in rows) + 1)
+        for idx, name in rows:
+            labels[int(idx)] = name
+        return labels
+
+    def _load_staged(atlas):
+        nii = _ho_staged_path(atlases_dir, atlas, ".nii.gz")
+        if not nii.exists():
+            raise FileNotFoundError(
+                f"staged Harvard-Oxford atlas missing: {nii} "
+                "(run scripts/stage_harvard_oxford.py, or pass source='fetch')"
+            )
+        img = nib.load(nii)
+        labels = _read_tsv(_ho_staged_path(atlases_dir, atlas, ".tsv"))
         return np.asarray(img.dataobj).astype(int), img.affine, labels
 
-    cort_data, affine, cort_labels = _load("cort-maxprob-thr25-2mm")
-    sub_data, sub_affine, sub_labels = _load("sub-maxprob-thr25-2mm")
+    def _load_fetch(atlas):
+        from nilearn.datasets import fetch_atlas_harvard_oxford
+
+        atlas = fetch_atlas_harvard_oxford(HO_STAGED[atlas])
+        img = atlas.maps if hasattr(atlas.maps, "affine") else nib.load(atlas.maps)
+        return np.asarray(img.dataobj).astype(int), img.affine, list(atlas.labels)
+
+    if source == "auto":
+        staged = all(_ho_staged_path(atlases_dir, a, ".nii.gz").exists() for a in HO_STAGED)
+        if not staged:
+            print(f"WARNING: staged Harvard-Oxford not found under {atlases_dir}; "
+                  "falling back to nilearn fetch on the MNI152NLin6Asym grid")
+        source = "staged" if staged else "fetch"
+    _load = _load_staged if source == "staged" else _load_fetch
+
+    cort_data, affine, cort_labels = _load("HOCPA")
+    sub_data, sub_affine, sub_labels = _load("HOSPA")
     assert np.allclose(affine, sub_affine), "cortical/subcortical atlas grids differ"
 
     def _checked_mask(data, labels, spec):
