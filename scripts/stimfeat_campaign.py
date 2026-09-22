@@ -35,6 +35,8 @@ Filters (`--set/--source/--model/--unit`) compose and apply to every verb.
 `--dry-run` on `run` prints the commands it would execute and exits 0.
 
 Env: /gpfs/projects/hulacon/shared/envs/stimfeat (needs all three extractors).
+STIMFEAT_BIDS_ROOT=<dir> points every path at a staging root laid out like
+the dataset (see below) -- how the render falsifier reuses the battery.
 Pre-flight `stimfeat_preflight.py` must be CLEAN before any run -- `run`
 refuses to start otherwise (§4.1).
 """
@@ -64,6 +66,13 @@ try:
     BIDS_ROOT = Path(_config["paths"]["bids_project_dir"])
 except Exception:
     BIDS_ROOT = Path("/gpfs/projects/hulacon/shared/mmmdata")
+# A staging root laid out like the dataset (stimuli/stimulus_registry/,
+# stimuli/<set>/, derivatives/stimuli_features/) runs the same matrix on a
+# different set of inputs -- the tb-timelines render falsifier feeds three
+# rendered TB runs through the movie battery this way. The commands are
+# identical by construction, which is the point.
+if os.environ.get("STIMFEAT_BIDS_ROOT"):
+    BIDS_ROOT = Path(os.environ["STIMFEAT_BIDS_ROOT"]).resolve()
 
 STIM_DIR = BIDS_ROOT / "stimuli"
 REGISTRY_DIR = STIM_DIR / "stimulus_registry"
@@ -909,6 +918,14 @@ def _filtered(args) -> list[tuple[Source, Unit, str]]:
             print(f"  warning: {src.key} units unavailable: {e}", file=sys.stderr)
             continue
         models = [m for m in src.models if not args.model or m == args.model]
+        # Within a source, a model that derives from another model's stored
+        # table runs after it: aud2psy `speech_rate` reads transcribe's word
+        # timestamps and `conversation` reads diarize's turns (command_for
+        # passes those paths). The registry order put speech_rate before
+        # transcribe, which only ever worked because transcribe had already
+        # been run on every movie -- on a fresh unit the cell failed with
+        # "words table not found" (tb-timelines render falsifier, 2026-09-22).
+        models.sort(key=lambda m: m not in ("transcribe", "diarize"))
         for unit in units:
             if args.unit and unit.id != args.unit:
                 continue
