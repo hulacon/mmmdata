@@ -374,8 +374,9 @@ def cmd_compare(args) -> int:
                              f"(image = 22% of the frame on a gray field); on the image region "
                              f"alone the model agrees at {cropped}")
                 elif stream == "frames" and cropped is not None:
-                    cause = (f"image read differently at the rendered size, not the canvas: "
-                             f"agreement is {cropped} even on the 768 px image region alone")
+                    cause = (f"not the canvas: agreement is {cropped} on the 768 px image region "
+                             f"alone — the render's LANCZOS upsample or its JPEG q85 encoding "
+                             f"(measured 2026-09-22: saliency = the upsample, ebind = the JPEG)")
                 elif stream == "frames":
                     cause = "likely render canvas (probe-crop not run for this run/model)"
                 elif first_bin is not None and first_bin >= BAR:
