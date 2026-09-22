@@ -27,11 +27,17 @@ The existing product is never overwritten in place: pass --archive-root and
 every file of that suffix already in the output directory is MOVED there
 first (nothing is deleted); without it the script refuses when files exist.
 
+The product's dataset_description.json is (re)written by --describe-product,
+which needs only --out-root and touches nothing else. Run it after any
+assembly into the product so the top-level descriptor names this backend
+rather than the Python port it replaced.
+
 Usage:
     python prf_analyzeprf_assemble.py --export-dir WORK/sub-03 --chunk-dir WORK/sub-03/prf \
         --subject 03 --polarity prf --out-root derivatives/prf \
         --archive-root derivatives/prf_pythoncss \
         --analyzeprf-commit <sha> --knkutils-commit <sha>
+    python prf_analyzeprf_assemble.py --describe-product --out-root derivatives/prf
 """
 
 import argparse
@@ -109,6 +115,73 @@ def chunks_to_results(chunks, n_vox, fov_deg, res):
     }, out["numiters"]
 
 
+PRODUCT_DESCRIPTION = {
+    "Name": "MMMData pRF \u2014 pooled subject-level fits (analyzePRF)",
+    "BIDSVersion": "1.9.0",
+    "DatasetType": "derivative",
+    "GeneratedBy": [
+        {"Name": "analyzePRF",
+         "Description": "CSS population-receptive-field fit (Kay et al. 2013), NSD's "
+                        "analysis_prf.m call verbatim: super-grid seed, maxiter 100, "
+                        "free exponent, default HRF, every mask voxel optimised, "
+                        "nothing thresholded. Fitted in fMRIPrep T1w space, one "
+                        "SUBJECT per fit unit: all six runs across both pRF sessions, "
+                        "the three repetitions of each stimulus type averaged and the "
+                        "two resulting pseudo-runs fitted jointly (NSD's route, "
+                        "cvnlab/nsddatapaper main/glm_prf.m). Parameter volumes are "
+                        "projected to fsnative following NSD's recipe.",
+         "CodeURL": "https://github.com/cvnlab/analyzePRF"},
+        {"Name": "mmmdata prf_analyzeprf_{export.py,fit.m,assemble.py} + project_prf_fsnative.py",
+         "CodeURL": "https://github.com/hulacon/mmmdata/tree/main/scripts"},
+    ],
+    "SourceDatasets": [{"URL": "bids:derivatives/fmriprep"}],
+    "PipelineDescription": {
+        "Name": "analyzePRF via fit_prf_analyzeprf.sbatch",
+        "Backend": "analyzePRF (MATLAB, cvnlab/analyzePRF + cvnlab/knkutils); commits in each sidecar",
+        "Space": "T1w (volumes) and fsnative (projected surfaces)",
+        "FitUnit": "subject (6 runs, 2 sessions pooled)",
+        "Polarities": ["prf", "negprf"],
+        "Thresholded": False,
+        "StimulusRadiusDeg": 7.5,
+        "Notes": [
+            "The raw fits are released as they came out of analyzePRF: every voxel "
+            "carries a value, no R2 floor, no eccentricity mask, no partition between "
+            "the two polarities. How to select from them is the consumer's decision; "
+            "the facts below are what that decision needs.",
+            "R2 is percent variance explained, unthresholded. analyzePRF optimises "
+            "every voxel, so low-R2 voxels are optimised noise rather than zeros "
+            "(the superseded Python port wrote R2 = 0 below a 5% grid gate).",
+            "Fitted centres are unbounded and can fall beyond StimulusRadiusDeg, where "
+            "the stimulus never reached; those are extrapolations from the stimulus edge.",
+            "prf and negprf are two independent fits (the second on sign-flipped data), "
+            "NOT a partition: at subject level 74-94% of vertices with R2_neg > 10% also "
+            "have R2_pos > 10% (per hemisphere, all five subjects; measured 2026-09-22 "
+            "on this product).",
+            "`size` is sigma/sqrt(n) (NSD prf_size, analyzePRF rfsize), not raw sigma; "
+            "`sigma` is written alongside it. Only size is well identified: analyzePRF "
+            "lets the exponent run to its lower bound with sigma shrinking to match.",
+            "`gain` is in percent-signal-change units of the averaged pseudo-runs and "
+            "is astronomically large on noise voxels (super-grid seeding); it is not "
+            "readable without an R2 mask.",
+            "Per-session fits and a test-retest table existed as an internal "
+            "Python-backend arm and were removed 2026-09-22; they are not part of this "
+            "product. The positive arm's cross-session reliability measured on that arm "
+            "(polar angle circular r 0.93-0.99, eccentricity r 0.82-0.92, size r "
+            "0.66-0.76, R2 > 10% in both sessions) is recorded in the mmmdata-agents "
+            "workbench and has not been re-measured with analyzePRF.",
+        ],
+    },
+}
+
+
+def write_product_description(out_root):
+    """(Re)write derivatives/prf/dataset_description.json for the analyzePRF product."""
+    dd = Path(out_root) / "dataset_description.json"
+    dd.parent.mkdir(parents=True, exist_ok=True)
+    dd.write_text(json.dumps(PRODUCT_DESCRIPTION, indent=2, ensure_ascii=False) + "\n")
+    return dd
+
+
 def archive_existing(out_dir, base, suffix, archive_root, subject):
     """Move every existing file of this product (volume AND fsnative) aside."""
     pattern = re.compile(rf"^{re.escape(base.split('_space-')[0])}_.*_{suffix}\.(nii\.gz|json|shape\.gii)$")
@@ -147,11 +220,14 @@ def archive_existing(out_dir, base, suffix, archive_root, subject):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--export-dir", required=True, help="prf_analyzeprf_export.py's --out-dir")
-    ap.add_argument("--chunk-dir", required=True, help="prf_analyzeprf_fit.m's outdir")
-    ap.add_argument("--subject", required=True)
+    ap.add_argument("--export-dir", help="prf_analyzeprf_export.py's --out-dir")
+    ap.add_argument("--chunk-dir", help="prf_analyzeprf_fit.m's outdir")
+    ap.add_argument("--subject")
     ap.add_argument("--space", default="T1w")
-    ap.add_argument("--polarity", choices=("prf", "negprf"), required=True)
+    ap.add_argument("--polarity", choices=("prf", "negprf"))
+    ap.add_argument("--describe-product", action="store_true",
+                    help="only (re)write <out-root>/dataset_description.json for the "
+                         "analyzePRF product, then exit")
     ap.add_argument("--out-root", required=True,
                     help="derivatives/prf for the product; anywhere else for a pilot")
     ap.add_argument("--archive-root", default=None,
@@ -159,6 +235,15 @@ def main():
     ap.add_argument("--analyzeprf-commit", default="unrecorded")
     ap.add_argument("--knkutils-commit", default="unrecorded")
     args = ap.parse_args()
+    if args.describe_product:
+        dd = write_product_description(args.out_root)
+        print(f"  wrote {dd}")
+        return 0
+    missing = [n for n in ("export_dir", "chunk_dir", "subject", "polarity")
+               if getattr(args, n) is None]
+    if missing:
+        ap.error("the following arguments are required: "
+                 + ", ".join("--" + n.replace("_", "-") for n in missing))
 
     import nibabel as nib
 
