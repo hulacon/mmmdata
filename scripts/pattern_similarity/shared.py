@@ -81,10 +81,23 @@ PATTERN_CORTICAL_ROIS = {
     "AG":        {21: "Angular Gyrus"},
     "Precuneus": {31: "Precuneous"},
     "mPFC":      {25: "Frontal Medial"},
+    # Ventral temporal cortex per Ye et al. 2020 eLife (Harvard-Oxford at 25 %):
+    # inferior temporal gyrus, parahippocampal gyrus, temporal fusiform cortex.
+    # Temporal Occipital Fusiform Cortex (39) is a separate label and excluded
+    # on the literal reading (neural-rotation pilot, DECIDED 2026-09-16).
+    "VTC":       {14: "Inferior Temporal Gyrus, anterior",
+                  15: "Inferior Temporal Gyrus, posterior",
+                  16: "Inferior Temporal Gyrus, temporooccipital",
+                  34: "Parahippocampal Gyrus, anterior",
+                  35: "Parahippocampal Gyrus, posterior",
+                  37: "Temporal Fusiform Cortex, anterior",
+                  38: "Temporal Fusiform Cortex, posterior"},
 }
 PATTERN_SUBCORTICAL_ROIS = {
     "Hippocampus": {9: "Left Hippocampus", 19: "Right Hippocampus"},
 }
+# The 6-ROI benchmark set (benchmark_6cell.py, extract_roi_betas.py): VTC is
+# deliberately NOT in it, so the settled caches and benchmark are unchanged.
 PATTERN_ROI_NAMES = ["EVC", "EAC", "Hippocampus", "AG", "Precuneus", "mPFC"]
 
 
@@ -103,9 +116,8 @@ def _ho_staged_path(atlases_dir: Path, atlas: str, ext: str) -> Path:
             / f"tpl-MNI152NLin2009cAsym_atlas-{atlas}_res-2_desc-th25_dseg{ext}")
 
 
-def load_bilateral_roi_masks(split_hemi: bool = False, source: str = "auto",
-                             atlases_dir: Path | None = None):
-    """Build the 6 bilateral Harvard-Oxford ROI masks (maxprob-thr25, 2 mm).
+def load_ho_on_grid(source: str = "auto", atlases_dir: Path | None = None):
+    """The two Harvard-Oxford maxprob-thr25 label volumes, one source.
 
     source:
         "staged" — the copies resampled once onto the shared res-2 grid in
@@ -116,14 +128,10 @@ def load_bilateral_roi_masks(split_hemi: bool = False, source: str = "auto",
                    resample per BOLD image via resample_masks_to_bold).
         "auto"   — staged if present, else fetch with a printed warning.
 
-    Label values are asserted against the atlas label names at load time so
-    an atlas-version change cannot silently swap regions.
-
     Returns:
-        masks: {roi_name: bool ndarray} — or {(roi_name, hemi): ...} when
-               split_hemi=True (midline mPFC/Precuneus split by x<0 like the
-               nordic benchmark's cortical ROIs; interpret with care)
-        affine: 4x4 atlas affine
+        {"HOCPA": (data int ndarray, labels list), "HOSPA": (...)}, affine
+        where labels[value] is the atlas name of that label value and the
+        two volumes share the returned affine (asserted).
     """
     import nibabel as nib
     import numpy as np
@@ -168,23 +176,52 @@ def load_bilateral_roi_masks(split_hemi: bool = False, source: str = "auto",
     cort_data, affine, cort_labels = _load("HOCPA")
     sub_data, sub_affine, sub_labels = _load("HOSPA")
     assert np.allclose(affine, sub_affine), "cortical/subcortical atlas grids differ"
+    return {"HOCPA": (cort_data, cort_labels), "HOSPA": (sub_data, sub_labels)}, affine
 
-    def _checked_mask(data, labels, spec):
-        values = []
-        for value, expect in spec.items():
-            actual = labels[value]
-            if expect not in actual:
-                raise ValueError(
-                    f"Harvard-Oxford label {value} is {actual!r}, expected ~{expect!r}"
-                )
-            values.append(value)
-        return np.isin(data, values)
+
+def checked_label_mask(data, labels, spec: dict):
+    """Boolean mask of the label values in ``spec`` ({value: name substring}),
+    after asserting each value's atlas name contains the expected substring so
+    an atlas-version change cannot silently swap regions."""
+    import numpy as np
+
+    values = []
+    for value, expect in spec.items():
+        actual = labels[value]
+        if expect not in actual:
+            raise ValueError(
+                f"Harvard-Oxford label {value} is {actual!r}, expected ~{expect!r}"
+            )
+        values.append(value)
+    return np.isin(data, values)
+
+
+def load_bilateral_roi_masks(split_hemi: bool = False, source: str = "auto",
+                             atlases_dir: Path | None = None):
+    """Build the bilateral Harvard-Oxford ROI masks (maxprob-thr25, 2 mm) of
+    PATTERN_CORTICAL_ROIS + PATTERN_SUBCORTICAL_ROIS (the six benchmark ROIs
+    plus VTC; consumers of the six index by PATTERN_ROI_NAMES).
+
+    ``source`` and ``atlases_dir`` are load_ho_on_grid's. Label values are
+    asserted against the atlas label names at load time.
+
+    Returns:
+        masks: {roi_name: bool ndarray} — or {(roi_name, hemi): ...} when
+               split_hemi=True (midline mPFC/Precuneus split by x<0 like the
+               nordic benchmark's cortical ROIs; interpret with care)
+        affine: 4x4 atlas affine
+    """
+    import numpy as np
+
+    atlases, affine = load_ho_on_grid(source=source, atlases_dir=atlases_dir)
+    cort_data, cort_labels = atlases["HOCPA"]
+    sub_data, sub_labels = atlases["HOSPA"]
 
     masks = {}
     for roi, spec in PATTERN_CORTICAL_ROIS.items():
-        masks[roi] = _checked_mask(cort_data, cort_labels, spec)
+        masks[roi] = checked_label_mask(cort_data, cort_labels, spec)
     for roi, spec in PATTERN_SUBCORTICAL_ROIS.items():
-        masks[roi] = _checked_mask(sub_data, sub_labels, spec)
+        masks[roi] = checked_label_mask(sub_data, sub_labels, spec)
 
     if split_hemi:
         i_coords = np.arange(cort_data.shape[0])

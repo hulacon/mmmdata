@@ -26,6 +26,14 @@ def ps():
 
 CORT = {24: "Intracalcarine Cortex", 45: "Heschl's Gyrus (includes H1 and H2)",
         21: "Angular Gyrus", 31: "Precuneous Cortex", 25: "Frontal Medial Cortex"}
+# VTC's seven labels (one voxel each, x<0) so the loader's self-check passes
+VTC = {14: "Inferior Temporal Gyrus, anterior division",
+       15: "Inferior Temporal Gyrus, posterior division",
+       16: "Inferior Temporal Gyrus, temporooccipital part",
+       34: "Parahippocampal Gyrus, anterior division",
+       35: "Parahippocampal Gyrus, posterior division",
+       37: "Temporal Fusiform Cortex, anterior division",
+       38: "Temporal Fusiform Cortex, posterior division"}
 SUB = {9: "Left Hippocampus", 19: "Right Hippocampus"}
 AFFINE = np.diag([2.0, 2.0, 2.0, 1.0]); AFFINE[:3, 3] = (-6, -6, -6)
 
@@ -46,20 +54,33 @@ def atlases_dir(tmp_path):
     cort = np.zeros((6, 6, 6), dtype=int)
     for k, v in enumerate(CORT):            # one 2-voxel slab per cortical ROI, spanning x<0 and x>=0
         cort[2:4, k, 0] = v
+    for k, v in enumerate(VTC):             # one voxel per VTC label
+        cort[0, k % 6, 2 + k // 6] = v
     sub = np.zeros((6, 6, 6), dtype=int)
     sub[1, 1, 1] = 9; sub[4, 1, 1] = 19; sub[4, 2, 1] = 19
-    _write(anat, "HOCPA", CORT, cort)
+    _write(anat, "HOCPA", {**CORT, **VTC}, cort)
     _write(anat, "HOSPA", SUB, sub)
     return tmp_path
 
 
 def test_staged_masks_and_affine(ps, atlases_dir):
     masks, affine = ps.load_bilateral_roi_masks(source="staged", atlases_dir=atlases_dir)
-    assert set(masks) == set(ps.PATTERN_ROI_NAMES)
+    assert set(masks) == set(ps.PATTERN_ROI_NAMES) | {"VTC"}
     assert np.allclose(affine, AFFINE)
     assert all(m.shape == (6, 6, 6) and m.dtype == bool for m in masks.values())
     assert {r: int(m.sum()) for r, m in masks.items()} == {
-        "EVC": 2, "EAC": 2, "Hippocampus": 3, "AG": 2, "Precuneus": 2, "mPFC": 2}
+        "EVC": 2, "EAC": 2, "Hippocampus": 3, "AG": 2, "Precuneus": 2, "mPFC": 2, "VTC": 7}
+
+
+def test_load_ho_on_grid_returns_both_atlases(ps, atlases_dir):
+    atlases, affine = ps.load_ho_on_grid(source="staged", atlases_dir=atlases_dir)
+    assert set(atlases) == {"HOCPA", "HOSPA"}
+    cort, labels = atlases["HOCPA"]
+    assert cort.shape == (6, 6, 6) and labels[24] == "Intracalcarine Cortex"
+    assert np.allclose(affine, AFFINE)
+    assert ps.checked_label_mask(cort, labels, {24: "Intracalcarine"}).sum() == 2
+    with pytest.raises(ValueError, match="label 24"):
+        ps.checked_label_mask(cort, labels, {24: "Heschl"})
 
 
 def test_split_hemi_uses_world_x(ps, atlases_dir):
