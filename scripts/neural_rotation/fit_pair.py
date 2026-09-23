@@ -216,13 +216,23 @@ def score_variants(info: pd.DataFrame, items: np.ndarray) -> dict:
 
 def fit_classes(k, W, En, Rn, Ev, F_tr, seed, with_features, F_te=None,
                 pinned: dict | None = None, only=None):
-    """Fit every class (or ``only`` those named) at basis rank k.
+    """Fit every class (or ``only`` those named) at basis rank k, projecting
+    the voxel-space matrices first. Callers that loop (nulls, inner folds)
+    project ONCE and use fit_classes_proj: the projection is the whole cost
+    of a union cell (1,900 x 72k x 200 per call; 4,000 calls per fold took
+    45 min before 2026-09-23).
 
     ``pinned`` = {class name: fitted object} whose hyperparameters are reused
     (no inner search). Returns {name: (obj, R_hat_test)}.
     """
     Wk = W[:, :k]
-    Et, Rt, Ee = En @ Wk, Rn @ Wk, Ev @ Wk
+    return fit_classes_proj(En @ Wk, Rn @ Wk, Ev @ Wk, F_tr, seed, with_features,
+                            F_te=F_te, pinned=pinned, only=only)
+
+
+def fit_classes_proj(Et, Rt, Ee, F_tr, seed, with_features, F_te=None,
+                     pinned: dict | None = None, only=None):
+    """fit_classes on already-projected (n, k) matrices."""
     out = {}
     for cls in maps.make_classes(seed=seed, with_features=with_features and F_tr is not None):
         if only is not None and cls.name not in only:
@@ -247,13 +257,14 @@ def nested_rank(ranks, W, En, Rn, F_tr, seed, with_features, pinned_by_k: dict, 
     scores = {}
     for k in ranks:
         Wk = W[:, :k]
+        Ek, Rk = En @ Wk, Rn @ Wk                     # once per rank, not per inner fold
         for tr, te in folds:
             Ft = F_tr[tr] if F_tr is not None else None
-            fitted = fit_classes(k, W, En[tr], Rn[tr], En[te], Ft, seed, with_features,
-                                 pinned=pinned_by_k[k])
+            fitted = fit_classes_proj(Ek[tr], Rk[tr], Ek[te], Ft, seed, with_features,
+                                      pinned=pinned_by_k[k])
             for name, (_, R_hat) in fitted.items():
                 scores.setdefault(name, {}).setdefault(k, []).append(
-                    maps._score_2afc_all(R_hat, Rn[te] @ Wk))
+                    maps._score_2afc_all(R_hat, Rk[te]))
     return {name: max(d, key=lambda k: np.mean(d[k])) for name, d in scores.items()}
 
 
@@ -284,9 +295,12 @@ def run_fold(f, items, folds, E, R, runs_E, runs_R, enc_arm, F, blocks_vox, args
     # reliability preselection on training three-exposure items, per block
     t_enc = enc_arm["trials"]
     ids_enc = t_enc["mmmId"].astype(int).to_numpy()
-    rel = basis.split_half_reliability(enc_arm["P"], ids_enc,
-                                       t_enc["exposure"].to_numpy(), items[tr])
-    keep = basis.preselect(rel, args.preselect, blocks_vox)
+    if args.preselect >= 1.0:
+        keep = np.ones(E.shape[1], dtype=bool)          # plain PCA: every voxel, no reliability pass
+    else:
+        rel = basis.split_half_reliability(enc_arm["P"], ids_enc,
+                                           t_enc["exposure"].to_numpy(), items[tr])
+        keep = basis.preselect(rel, args.preselect, blocks_vox)
     blk = blocks_vox[keep] if blocks_vox is not None else None
     nm = basis.BlockNormaliser().fit(E[tr][:, keep], R[tr][:, keep], blk)
     En, Rn = nm.transform(E[tr][:, keep], "E"), nm.transform(R[tr][:, keep], "R")
@@ -351,20 +365,31 @@ def run_fold(f, items, folds, E, R, runs_E, runs_R, enc_arm, F, blocks_vox, args
     if "procrustes" not in chosen:
         chosen["procrustes"] = ranks[0]
 
-    # permutation null at the chosen rank, per class (training side, within run)
+    # permutation null at the chosen rank, per class (training side, within run).
+    # Skipped (lossless) when the class's gain over identity is <= 0 in every
+    # scoring variant: the gate needs gain > 0, so no null could pass it.
     rng = np.random.default_rng(seed)
+    proj = {}                                          # k -> (Et, Rt, Ee, truth) projected once
     for name, k in chosen.items():
         obs = rows_by.get(("forward", name, k))
         if obs is None or name in ("identity", "semantic_oracle", "procrustes_proper"):
             continue
-        Wk = W[:, :k]
+        gains = [obs.get(f"gain{sfx}", np.nan) for sfx in ("",) + VARIANT_SUFFIXES]
+        if not any(np.isfinite(g) and g > 0 for g in gains):
+            obs["null_n"] = 0
+            obs["null_skipped"] = "gain<=0 in every variant"
+            continue
+        if k not in proj:
+            Wk = W[:, :k]
+            proj[k] = (En @ Wk, Rn @ Wk, Ev @ Wk, Rv @ Wk)
+        Et, Rt, Ee, truth = proj[k]
         nulls = []
         n_draws = args.n_perm if k <= HIGH_RANK else min(args.n_perm, args.n_perm_high)
         for _ in range(n_draws):
             perm = score.permute_within_run(rng, runs_R[tr])
-            fitted = fit_classes(k, W, En, Rn[perm], Ev, F_tr, seed, with_f,
-                                 pinned=fitted_by_k[k], only={name})
-            nulls.append(score.identify_variants(fitted[name][1], Rv @ Wk, runs_R[te], variants))
+            fitted = fit_classes_proj(Et, Rt[perm], Ee, F_tr, seed, with_f,
+                                      pinned=fitted_by_k[k], only={name})
+            nulls.append(score.identify_variants(fitted[name][1], truth, runs_R[te], variants))
         all_ = [n["acc_2afc"] for n in nulls]
         obs["null_n"] = len(nulls)
         obs["null_p"] = score.null_p(obs["acc_2afc"], all_)
@@ -600,7 +625,7 @@ def write_tables(out_dir: Path, stem: str, ctx: dict, args, t0: float) -> None:
             continue
         df = pd.DataFrame(rows)
         if name == "transformation_class":
-            for col in ["null_p", "null_mean", "null_q95", "null_n"] + [f"null_p{s}" for s in VARIANT_SUFFIXES]:
+            for col in ["null_p", "null_mean", "null_q95", "null_n", "null_skipped"] + [f"null_p{s}" for s in VARIANT_SUFFIXES]:
                 if col not in df:
                     df[col] = np.nan
             # fold CIs of gain per (direction, class, rank) -> ci_lo / ci_hi on every row,

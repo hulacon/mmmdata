@@ -9,7 +9,12 @@ threshold present). ROIs flagged ``too_small`` are skipped and listed.
 Usage:
     python make_cells.py --subjects sub-## [sub-## ...] --out cells.tsv \\
         [--pairs enc:ret-word enc:ret-image ret-word:ret-image enc:ret-word:ret-image] \\
-        [--rungs i ii iii iv] [--rois mPFC ...]
+        [--rungs i ii iii iv] [--rois mPFC ...] [--only-missing OUT_ROOT]
+
+``--only-missing OUT_ROOT`` keeps only the cells whose
+``OUT_ROOT/fits/<sub>/<stem>_transformation_class.tsv`` (or, for the
+composition pair, ``_composition.tsv``) does not exist yet -- the rescue
+manifest after a wall-time kill; fit_pair resumes from its fold checkpoint.
 """
 
 from __future__ import annotations
@@ -58,6 +63,8 @@ def main():
     ap.add_argument("--rois", nargs="+", default=None,
                     help="only these ROI names (any rung); default every ROI of the chosen rungs")
     ap.add_argument("--roi-root", default=None)
+    ap.add_argument("--only-missing", default=None, metavar="OUT_ROOT",
+                    help="keep only cells with no fit table under OUT_ROOT/fits/<sub>/")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     cfg = tb.load_config()
@@ -77,6 +84,11 @@ def main():
             rois = [(g, r) for g, r in rois if r in args.rois]
         for rung, roi in rois:
             for pair in args.pairs:
+                if args.only_missing:
+                    stem = f"{sub}_rung-{rung}_roi-{roi}_pair-{pair.replace(':', '')}_desc-typed"
+                    table = "composition" if pair.count(":") == 2 else "transformation_class"
+                    if (Path(args.only_missing) / "fits" / sub / f"{stem}_{table}.tsv").exists():
+                        continue
                 lines.append(f"{sub}\t{rung}\t{roi}\t{pair}")
     Path(args.out).write_text("\n".join(lines) + "\n")
     print(f"{len(lines)} cells -> {args.out}" + (f"; skipped too-small ROIs: {small}" if small else ""))
