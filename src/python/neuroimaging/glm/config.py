@@ -57,6 +57,13 @@ class GlmConfig:
     acompcor_n
         How many aCompCor components to append (``a_comp_cor_00`` upward,
         fMRIPrep's variance order over the combined WM+CSF mask). 0 is none.
+    include_non_steady_state
+        Append every ``non_steady_state_outlier*`` column: fMRIPrep's one-hot
+        spike regressor per lead-in volume it flagged as not yet at steady
+        state. fMRIPrep writes the columns only for runs where it flagged a
+        volume, so a run without them is not an error. On by default and so in
+        every preset (glm-strategy D25): lead-in volumes are excluded from
+        the fit by spike regressors rather than by trimming the time axis.
     output_tree
         Derivative directory name under ``<bids_root>/derivatives``.
     """
@@ -71,6 +78,7 @@ class GlmConfig:
     confounds: tuple[str, ...] = tuple(MOTION_6)
     include_cosine: bool = True
     acompcor_n: int = 0
+    include_non_steady_state: bool = True
     output_tree: str = "glm_localizer"
 
     def confound_columns(self, available: list[str]) -> list[str]:
@@ -96,6 +104,8 @@ class GlmConfig:
                     "them only when its aCompCor step ran; check the confounds sidecar."
                 )
             cols.extend(wanted)
+        if self.include_non_steady_state:
+            cols.extend(c for c in available if c.startswith(NON_STEADY_STATE_PREFIX))
         if self.include_cosine:
             cols.extend(c for c in available if c.startswith(COSINE_PREFIX))
         return cols
@@ -115,10 +125,12 @@ class GlmConfig:
 DEFAULT_CONFIG = GlmConfig()
 
 ACOMPCOR_PREFIX = "a_comp_cor_"
+NON_STEADY_STATE_PREFIX = "non_steady_state_outlier"
 
 #: The bake-off's confound factor (glm-strategy log, DECIDED 2026-09-08):
-#: preset -> (motion columns, number of aCompCor components). Cosines ride
-#: along in every preset via ``include_cosine``.
+#: preset -> (motion columns, number of aCompCor components). Cosines and
+#: non-steady-state spike regressors ride along in every preset via
+#: ``include_cosine`` and ``include_non_steady_state``.
 CONFOUND_PRESETS: dict[str, tuple[tuple[str, ...], int]] = {
     "motion6": (tuple(MOTION_6), 0),
     "motion24": (tuple(MOTION_24), 0),

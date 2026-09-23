@@ -1,11 +1,13 @@
 """Design construction: what goes in, what is refused."""
 
+import dataclasses
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from neuroimaging.constants import MOTION_6
-from neuroimaging.glm.config import GlmConfig
+from neuroimaging.constants import ACOMPCOR_6, MOTION_6, MOTION_24
+from neuroimaging.glm.config import CONFOUND_PRESETS, GlmConfig
 from neuroimaging.glm.design import (
     DesignError,
     confound_regressors,
@@ -60,6 +62,28 @@ def test_confound_regressors_take_motion_plus_cosines_and_fill_nan():
     regs = confound_regressors(df, GlmConfig())
     assert list(regs.columns) == MOTION_6 + ["cosine00", "cosine01"]
     assert regs.loc[0, "trans_x"] == 0.0
+
+
+def test_non_steady_state_spikes_are_in_every_preset():
+    spikes = ["non_steady_state_outlier00", "non_steady_state_outlier01"]
+    cols = list(dict.fromkeys(MOTION_24 + ACOMPCOR_6)) + spikes + ["cosine00"]
+    df = pd.DataFrame(np.zeros((5, len(cols))), columns=cols)
+    df.loc[0, spikes[0]] = 1.0
+    df.loc[1, spikes[1]] = 1.0
+    for preset in CONFOUND_PRESETS:
+        regs = confound_regressors(df, GlmConfig().with_confounds(preset))
+        assert [c for c in regs.columns if c.startswith("non_steady_state")] == spikes, preset
+
+
+def test_run_without_flagged_volumes_is_not_an_error():
+    df = pd.DataFrame(np.ones((5, len(MOTION_6) + 1)), columns=MOTION_6 + ["cosine00"])
+    assert list(confound_regressors(df, GlmConfig()).columns) == MOTION_6 + ["cosine00"]
+
+
+def test_non_steady_state_spikes_can_be_turned_off():
+    df = pd.DataFrame(np.zeros((5, len(MOTION_6) + 1)), columns=MOTION_6 + ["non_steady_state_outlier00"])
+    cfg = dataclasses.replace(GlmConfig(), include_non_steady_state=False)
+    assert list(confound_regressors(df, cfg).columns) == MOTION_6
 
 
 def test_missing_confound_column_is_loud():
