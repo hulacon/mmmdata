@@ -29,13 +29,19 @@ Usage
     tb_compose_campaign.py run --no-media          # tables only
     tb_compose_campaign.py verify                  # tree vs. the run list
 
-Idempotent: the verb rewrites tables only when its input signature changes
-(events, stores, registry, lead-out); media is skipped here when the frames
+Comparability (tb-timelines Settles-when 3): every compose reads the
+per-model labels from `<dataset>/comparability.tsv` (a generated table beside
+the tree, not code; `--comparability` overrides) into each sidecar's
+`models.<m>.comparable`. A missing table is an error naming the path.
+
+Idempotent: every run is handed to the verb, which rewrites tables only when
+its input signature changes (events, stores, registry, lead-out, bin-coverage
+rule, comparability table by content); media is skipped here when the frames
 directory is already populated. `--force` redoes both. Any run whose media
 has unmapped items, or whose compose exits non-zero, fails the campaign
 loudly rather than being skipped.
 
-Env: /gpfs/projects/hulacon/shared/envs/stimfeat (psytwill >= 0.18.0,
+Env: /gpfs/projects/hulacon/shared/envs/stimfeat (psytwill >= 0.19.0,
 Pillow, soundfile) with ffmpeg on PATH for media.
 """
 
@@ -225,12 +231,24 @@ def write_dataset_description(stores: list[Path]) -> Path:
     return p
 
 
+def comparability_path(args: argparse.Namespace) -> Path:
+    p = args.comparability or (OUT_ROOT / "comparability.tsv")
+    if not p.exists():
+        raise SystemExit(
+            f"comparability table not found: {p}. It is written by the "
+            "tb-timelines render falsifier (mmmdata-agents workbench); pass "
+            "--comparability PATH to use another.")
+    return p
+
+
 def compose_cmd(run: Run, stores: list[Path], lead_out: float, *,
-                media: bool, force: bool, sparse: bool) -> list[str]:
+                media: bool, force: bool, sparse: bool,
+                comparability: Path) -> list[str]:
     cmd = [str(PSYTWILL), "compose", str(run.events),
            "--stores", *map(str, stores),
            "--registry", str(REGISTRY_DIR),
            "--lead-out", f"{lead_out:g}",
+           "--comparability", str(comparability),
            "-o", str(run.out_dir), "--json"]
     if media:
         cmd += ["--media", "--stimuli-root", str(STIM_DIR)]
@@ -281,6 +299,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     runs = discover_runs(args.subject)
     stores = resolve_stores(args.stores)
+    comparability = comparability_path(args)
     media = not args.no_media
     if media and shutil.which("ffmpeg") is None:
         raise SystemExit("--media needs ffmpeg on PATH (module load ffmpeg); "
@@ -292,11 +311,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     for i, r in enumerate(runs, 1):
         lead_out = r.lead_out()
         want_media = media and (args.force or not r.media_done())
-        if not args.force and r.tables_done() and not want_media:
-            print(f"[{i}/{len(runs)}] {r.stem}: done")
-            continue
+        # tables: always ask the verb — its input signature knows whether
+        # they are stale (a relabel or a rule change leaves them in place)
         cmd = compose_cmd(r, stores, lead_out, media=want_media,
-                          force=args.force, sparse=args.sparse)
+                          force=args.force, sparse=args.sparse,
+                          comparability=comparability)
         if args.dry_run:
             print(" ".join(cmd))
             continue
@@ -349,6 +368,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     recorded in the sidecar equals the BOLD scan end, and media is present
     when expected. Exit 1 on any gap."""
     runs = discover_runs(args.subject)
+    comparability = comparability_path(args)
     problems = []
     n_tables = n_media = 0
     for r in runs:
@@ -362,6 +382,17 @@ def cmd_verify(args: argparse.Namespace) -> int:
         lo = (meta.get("inputs_signature") or {}).get("params", {}).get("lead_out")
         if lo is None or abs(lo - r.lead_out()) > 1e-6:
             problems.append(f"{r.stem}: sidecar lead_out {lo} != {r.lead_out()}")
+        for mp in metas:
+            m = json.loads(mp.read_text())
+            table = (m.get("comparability") or {}).get("table")
+            if table != str(comparability.resolve()):
+                problems.append(f"{mp.name} ({r.stem}): comparability table "
+                                f"{table} != {comparability}")
+            unlabelled = sorted(k for k, v in (m.get("models") or {}).items()
+                                if v.get("comparable") is None)
+            if unlabelled:
+                problems.append(f"{mp.name} ({r.stem}): no comparable label "
+                                f"for {unlabelled}")
         if r.media_done():
             n_media += 1
         elif not args.no_media:
@@ -387,6 +418,9 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--out-root", type=Path, default=None,
                        help=f"dataset root (default {OUT_ROOT}); a scratch "
                             "path here is how the campaign is smoke-tested")
+        p.add_argument("--comparability", type=Path, default=None,
+                       help="per-model comparability TSV (default "
+                            "<out-root>/comparability.tsv)")
 
     p = sub.add_parser("plan", help="list runs, lead-outs, and state")
     common(p)
