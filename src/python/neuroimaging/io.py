@@ -464,3 +464,25 @@ def load_mask(run: FmriprepRun) -> Any:
         )
     import nibabel as nib
     return nib.load(str(run.mask))
+
+
+def mask_intersection(runs: Sequence[FmriprepRun]) -> tuple[Any, Any]:
+    """The voxels inside every run's brain mask, as (image, boolean array).
+
+    Raises ValueError when two runs' masks sit on different grids: runs pooled
+    into one map must share a space and resolution.
+    """
+    import nibabel as nib
+    import numpy as np
+
+    first = load_mask(runs[0])
+    inter = np.asarray(first.dataobj).astype(bool)
+    for r in runs[1:]:
+        m = load_mask(r)
+        if m.shape != first.shape or not np.allclose(m.affine, first.affine, atol=1e-3):
+            raise ValueError(
+                f"{r.entity_prefix} mask grid differs from {runs[0].entity_prefix}; "
+                "runs pooled into one map must share a space and resolution"
+            )
+        inter &= np.asarray(m.dataobj).astype(bool)
+    return nib.Nifti1Image(inter.astype(np.uint8), first.affine), inter

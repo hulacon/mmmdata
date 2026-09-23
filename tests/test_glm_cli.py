@@ -14,7 +14,7 @@ import pytest
 
 nib = pytest.importorskip("nibabel")
 
-from neuroimaging.constants import MOTION_6  # noqa: E402
+from neuroimaging.constants import ACOMPCOR_6, MOTION_6  # noqa: E402
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -35,7 +35,7 @@ def _events():
     return pd.DataFrame(rows)
 
 
-def _seed_run(root: Path, sub: str, ses: str, run: str, seed: int, events=True):
+def _seed_run(root: Path, sub: str, ses: str, run: str, seed: int, events=True, acompcor=True):
     prefix = f"sub-{sub}_ses-{ses}_task-motor_run-{run}"
     raw = root / f"sub-{sub}" / f"ses-{ses}" / "func"
     raw.mkdir(parents=True, exist_ok=True)
@@ -55,7 +55,8 @@ def _seed_run(root: Path, sub: str, ses: str, run: str, seed: int, events=True):
     nib.Nifti1Image(np.ones(SHAPE, dtype=np.uint8), np.eye(4)).to_filename(
         str(fp / f"{prefix}_space-{SPACE}_desc-brain_mask.nii.gz")
     )
-    conf = pd.DataFrame(rng.normal(scale=0.05, size=(N_SCANS, 7)), columns=MOTION_6 + ["cosine00"])
+    cols = MOTION_6 + (ACOMPCOR_6 if acompcor else []) + ["cosine00"]
+    conf = pd.DataFrame(rng.normal(scale=0.05, size=(N_SCANS, len(cols))), columns=cols)
     conf.to_csv(fp / f"{prefix}_desc-confounds_timeseries.tsv", sep="\t", index=False)
 
 
@@ -74,7 +75,7 @@ def test_dry_run_builds_designs_and_writes_nothing(tree, capsys):
     out = capsys.readouterr().out
     assert "runs (2)" in out and "dry run" in out
     assert "design columns" in out
-    assert not (tree / "derivatives" / "glm_localizer").exists()
+    assert not (tree / "derivatives" / "glm_reference").exists()
 
 
 def test_run_without_events_is_refused_before_any_fit(tree):
@@ -91,9 +92,9 @@ def test_no_runs_is_a_named_error(tree):
 def test_full_fit_writes_contract_a_named_maps_and_description(tree):
     pytest.importorskip("nilearn")
     rc = glm_contrast_maps.main(["--subject", "sub-aa", "--model", "motor", "--bids-root", str(tree),
-                                 "--smoothing-fwhm", "0", "--per-run-maps"])
+                                 "--per-run-maps"])
     assert rc == 0
-    base = tree / "derivatives" / "glm_localizer"
+    base = tree / "derivatives" / "glm_reference"
     desc = json.loads((base / "dataset_description.json").read_text())
     assert desc["DatasetType"] == "derivative"
     func = base / "sub-aa" / "ses-30" / "func"  # one session selected -> ses- kept
@@ -107,6 +108,9 @@ def test_full_fit_writes_contract_a_named_maps_and_description(tree):
     meta = json.loads((func / "sub-aa_task-motor_model-motor_run_metadata.json").read_text())
     assert meta["estimator"] == "nilearn" and len(meta["runs"]) == 2
     assert meta["config"]["space"] == SPACE
+    # Defaults are the frozen reference: OLS, unsmoothed, motion + 6 aCompCor.
+    assert meta["config"]["noise_model"] == "ols" and meta["config"]["smoothing_fwhm"] is None
+    assert meta["config"]["acompcor_n"] == 6 and meta["config"]["include_non_steady_state"]
 
 
 def test_split_design_guard_reaches_the_cli(tree):

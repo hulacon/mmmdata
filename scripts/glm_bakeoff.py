@@ -88,7 +88,7 @@ from neuroimaging.glm.hrf import hrfindex_to_image, load_hrfindex  # noqa: E402
 from neuroimaging.glm.models import load_model  # noqa: E402
 from neuroimaging.glm.outputs import noise_map_name, save_statmap, write_run_metadata  # noqa: E402
 from neuroimaging.glm.voxelwise_hrf import VOXELWISE, fit_run_voxelwise  # noqa: E402
-from neuroimaging.io import FmriprepRun, load_confounds  # noqa: E402
+from neuroimaging.io import FmriprepRun, load_confounds, mask_intersection  # noqa: E402
 
 OUTPUT_TREE = "glm_bakeoff"
 GLMSINGLE_TREE = "glmsingle_tb"
@@ -125,17 +125,10 @@ def _runs_for(model_name: str, subject: str, args: argparse.Namespace, bids_root
 
 
 def _mask_intersection(runs: list[FmriprepRun]):
-    import nibabel as nib
-
-    first = nib.load(str(runs[0].mask))
-    inter = np.asarray(first.dataobj).astype(bool)
-    for r in runs[1:]:
-        m = nib.load(str(r.mask))
-        if m.shape != first.shape or not np.allclose(m.affine, first.affine, atol=1e-3):
-            raise SystemExit(f"ERROR: {r.entity_prefix} mask grid differs from {runs[0].entity_prefix}; "
-                             "the frozen input must be one space and resolution")
-        inter &= np.asarray(m.dataobj).astype(bool)
-    return nib.Nifti1Image(inter.astype(np.uint8), first.affine), inter
+    try:
+        return mask_intersection(runs)
+    except ValueError as e:
+        raise SystemExit(f"ERROR: {e}; the frozen input must be one space and resolution") from None
 
 
 def _write_half_maps(out_dir: Path, subject: str, task: str, space: str, half: int,

@@ -1,0 +1,85 @@
+{
+  "name": "mmmdata-glm-reference",
+  "version": 1,
+  "frozen": "2026-09-23",
+  "scope": "Condition-level contrast and effect maps, for every consumer, until braintwill's estimator exists. Single-trial betas are out of scope (GLMsingle TYPED).",
+  "input": {
+    "pipeline": "fMRIPrep",
+    "pipeline_version": "25.2.5",
+    "variant": "fmriprep (non-NORDIC)",
+    "space": "MNI152NLin2009cAsym_res-2",
+    "nondefault_pipeline_settings": [
+      "--subject-anatomical-reference unbiased",
+      "--no-track-sessions",
+      "FreeSurfer 8.2.0 recon-all run outside fMRIPrep and passed in (--fs-subjects-dir)",
+      "five output spaces"
+    ],
+    "slice_timing_corrected": true,
+    "upstream_transforms": "Head-motion correction, distortion correction, coregistration and normalisation are applied as one composed interpolation. fMRIPrep applies no spatial smoothing, temporal filtering or confound regression."
+  },
+  "estimation": {
+    "effect_engine": "nilearn FirstLevelModel, ordinary least squares",
+    "calibrated_noise_model": "ar1",
+    "calibrated_engine": "nilearn FirstLevelModel, AR(1) prewhitening: for consumers that need calibrated z or t",
+    "calibrated_engine_status": "interim, pending braintwill involvement",
+    "hrf": "SPM canonical, no temporal or dispersion derivative",
+    "signal_scaling": "each voxel divided by its temporal mean (nilearn signal_scaling=0), so effects are in percent signal change",
+    "run_combination": "precision-weighted fixed effects across runs; sessions pooled",
+    "cross_voxel_covariance": "declared independent; not modelled"
+  },
+  "spatial": {
+    "smoothing_fwhm_mm": null,
+    "mask": "intersection of the selected runs' fMRIPrep brain masks, used both to fit each run and to pool them"
+  },
+  "temporal": {
+    "drift": "every fMRIPrep cosine* column (the high-pass basis fMRIPrep computes, ~128 s cutoff); nilearn adds no drift terms, so high_pass is inert",
+    "non_steady_state": "every non_steady_state_outlier* column fMRIPrep wrote, as one-hot spike regressors; the time axis is not trimmed",
+    "censoring": "none"
+  },
+  "config": {
+    "space": "MNI152NLin2009cAsym_res-2",
+    "variant": "fmriprep",
+    "hrf_model": "spm",
+    "noise_model": "ols",
+    "smoothing_fwhm": null,
+    "drift_model": null,
+    "high_pass": 0.01,
+    "include_cosine": true,
+    "include_non_steady_state": true
+  },
+  "departures_from_bakeoff_reference_cell": [
+    {
+      "setting": "smoothing_fwhm",
+      "bakeoff": 5.0,
+      "here": null,
+      "reason": "first passes run on unsmoothed data (DECIDED 2026-09-23); smoothing becomes a declared consumer transform"
+    },
+    {
+      "setting": "non-steady-state volumes",
+      "bakeoff": "unmodelled",
+      "here": "one-hot spike regressors",
+      "reason": "a correction, not a level (fixed 2026-09-23)"
+    }
+  ],
+  "not_pinned_here": {
+    "software_versions": "each fit's metadata records its own nilearn version",
+    "output_location": "a consumer's choice (GlmConfig.output_tree)",
+    "voxel_or_roi_selection": "a consumer argument; the ROI-definition rule is deliberately undecided"
+  },
+  "confound_regimes": {
+    "reference": {
+      "status": "frozen",
+      "confounds": [
+        "trans_x",
+        "trans_y",
+        "trans_z",
+        "rot_x",
+        "rot_y",
+        "rot_z"
+      ],
+      "acompcor_n": 6,
+      "description": "Six rigid-body motion parameters plus the first six aCompCor components (fMRIPrep's combined WM+CSF mask, in fMRIPrep's variance order); cosines and non-steady-state spikes ride along via config."
+    }
+  },
+  "sha256": "af8965e68db1e827"
+}

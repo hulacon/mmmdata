@@ -20,8 +20,8 @@ from test_glm_cli import SPACE, _seed_run  # noqa: E402
 
 @pytest.fixture
 def tree(tmp_path):
-    _seed_run(tmp_path, "aa", "30", "01", 0)
-    _seed_run(tmp_path, "aa", "30", "02", 1)
+    _seed_run(tmp_path, "aa", "30", "01", 0, acompcor=False)
+    _seed_run(tmp_path, "aa", "30", "02", 1, acompcor=False)
     return tmp_path
 
 

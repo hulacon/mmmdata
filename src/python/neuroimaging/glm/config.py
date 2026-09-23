@@ -122,6 +122,8 @@ class GlmConfig:
         return dataclasses.asdict(self)
 
 
+#: The bake-off's base configuration, kept so its cells reproduce. It is NOT the
+#: reference model consumers fit: that is :func:`.reference.reference_config`.
 DEFAULT_CONFIG = GlmConfig()
 
 ACOMPCOR_PREFIX = "a_comp_cor_"

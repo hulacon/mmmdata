@@ -7,8 +7,14 @@ The first production runner on the glm-strategy architecture (mmmdata-agents
 docs/workbench/glm-strategy/, DECIDED 2026-08-25): a model spec from
 mmmdata/models/ declares the conditions and contrasts; neuroimaging.glm
 builds the design from BIDS events + fMRIPrep confounds, fits with the
-chosen estimator (nilearn FirstLevelModel, AR(1), by default), and pools runs
-with nilearn compute_fixed_effects. Every output filename carries Contract A
+chosen estimator, and pools runs with nilearn compute_fixed_effects.
+
+Defaults are the frozen reference specification
+(neuroimaging/glm/reference_spec.json): OLS, SPM canonical, the `reference`
+confound regime, unsmoothed, every run fitted and pooled inside the
+intersection of the runs' brain masks. `--noise-model ar1` is the spec's
+calibrated-inference engine. Any other flag departs from the reference, and
+the fit's metadata records the whole config so the departure is visible. Every output filename carries Contract A
 keys plus `contrast-` and `stat-` entities.
 
 Run discovery goes through neuroimaging.io.find_fmriprep_runs, which
@@ -43,10 +49,11 @@ if str(_REPO / "src" / "python") not in sys.path:
 
 from neuroimaging.constants import DERIVATIVES_DIRS  # noqa: E402
 from neuroimaging.glm.adapters import adapt_events  # noqa: E402
-from neuroimaging.glm.config import DEFAULT_CONFIG, GlmConfig, repetition_time  # noqa: E402
+from neuroimaging.glm.config import repetition_time  # noqa: E402
 from neuroimaging.glm.design import available_contrast_vectors, build_design_matrix, strict_for  # noqa: E402
 from neuroimaging.glm.estimators import fixed_effects, get_estimator  # noqa: E402
 from neuroimaging.glm.models import list_models, load_model  # noqa: E402
+from neuroimaging.glm.reference import load_reference_spec, reference_config  # noqa: E402
 from neuroimaging.glm.outputs import (  # noqa: E402
     ensure_dataset_description,
     output_dir,
@@ -54,7 +61,7 @@ from neuroimaging.glm.outputs import (  # noqa: E402
     statmap_name,
     write_run_metadata,
 )
-from neuroimaging.io import FmriprepRun, find_fmriprep_runs, load_confounds  # noqa: E402
+from neuroimaging.io import FmriprepRun, find_fmriprep_runs, load_confounds, mask_intersection  # noqa: E402
 
 
 def _bare(label: str, prefix: str) -> str:
@@ -76,13 +83,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--subject", required=True, help="sub-03 or 03")
     p.add_argument("--model", required=True, help=f"model name in models/ ({', '.join(list_models())}) or a path")
     p.add_argument("--sessions", nargs="*", default=None, help="restrict to these sessions (ses-30 or 30)")
-    p.add_argument("--space", default=DEFAULT_CONFIG.space)
-    p.add_argument("--variant", default=DEFAULT_CONFIG.variant, help="fmriprep tree to read")
+    ref = reference_config()
+    p.add_argument("--space", default=ref.space)
+    p.add_argument("--variant", default=ref.variant, help="fmriprep tree to read")
     p.add_argument("--estimator", default="nilearn")
-    p.add_argument("--noise-model", default=DEFAULT_CONFIG.noise_model, choices=["ar1", "ols"])
-    p.add_argument("--smoothing-fwhm", type=float, default=DEFAULT_CONFIG.smoothing_fwhm,
-                   help="mm; 0 disables")
-    p.add_argument("--output-tree", default=DEFAULT_CONFIG.output_tree)
+    p.add_argument("--noise-model", default=ref.noise_model, choices=["ar1", "ols"],
+                   help="ols = the reference effect engine; ar1 = its calibrated-z/t engine")
+    p.add_argument("--regime", default="reference", choices=sorted(load_reference_spec()["confound_regimes"]),
+                   help="named confound regime from the reference spec")
+    p.add_argument("--smoothing-fwhm", type=float, default=ref.smoothing_fwhm,
+                   help="mm; 0 or unset = unsmoothed (the reference)")
+    p.add_argument("--output-tree", default="glm_reference")
     p.add_argument("--allow-mixed-designs", action="store_true",
                    help="pool a split-design task across both session groups (see find_fmriprep_runs)")
     p.add_argument("--per-run-maps", action="store_true", help="also write each run's maps")
@@ -131,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
 
     model = load_model(args.model)
     cfg = dataclasses.replace(
-        DEFAULT_CONFIG,
+        reference_config(args.regime),
         space=args.space,
         variant=args.variant,
         noise_model=args.noise_model,
@@ -141,6 +152,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     runs = select_runs(args, model.task, bids_root)
     subject = runs[0].subject
+    # One mask for every run and for the pool: fitting each run inside its own
+    # mask and pooling under one run's leaves edge voxels estimated from a
+    # varying subset of runs.
+    try:
+        mask_img, _ = mask_intersection(runs)
+    except ValueError as e:
+        sys.exit(f"ERROR: {e}")
     fmriprep_dir = bids_root / DERIVATIVES_DIRS[args.variant]
 
     print(f"model {model.name}: task-{model.task}, {len(model.conditions)} conditions, "
@@ -181,9 +199,8 @@ def main(argv: list[str] | None = None) -> int:
 
     per_contrast: dict[str, list] = {c.name: [] for c in model.contrasts}
     for run, t_r, dm, vectors in designs:
-        mask = nib.load(str(run.mask))
         bold = nib.load(str(run.bold))
-        est = estimator.fit_run(bold, dm, vectors, t_r=t_r, mask=mask, cfg=cfg)
+        est = estimator.fit_run(bold, dm, vectors, t_r=t_r, mask=mask_img, cfg=cfg)
         for name, ce in est.items():
             per_contrast[name].append(ce)
             if args.per_run_maps:
@@ -202,7 +219,6 @@ def main(argv: list[str] | None = None) -> int:
     fx_session = sessions[0] if len(sessions) == 1 else None
     d = output_dir(derivatives, cfg.output_tree, subject, fx_session)
     d.mkdir(parents=True, exist_ok=True)
-    mask_img = nib.load(str(runs[0].mask))
     written = []
     for name, estimates in per_contrast.items():
         if not estimates:
