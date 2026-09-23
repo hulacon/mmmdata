@@ -29,10 +29,22 @@ matrix only). Matching between arms is on (session, run, onset).
 
 Design record: mmmdata-agents docs/workbench/retrieval-modeling/ (2026-09-10).
 
+``--roi-set ladder`` (neural-rotation pilot) reads the ROI ladder instead:
+every row of ``derivatives/functional_rois/ladder.tsv`` (rungs i-iii, masks
+already on the fit grid -- asserted, never resampled) plus, when present, the
+subject's rung-(iv) pRF masks under ``functional_rois/<sub>/space-<SPACE>/``.
+The file is ``<sub>_arm-<arm>_set-ladder_desc-type{b,c,d}_roipatterns.npz``
+with the same per-ROI arrays, ``roi_rungs`` beside ``roi_names``, and for the
+union ROIs ``blocks_<ROI>`` (int per voxel) + ``blocknames_<ROI>``:
+VTCAG (VTC, AG), Posterior (the rung-(i) index of the dseg), PrfUnion*
+(pos, negstrict, negother). Design record: mmmdata-agents
+docs/workbench/neural-rotation-pilot/.
+
 Usage:
     python extract_roi_betas.py --subject sub-## --arm pooled --dry-run
     python extract_roi_betas.py --subject sub-## --arm ret-image
     python extract_roi_betas.py --subject sub-## --arm enc --types D
+    python extract_roi_betas.py --subject sub-## --arm enc --types D --roi-set ladder
 """
 
 from __future__ import annotations
@@ -128,6 +140,67 @@ def roi_masks_on_grid(ref_img):
     return masks, vox_idx
 
 
+ROI_TREE = "functional_rois"
+PRF_MASKS = ("pos", "negstrict", "union")
+
+
+def _prf_roi_name(mask: str, thr_token: str) -> str:
+    return f"Prf{mask.capitalize()}{thr_token.replace('thr-', 'Thr')}"
+
+
+def ladder_masks_on_grid(ref_img, roi_root: Path, subject: str):
+    """Masks of every ladder row (+ the subject's rung-(iv) pRF masks when
+    present), asserted onto the fit grid. Returns (masks, vox_idx, rungs,
+    blocks, blocknames) with blocks/blocknames only for the union ROIs."""
+    space = f"space-{tb.SPACE}"
+    ladder = roi_root / "ladder.tsv"
+    if not ladder.exists():
+        sys.exit(f"ERROR: ladder table missing: {ladder} (run neural_rotation/build_roi_ladder.py)")
+    rows = pd.read_csv(ladder, sep="\t")
+    masks, rungs, blocks, blocknames = {}, {}, {}, {}
+
+    def _load(path: Path):
+        img = nib.load(str(path))
+        if img.shape[:3] != ref_img.shape[:3] or not np.allclose(img.affine, ref_img.affine, atol=1e-3):
+            sys.exit(f"ERROR: {path.name} grid {img.shape[:3]} / affine differs from the fit's "
+                     f"reference BOLD grid {ref_img.shape[:3]}; the ladder must be rebuilt on it")
+        return np.asarray(img.dataobj)
+
+    for _, r in rows.iterrows():
+        masks[r["roi"]] = _load(roi_root / space / f"atlas-HOthr25_label-{r['roi']}_mask.nii.gz") > 0.5
+        rungs[r["roi"]] = r["rung"]
+    if "VTC" in masks and "AngularGyrus" in masks and "VTCAG" in masks:
+        b = np.zeros(ref_img.shape[:3], dtype=np.int16)
+        b[masks["VTC"]] = 1
+        b[masks["AngularGyrus"] & ~masks["VTC"]] = 2
+        blocks["VTCAG"], blocknames["VTCAG"] = b, ["VTC", "AG"]
+    dseg = roi_root / space / "atlas-HOthr25_label-Posterior_dseg.nii.gz"
+    if "Posterior" in masks and dseg.exists():
+        blocks["Posterior"] = _load(dseg).astype(np.int16)
+        names = pd.read_csv(dseg.with_suffix("").with_suffix(".tsv"), sep="\t").sort_values("index")
+        blocknames["Posterior"] = names["name"].tolist()
+    prf_dir = roi_root / subject / space
+    prf_files = sorted(prf_dir.glob(f"{subject}_task-prf_desc-*_thr-*_mask.nii.gz")) if prf_dir.exists() else []
+    if not prf_files:
+        print(f"  rung (iv): no pRF masks under {prf_dir}; skipped")
+    prf = {}
+    for f in prf_files:
+        desc = f.name.split("_desc-")[1].split("_")[0]
+        thr = f.name.split("_thr-")[1].split("_")[0]
+        prf[(desc, thr)] = _load(f) > 0.5
+    for (desc, thr), m in prf.items():
+        name = _prf_roi_name(desc, f"thr-{thr}")
+        masks[name], rungs[name] = m, "iv"
+        if desc == "union" and ("pos", thr) in prf and ("negstrict", thr) in prf:
+            b = np.zeros(ref_img.shape[:3], dtype=np.int16)
+            b[prf[("pos", thr)]] = 1
+            b[prf[("negstrict", thr)] & ~prf[("pos", thr)]] = 2
+            b[m & (b == 0)] = 3
+            blocks[name], blocknames[name] = b, ["pos", "negstrict", "negother"]
+    vox_idx = {roi: np.flatnonzero(m.ravel(order="C")) for roi, m in masks.items()}
+    return masks, vox_idx, rungs, blocks, blocknames
+
+
 def load_beta_dict(fit_dir: Path, beta_type: str) -> dict:
     f = fit_dir / "glmsingle_outputs" / BETA_FILES[beta_type]
     if not f.exists():
@@ -141,7 +214,8 @@ def load_beta_dict(fit_dir: Path, beta_type: str) -> dict:
 
 def slice_type(d: dict, beta_type: str, masks: dict, vox_idx: dict,
                ti: pd.DataFrame, ref_img, subject: str, arm: str,
-               fit_dir: Path) -> dict:
+               fit_dir: Path, roi_set: str = "pattern6", rungs: dict | None = None,
+               blocks: dict | None = None, blocknames: dict | None = None) -> dict:
     betas = np.asarray(d["betasmd"])
     if betas.ndim != 4:
         sys.exit(f"ERROR: expected 4-D betasmd, got shape {betas.shape}")
@@ -151,9 +225,10 @@ def slice_type(d: dict, beta_type: str, masks: dict, vox_idx: dict,
         sys.exit(f"ERROR: betasmd has {betas.shape[-1]} columns but trial_info "
                  f"has {len(ti)} rows — per-trial layout violated")
 
+    roi_names = ps.PATTERN_ROI_NAMES if roi_set == "pattern6" else list(masks)
     out = {
         "subject": subject, "arm": arm, "beta_type": f"TYPE{beta_type}",
-        "roi_names": np.array(ps.PATTERN_ROI_NAMES),
+        "roi_names": np.array(roi_names), "roi_set": roi_set,
         "grid_shape": np.array(betas.shape[:3]), "affine": ref_img.affine,
         "source_dir": str(fit_dir),
         "trial_index": np.arange(len(ti)),
@@ -169,10 +244,15 @@ def slice_type(d: dict, beta_type: str, masks: dict, vox_idx: dict,
     r2 = np.asarray(d["R2"], dtype=np.float32).reshape(-1) if "R2" in d else None
     hrf = np.asarray(d["HRFindex"]).reshape(-1) if "HRFindex" in d else None
     mv = np.asarray(d["meanvol"], dtype=np.float32).reshape(-1) if "meanvol" in d else None
-    for roi in ps.PATTERN_ROI_NAMES:
+    if rungs:
+        out["roi_rungs"] = np.array([rungs[r] for r in roi_names])
+    for roi in roi_names:
         pat = betas[masks[roi]].astype(np.float32)
         out[f"patterns_{roi}"] = pat
         out[f"voxidx_{roi}"] = vox_idx[roi]
+        if blocks and roi in blocks:
+            out[f"blocks_{roi}"] = blocks[roi][masks[roi]]
+            out[f"blocknames_{roi}"] = np.array(blocknames[roi])
         if r2 is not None:
             out[f"R2_{roi}"] = r2[vox_idx[roi]]
         if hrf is not None:
@@ -187,7 +267,7 @@ def report(out: dict, ti: pd.DataFrame) -> None:
     print(f"  {n} trial columns; subgroups {ti['subgroup'].value_counts().to_dict()}")
     anchors = ti["mmmId"].isin(ANCHORS).sum()
     print(f"  anchor (super-repeat) trials: {anchors}")
-    for roi in ps.PATTERN_ROI_NAMES:
+    for roi in out["roi_names"]:
         pat = out[f"patterns_{roi}"]
         finite_vox = np.isfinite(pat).all(axis=1).sum()
         print(f"  {roi:12s} V={pat.shape[0]:5d}  finite-in-all-trials={finite_vox:5d}  "
@@ -206,6 +286,10 @@ def main():
                     help=f"Override derivatives/{tb.OUTPUT_TREE}")
     ap.add_argument("--cache-root", default=None,
                     help=f"Override derivatives/{CACHE_TREE}")
+    ap.add_argument("--roi-set", default="pattern6", choices=["pattern6", "ladder"],
+                    help="pattern6 = the six benchmark ROIs (default); ladder = every "
+                         "row of functional_rois/ladder.tsv + the subject's pRF masks")
+    ap.add_argument("--roi-root", default=None, help=f"Override derivatives/{ROI_TREE}")
     ap.add_argument("--dry-run", action="store_true",
                     help="Resolve inputs, build ROI masks, report; load no betas")
     args = ap.parse_args()
@@ -225,8 +309,13 @@ def main():
 
     ti = load_trial_info(fit_dir)
     ref_img = reference_bold(fmriprep_dir, args.subject, ti)
-    masks, vox_idx = roi_masks_on_grid(ref_img)
-    print(f"grid {ref_img.shape[:3]}; ROI voxels "
+    rungs = blocks = blocknames = None
+    if args.roi_set == "ladder":
+        roi_root = Path(args.roi_root) if args.roi_root else bids_root / "derivatives" / ROI_TREE
+        masks, vox_idx, rungs, blocks, blocknames = ladder_masks_on_grid(ref_img, roi_root, args.subject)
+    else:
+        masks, vox_idx = roi_masks_on_grid(ref_img)
+    print(f"grid {ref_img.shape[:3]}; {len(vox_idx)} ROIs ({args.roi_set}); voxels "
           f"{ {roi: int(len(v)) for roi, v in vox_idx.items()} }")
     print(f"{len(ti)} trials; subgroups {ti['subgroup'].value_counts().to_dict()}; "
           f"sessions {ti['session'].nunique()}; runs {ti.groupby(['session', 'task', 'run']).ngroups}")
@@ -240,11 +329,13 @@ def main():
     for t in args.types:
         print(f"\n[TYPE{t}]", flush=True)
         d = load_beta_dict(fit_dir, t)
-        out = slice_type(d, t, masks, vox_idx, ti, ref_img, args.subject, args.arm, fit_dir)
+        out = slice_type(d, t, masks, vox_idx, ti, ref_img, args.subject, args.arm, fit_dir,
+                         roi_set=args.roi_set, rungs=rungs, blocks=blocks, blocknames=blocknames)
         del d
         gc.collect()
         report(out, ti)
-        p = out_dir / f"{args.subject}_arm-{args.arm}_desc-type{t.lower()}_roipatterns.npz"
+        set_tag = "" if args.roi_set == "pattern6" else f"_set-{args.roi_set}"
+        p = out_dir / f"{args.subject}_arm-{args.arm}{set_tag}_desc-type{t.lower()}_roipatterns.npz"
         np.savez_compressed(p, **out)
         print(f"  wrote {p} ({p.stat().st_size / 1e6:.0f} MB)", flush=True)
         del out
