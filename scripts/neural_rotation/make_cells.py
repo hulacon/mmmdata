@@ -9,7 +9,7 @@ threshold present). ROIs flagged ``too_small`` are skipped and listed.
 Usage:
     python make_cells.py --subjects sub-## [sub-## ...] --out cells.tsv \\
         [--pairs enc:ret-word enc:ret-image ret-word:ret-image enc:ret-word:ret-image] \\
-        [--rungs i ii iii iv]
+        [--rungs i ii iii iv] [--rois mPFC ...]
 """
 
 from __future__ import annotations
@@ -55,6 +55,8 @@ def main():
     ap.add_argument("--subjects", nargs="+", required=True)
     ap.add_argument("--pairs", nargs="+", default=PAIRS)
     ap.add_argument("--rungs", nargs="+", default=["i", "ii", "iii", "iv"])
+    ap.add_argument("--rois", nargs="+", default=None,
+                    help="only these ROI names (any rung); default every ROI of the chosen rungs")
     ap.add_argument("--roi-root", default=None)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
@@ -68,6 +70,11 @@ def main():
         rois = [(r["rung"], r["roi"]) for _, r in ladder.iterrows() if r["rung"] in args.rungs]
         if "iv" in args.rungs:
             rois += [("iv", r) for r in prf_rois(roi_root, sub)]
+        if args.rois:
+            unknown = sorted(set(args.rois) - {r for _, r in rois})
+            if unknown:
+                sys.exit(f"ERROR: --rois not on the ladder for {sub}: {unknown}")
+            rois = [(g, r) for g, r in rois if r in args.rois]
         for rung, roi in rois:
             for pair in args.pairs:
                 lines.append(f"{sub}\t{rung}\t{roi}\t{pair}")

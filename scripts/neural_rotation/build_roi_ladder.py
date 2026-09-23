@@ -7,7 +7,10 @@ Harvard-Oxford maxprob-thr25 atlas on the shared MNI152NLin2009cAsym res-2
 grid (the GLMsingle fit grid):
 
   rung i    every Harvard-Oxford ROI in occipital, temporal and parietal
-            cortex, plus hippocampus, each alone, bilateral
+            cortex, plus hippocampus, each alone, bilateral; plus the
+            control ROIs (mPFC = Frontal Medial Cortex, the benchmark's
+            definition), each alone, which are fitted like any rung-(i)
+            ROI but are NOT part of the rung-(iii) union
   rung ii   VTC (Ye et al. 2020: inferior temporal, parahippocampal, temporal
             fusiform) and VTC + angular gyrus
   rung iii  the union of every rung-(i) ROI ("Posterior"), plus a dseg volume
@@ -19,7 +22,7 @@ Output tree (``<output_dir>/functional_rois/``):
 
   dataset_description.json
   ladder.tsv       rung, roi, hemi, atlas, labels, label_names, n_vox_atlas,
-                   n_vox_grid, too_small, note, n_vox_brain_<sub> ...
+                   n_vox_grid, too_small, in_posterior, note, n_vox_brain_<sub> ...
   ladder.json      the spec the run used (labels, min voxels, reference grid)
   space-MNI152NLin2009cAsym_res-2/
       atlas-HOthr25_label-<ROI>_mask.nii.gz       one per ladder row
@@ -81,6 +84,12 @@ RUNG_I_CORTICAL = {
     "parietal": [17, 18, 19, 20, 21, 31, 43],
 }
 RUNG_I_SUBCORTICAL = {"hippocampus": [9, 19]}
+# Control ROIs: single ROIs outside the stated lobes, fitted at rung (i) but
+# never pooled into the rung-(iii) union. mPFC is the settled benchmark's
+# definition (pattern_similarity PATTERN_CORTICAL_ROIS), added 2026-09-23 so
+# the pilot reads the benchmark's one enc<->word cell.
+RUNG_I_CONTROL = {"frontal": [25]}
+CONTROL_NOTE = "control ROI outside the stated lobes; fitted alone, NOT in the Posterior union"
 EDGE_NOTE = "edge of the stated lobes; prune on Ben's call"
 EDGE_LABELS = {17, 43, 44, 46}
 MIN_VOX_DEFAULT = 100
@@ -130,13 +139,13 @@ def build_ladder(atlases: dict, min_vox: int, brain: dict):
     sub, sub_labels = atlases["HOSPA"]
     rows, masks = [], {}
 
-    def add(rung, roi, atlas, labels, names, mask, note=""):
+    def add(rung, roi, atlas, labels, names, mask, note="", in_posterior=True):
         n = int(mask.sum())
         row = {"rung": rung, "roi": roi, "hemi": "bilateral", "atlas": atlas,
                "labels": "+".join(str(v) for v in labels),
                "label_names": " | ".join(names),
                "n_vox_atlas": n, "n_vox_grid": n,      # atlas already on the grid
-               "too_small": n < min_vox, "note": note}
+               "too_small": n < min_vox, "in_posterior": in_posterior, "note": note}
         for s, b in brain.items():
             row[f"n_vox_brain_{s.replace('sub-', 'sub')}"] = int((mask & b).sum())
         rows.append(row)
@@ -156,15 +165,22 @@ def build_ladder(atlases: dict, min_vox: int, brain: dict):
         mask = ps.checked_label_mask(sub, sub_labels, dict(zip(values, names)))
         add("i", "Hippocampus", "HOSPA", values, names, mask, lobe)
         rung_i.append("Hippocampus")
+    for lobe, values in RUNG_I_CONTROL.items():
+        for v in values:
+            name = cort_labels[v]
+            mask = ps.checked_label_mask(cort, cort_labels, {v: name})
+            roi = "mPFC" if v == 25 else camel(name)     # keep the benchmark's name
+            add("i", roi, "HOCPA", [v], [name], mask, f"{CONTROL_NOTE} ({lobe})",
+                in_posterior=False)
 
     vtc_spec = ps.PATTERN_CORTICAL_ROIS["VTC"]
     vtc = ps.checked_label_mask(cort, cort_labels, vtc_spec)
     ag = ps.checked_label_mask(cort, cort_labels, ps.PATTERN_CORTICAL_ROIS["AG"])
     add("ii", "VTC", "HOCPA", list(vtc_spec), [cort_labels[v] for v in vtc_spec], vtc,
-        "Ye et al. 2020 VTC; label 39 excluded by decision")
+        "Ye et al. 2020 VTC; label 39 excluded by decision", in_posterior=False)
     add("ii", "VTCAG", "HOCPA", list(vtc_spec) + [21],
         [cort_labels[v] for v in vtc_spec] + [cort_labels[21]], vtc | ag,
-        "VTC + angular gyrus")
+        "VTC + angular gyrus", in_posterior=False)
 
     # Block labels for rung (iii). Each atlas is a maxprob partition on its
     # own, but the cortical and subcortical atlases overlap each other (the
@@ -181,8 +197,8 @@ def build_ladder(atlases: dict, min_vox: int, brain: dict):
         posterior |= m
         block_rows.append({"index": k, "name": roi, "n_vox_block": int((dseg == k).sum())})
     add("iii", "Posterior", "HOCPA+HOSPA", ["rung-i"], rung_i, posterior,
-        f"union of every rung-(i) ROI; {n_overlap} voxels in two ROIs "
-        "(subcortical vs cortical atlas) carry the cortical block in the dseg")
+        f"union of every rung-(i) ROI except the control ROIs; {n_overlap} voxels in two ROIs "
+        "(subcortical vs cortical atlas) carry the cortical block in the dseg", in_posterior=False)
     return rows, masks, dseg, block_rows
 
 
@@ -252,14 +268,14 @@ def main():
 
     rows, masks, dseg, block_rows = build_ladder(atlases, args.min_vox, brain)
     df = pd.DataFrame(rows)
-    print(df[["rung", "roi", "labels", "n_vox_grid", "too_small", "note"]].to_string(index=False))
+    print(df[["rung", "roi", "labels", "n_vox_grid", "too_small", "in_posterior", "note"]].to_string(index=False))
     print(f"{len(rows)} ladder rows; {int(df['too_small'].sum())} too small (< {args.min_vox})")
 
     spec = {"space": tb.SPACE, "atlas": "Harvard-Oxford maxprob-thr25 (staged)",
             "atlases_dir": str(atlases_dir), "reference_grid": {
                 "shape": list(ref_img.shape[:3]), "affine": ref_img.affine.tolist()},
             "min_vox": args.min_vox, "rung_i_cortical": RUNG_I_CORTICAL,
-            "rung_i_subcortical": RUNG_I_SUBCORTICAL,
+            "rung_i_subcortical": RUNG_I_SUBCORTICAL, "rung_i_control": RUNG_I_CONTROL,
             "vtc_labels": list(ps.PATTERN_CORTICAL_ROIS["VTC"]),
             "subjects_counted": subjects}
     if args.dry_run:

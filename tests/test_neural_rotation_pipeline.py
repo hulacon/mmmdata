@@ -136,7 +136,11 @@ def fit(design, cache_root, roi, pair="enc:ret-word", rung="i", n_perm=20):
     root, _ = design
     run([NR / "fit_pair.py", "--subject", "sub-99", "--rung", rung, "--roi", roi, "--pair", pair,
          "--cache-root", cache_root, "--design-root", root, "--out-root", cache_root,
-         "--n-perm", n_perm, "--n-perm-rot", 3, "--features", "none"])
+         "--n-perm", n_perm, "--n-perm-rot", 3, "--features", "none",
+         # the planted-truth scenarios were calibrated under the original
+         # preselect 0.5 (the null scenario's 20-draw gate and the age-slope CI
+         # both move when every voxel is kept); the production default is 1.0
+         "--preselect", 0.5])
     stem = f"sub-99_rung-{rung}_roi-{roi}_pair-{pair.replace(':', '')}_desc-typed"
     d = cache_root / "fits" / "sub-99"
     return {p.name[len(stem) + 1:-4]: pd.read_csv(p, sep="\t", na_values=["n/a"])
@@ -297,3 +301,47 @@ def test_fit_json_records_inputs(design, tmp_path):
     assert j["args"]["roi"] == "FakeRoi60"
     assert len(j["folds"]) == N_SES
     assert "enc" in j["caches"] and "ret-word" in j["caches"]
+
+
+# ── scoring variants: strata (targets) and foil pools (candidates) ──────────
+
+def test_identify_masks_restrict_targets_and_foils():
+    """target_mask keeps the foil pool; candidate_mask keeps the targets; the
+    target's own true pattern is always compared."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("nr_score", NR / "score.py")
+    sc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sc)
+    rng = np.random.default_rng(0)
+    n, k = 12, 8
+    R_true = rng.standard_normal((n, k))
+    R_hat = R_true + 0.5 * rng.standard_normal((n, k))
+    runs = np.array([0] * 6 + [1] * 6)
+    full = sc.identify(R_hat, R_true, runs)
+    assert full["n_items"] == n and full["n_pairs"] == 2 * 6 * 5
+    tm = np.arange(n) < 6                                   # targets: run 0 only
+    t = sc.identify(R_hat, R_true, runs, target_mask=tm)
+    assert t["n_items"] == 6 and t["n_pairs"] == 6 * 5
+    cm = np.arange(n) % 2 == 0                              # foils: even items only
+    c = sc.identify(R_hat, R_true, runs, candidate_mask=cm)
+    assert c["n_items"] == n and c["n_pairs"] == 2 * (3 * 2 + 3 * 3)   # even targets 2 foils, odd 3
+    v = sc.identify_variants(R_hat, R_true, runs, {"_a": (tm, None), "_b": (None, cm), "_ab": (tm, cm)})
+    assert v["acc_2afc"] == full["acc_2afc"] and v["n_items_a"] == 6 and v["n_pairs"] == full["n_pairs"]
+    assert set(v) >= {"acc_2afc_a", "acc_rank_b", "n_items_ab"}
+    # a foil pool with no candidates for a target leaves that target out
+    only_self = np.zeros(n, bool)
+    e = sc.identify(R_hat, R_true, runs, candidate_mask=only_self)
+    assert e["n_pairs"] == 0 and np.isnan(e["acc_2afc"])
+
+
+def test_fit_writes_variant_columns(design, tmp_path):
+    cache = make_caches(design, tmp_path, "rotation", noise=0.15)
+    t = fit(design, cache, "FakeRoi60", n_perm=5)
+    tc = t["transformation_class"]
+    for s in ("_reCon1", "_reCon2", "_ntf", "_ntf_reCon1", "_ntf_reCon2"):
+        for col in ("acc_2afc", "gain", "n_items", "null_p", "ci_lo", "gate_passed"):
+            assert f"{col}{s}" in tc.columns, f"missing {col}{s}"
+    sel = tc[tc["rank_selected"].astype(bool) & (tc["direction"] == "forward") & (tc["class"] == "procrustes")]
+    # the non-triplet pool has fewer pairs but the same targets
+    assert (sel["n_items_ntf"] == sel["n_items"]).all() if "n_items" in sel else True
+    assert sel["null_p_ntf"].notna().any()

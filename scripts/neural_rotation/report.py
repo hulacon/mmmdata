@@ -19,6 +19,14 @@ Reads every ``*_<table>.tsv`` under ``<in>/fits/sub-*/``; writes to ``<out>``:
   geometry.tsv, delay_slopes.tsv, plane_spectrum.tsv, anchor_drift.tsv,
   anchor_regression.tsv, block_energy.tsv, composition.tsv,
   cue_control.tsv (transformation_class rows of enc:ret-image in HeschlsGyrus)
+  identity_chance.tsv        per cell x direction x variant (all / reCon1 /
+                             reCon2 / ntf = non-triplet foils / ntf_reCon1 /
+                             ntf_reCon2): the identity class's 2AFC against
+                             chance over folds (the plain same>different
+                             test; mean, se, t, p, folds above 0.5)
+
+Cells fitted with reCon strata (2026-09-23 on) carry *_reCon1 / *_reCon2
+columns; class_summary reports them where present, older cells give n/a.
 
 Usage:
     python report.py --in <out_root> --out <dir> [--headline-pair enc:ret-word]
@@ -70,15 +78,84 @@ def class_summary(tc: pd.DataFrame, seed: int) -> pd.DataFrame:
     for k, g in sel.groupby(keys):
         mean, lo, hi = score.fold_ci(g["gain"].to_numpy(), seed=seed)
         p = g["null_p"].dropna()
-        rows.append(dict(zip(keys, k), rank=int(g["rank"].median()), n_folds=len(g),
-                         acc_2afc=g["acc_2afc"].mean(), acc_rank=g["acc_rank"].mean(),
-                         gain=mean, ci_lo=lo, ci_hi=hi, ceiling=g["ceiling"].mean(),
-                         gain_frac_ceiling=score.gain_fraction(mean, g["ceiling"].mean()),
-                         null_p_median=p.median() if len(p) else np.nan,
-                         frac_folds_p05=(p < 0.05).mean() if len(p) else np.nan,
-                         n_vox=g["n_vox"].median(),
-                         gate_passed=bool(lo > 0 and len(p) and p.median() < 0.05)))
+        row = dict(zip(keys, k), rank=int(g["rank"].median()), n_folds=len(g),
+                   acc_2afc=g["acc_2afc"].mean(), acc_rank=g["acc_rank"].mean(),
+                   gain=mean, ci_lo=lo, ci_hi=hi, ceiling=g["ceiling"].mean(),
+                   gain_frac_ceiling=score.gain_fraction(mean, g["ceiling"].mean()),
+                   null_p_median=p.median() if len(p) else np.nan,
+                   frac_folds_p05=(p < 0.05).mean() if len(p) else np.nan,
+                   n_vox=g["n_vox"].median(),
+                   gate_passed=bool(lo > 0 and len(p) and p.median() < 0.05))
+        for s in VARIANTS:
+            if f"gain{s}" not in g or g[f"gain{s}"].isna().all():
+                continue
+            v = g[f"gain{s}"].dropna().to_numpy()
+            m_s, lo_s, hi_s = score.fold_ci(v, seed=seed) if len(v) else (np.nan, np.nan, np.nan)
+            p_s = g[f"null_p{s}"].dropna() if f"null_p{s}" in g else pd.Series(dtype=float)
+            row.update({f"acc_2afc{s}": g[f"acc_2afc{s}"].mean(), f"gain{s}": m_s,
+                        f"ci_lo{s}": lo_s, f"ci_hi{s}": hi_s,
+                        f"null_p_median{s}": p_s.median() if len(p_s) else np.nan,
+                        f"gate_passed{s}": bool(np.isfinite(lo_s) and lo_s > 0 and len(p_s) and p_s.median() < 0.05)})
+        rows.append(row)
     return pd.DataFrame(rows)
+
+
+# scoring variants written by fit_pair (suffix -> label): reCon strata, the
+# non-triplet foil pool, and their crossing; older cells lack some or all
+VARIANTS = ("_reCon1", "_reCon2", "_ntf", "_ntf_reCon1", "_ntf_reCon2")
+
+
+def identity_chance(tc: pd.DataFrame) -> pd.DataFrame:
+    """The identity class against chance, per cell x direction x stratum: the
+    plain same>different item test the gate never runs (the gate compares
+    maps WITH identity). One-sample t over folds at the identity class's
+    nested-CV rank; uncorrected."""
+    from scipy import stats
+    keys = ["subject", "rung", "roi", "pair", "beta_type", "direction"]
+    sel = tc[(tc["class"] == "identity") & tc["rank_selected"].astype(bool)]
+    rows = []
+    for k, g in sel.groupby(keys):
+        for s, col in (("all", "acc_2afc"), *[(s.lstrip("_"), f"acc_2afc{s}") for s in VARIANTS]):
+            if col not in g:
+                continue
+            v = g[col].dropna().to_numpy(float)
+            if len(v) < 2:
+                continue
+            t, p = stats.ttest_1samp(v, 0.5)
+            rows.append(dict(zip(keys, k), stratum=s, rank=int(g["rank"].median()), n_folds=len(v),
+                             n_items=g[f"n_items_{s}"].sum() if s != "all" and f"n_items_{s}" in g else g["n_test_items"].sum(),
+                             acc_2afc=v.mean(), se=v.std(ddof=1) / np.sqrt(len(v)), t=t, p=p,
+                             folds_above=int((v > 0.5).sum()), n_vox=g["n_vox"].median()))
+    return pd.DataFrame(rows)
+
+
+def spec_identity_chance(headline_pair: str) -> dict:
+    return {
+        "$schema": "https://vega.github.io/schema/vega-lite/v6.json",
+        "title": f"Identity (same > different item) against chance, {headline_pair}, forward, by reCon stratum",
+        "usermeta": _meta("folds", "Mean held-out run-matched 2AFC of the identity map over folds, "
+                                   "+- stderr; chance 0.5. reCon1 = retrieved in the encoding session, "
+                                   "reCon2 = a later session; candidates are shared across strata. "
+                                   "Filled = uncorrected fold-wise p < .05."),
+        "transform": [{"filter": f"datum.pair == '{headline_pair}' && datum.direction == 'forward'"},
+                      {"calculate": "datum.acc_2afc - datum.se", "as": "lo"},
+                      {"calculate": "datum.acc_2afc + datum.se", "as": "hi"}],
+        "facet": {"column": {"field": "subject", "type": "nominal"}},
+        "spec": {"width": 240, "height": {"step": 12},
+                 "layer": [
+                     {"mark": {"type": "rule", "strokeDash": [4, 4]}, "encoding": {"x": {"datum": 0.5}}},
+                     {"mark": {"type": "errorbar"},
+                      "encoding": {"y": {"field": "roi", "type": "nominal", "sort": {"field": "rung"}},
+                                   "x": {"field": "lo", "type": "quantitative", "title": "2AFC"},
+                                   "x2": {"field": "hi"}, "color": {"field": "stratum", "type": "nominal"}}},
+                     {"mark": {"type": "point", "filled": True, "size": 40},
+                      "encoding": {"y": {"field": "roi", "type": "nominal"},
+                                   "x": {"field": "acc_2afc", "type": "quantitative"},
+                                   "color": {"field": "stratum", "type": "nominal"},
+                                   "opacity": {"condition": {"test": "datum.p < 0.05", "value": 1}, "value": 0.35},
+                                   "tooltip": [{"field": "roi"}, {"field": "stratum"},
+                                               {"field": "acc_2afc", "format": ".3f"}, {"field": "p", "format": ".3f"},
+                                               {"field": "n_items"}]}}]}}
 
 
 def class_winners(cs: pd.DataFrame) -> pd.DataFrame:
@@ -345,6 +422,7 @@ SPECS = {
     "geometry": spec_geometry,
     "composition": lambda pair: spec_composition(),
     "block_energy": spec_block_energy,
+    "identity_chance": spec_identity_chance,
 }
 
 
@@ -369,6 +447,7 @@ def main():
         cw = class_winners(cs)
         tables["class_summary"], tables["class_winners"], tables["class_verdict"] = cs, cw, class_verdict(cw)
         tables["rank_sweep"] = rank_sweep(tc)
+        tables["identity_chance"] = identity_chance(tc)
         tables["cue_control"] = tc[(tc["pair"] == CUE_CONTROL_PAIR) & (tc["roi"] == CUE_CONTROL_ROI)]
     if not tables["rotation_metrics"].empty:
         tables["rotation_summary"] = rotation_summary(tables["rotation_metrics"], cs)

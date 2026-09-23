@@ -25,7 +25,11 @@
 #
 # Usage:
 #   python make_cells.py --subjects sub-03 --out cells_sub03.tsv
-#   sbatch --array=1-$(wc -l < cells_sub03.tsv) fit_ladder.sbatch cells_sub03.tsv
+#   sbatch --array=1-$(wc -l < cells_sub03.tsv) fit_ladder.sbatch cells_sub03.tsv \
+#       --k-max 200 --out-root ${OUTPUT_DIR}/neural_rotation/<pass>
+# A pass = one (preselect, k-max) setting; give each its own --out-root so
+# report.py reads one pass at a time (the 2026-09-22 preselect-0.5 pass sits
+# at the tree root).
 #==============================================================================
 
 CELLS=$1; shift

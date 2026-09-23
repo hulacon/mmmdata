@@ -27,7 +27,8 @@ def _row_corr_matrix(A: np.ndarray, B: np.ndarray) -> np.ndarray:
     return A @ B.T
 
 
-def identify(R_hat: np.ndarray, R_true: np.ndarray, run_ids) -> dict:
+def identify(R_hat: np.ndarray, R_true: np.ndarray, run_ids, target_mask=None,
+             candidate_mask=None) -> dict:
     """Run-matched identification of held-out items.
 
     For each test item i the candidates are the test items retrieved in the
@@ -35,12 +36,24 @@ def identify(R_hat: np.ndarray, R_true: np.ndarray, run_ids) -> dict:
     [corr(r_hat_i, r_i) > corr(r_hat_i, r_j)]; acc_rank = fraction of items
     whose true pattern ranks first among its run's candidates. Items alone
     in their run contribute nothing. Returns both plus n_items, n_pairs.
+
+    ``target_mask`` (n_items,) bool restricts the TARGETS i to a stratum
+    (e.g. items retrieved in their encoding session); the candidates j stay
+    every same-run test item, so strata are scored against one pool.
+    ``candidate_mask`` (n_items,) bool restricts the FOILS j (e.g. to
+    non-triplet items: an ABC triplet's encoding carries its sequence-mates'
+    autocorrelated signal, so a mate is a privileged foil); the target's own
+    true pattern is always compared, whatever the mask says.
     """
     run_ids = np.asarray(run_ids)
     C = _row_corr_matrix(R_hat, R_true)
     d = np.diag(C)
     same = run_ids[:, None] == run_ids[None, :]
     np.fill_diagonal(same, False)
+    if target_mask is not None:
+        same = same & np.asarray(target_mask, dtype=bool)[:, None]
+    if candidate_mask is not None:
+        same = same & np.asarray(candidate_mask, dtype=bool)[None, :]
     wins = (d[:, None] > C) & same
     n_pairs = int(same.sum())
     n_cand = same.sum(axis=1)
@@ -50,6 +63,25 @@ def identify(R_hat: np.ndarray, R_true: np.ndarray, run_ids) -> dict:
     acc_rank = float(first.sum() / has.sum()) if has.any() else float("nan")
     return {"acc_2afc": acc_2afc, "acc_rank": acc_rank,
             "n_items": int(has.sum()), "n_pairs": n_pairs}
+
+
+def identify_variants(R_hat: np.ndarray, R_true: np.ndarray, run_ids, variants: dict) -> dict:
+    """identify() over all targets and all foils, plus one entry set per
+    variant: ``acc_2afc<suffix>``, ``acc_rank<suffix>``, ``n_items<suffix>``
+    for ``variants[suffix] = (target_mask | None, candidate_mask | None)``.
+    Suffixes start with an underscore (``_reCon1``, ``_ntf``, ``_ntf_reCon1``)."""
+    out = identify(R_hat, R_true, run_ids)
+    for suffix, (tm, cm) in variants.items():
+        s = identify(R_hat, R_true, run_ids, target_mask=tm, candidate_mask=cm)
+        out[f"acc_2afc{suffix}"] = s["acc_2afc"]
+        out[f"acc_rank{suffix}"] = s["acc_rank"]
+        out[f"n_items{suffix}"] = s["n_items"]
+    return out
+
+
+def identify_strata(R_hat: np.ndarray, R_true: np.ndarray, run_ids, strata: dict) -> dict:
+    """Back-compatible: strata = {name: target_mask} -> ``*_<name>`` keys."""
+    return identify_variants(R_hat, R_true, run_ids, {f"_{k}": (m, None) for k, m in strata.items()})
 
 
 def encoding_ceiling(A: np.ndarray, B: np.ndarray, run_ids_A) -> dict:

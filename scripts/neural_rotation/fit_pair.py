@@ -11,8 +11,14 @@ Per cell, over the leave-one-retrieval-session-out folds of the design
 table (design.py):
 
   1. voxels cleaned by the settled rule (basis.clean_voxels), then, inside
-     each training fold, preselected by encoding split-half reliability
-     (top --preselect fraction per block) and block-normalised;
+     each training fold, optionally preselected by encoding split-half
+     reliability (top --preselect fraction per block; the default 1.0 keeps
+     every voxel -- 0.5 dropped the word-cued signal, log 2026-09-23) and
+     block-normalised; every identification score is also reported per
+     reCon stratum (reCon1 = retrieved in the encoding session, reCon2 =
+     later; targets restricted, candidates shared: *_reCon1 / *_reCon2)
+     and against the non-triplet foil pool (*_ntf: foils with enCon != 3,
+     for every target), and their crossing (*_ntf_reCon1 / *_ntf_reCon2);
   2. a shared PCA basis of the stacked training patterns; every rank of the
      grid is scored on the held-out fold (the rank sweep), and the headline
      rank per class is picked by nested CV inside training (basis fixed);
@@ -42,7 +48,7 @@ Outputs, long format, under ``<out_root>/fits/<sub>/`` with the stem
 
 Usage:
     python fit_pair.py --subject sub-## --rung i --roi IntracalcarineCortex \\
-        --pair enc:ret-word [--beta-type D] [--preselect 0.5] [--n-perm 200]
+        --pair enc:ret-word [--beta-type D] [--preselect 1.0] [--n-perm 200]
 """
 
 from __future__ import annotations
@@ -183,6 +189,29 @@ def phase_matrix(arm: dict, items: np.ndarray, phase: str):
     return X, runs, n
 
 
+def recon_strata(info: pd.DataFrame, items: np.ndarray) -> dict:
+    """{"reCon1": mask, "reCon2": mask} over ``items`` from the retrieval
+    phase's reCon (1 = retrieved in the encoding session, 2 = a later one).
+    Both retrievals of an item share a session, so it is a per-item fact."""
+    rc = info.loc[items, "reCon"].to_numpy(float)
+    return {"reCon1": rc == 1, "reCon2": rc == 2}
+
+
+VARIANT_SUFFIXES = ("_reCon1", "_reCon2", "_ntf", "_ntf_reCon1", "_ntf_reCon2")
+
+
+def score_variants(info: pd.DataFrame, items: np.ndarray) -> dict:
+    """{suffix: (target_mask, candidate_mask)} over ``items``: the reCon strata
+    (targets restricted, foils shared) and the non-triplet-foil pool ``_ntf``
+    (foils restricted to enCon != 3 for EVERY target, so 2AFC stays comparable
+    across targets; DECIDED Ben 2026-09-23: a triplet's sequence-mates are
+    privileged foils through encoding autocorrelation), and their crossing."""
+    rc = info.loc[items, "reCon"].to_numpy(float)
+    ntf = info.loc[items, "enCon"].to_numpy(float) != 3
+    return {"_reCon1": (rc == 1, None), "_reCon2": (rc == 2, None), "_ntf": (None, ntf),
+            "_ntf_reCon1": (rc == 1, ntf), "_ntf_reCon2": (rc == 2, ntf)}
+
+
 # ── one fold ─────────────────────────────────────────────────────────────────
 
 def fit_classes(k, W, En, Rn, Ev, F_tr, seed, with_features, F_te=None,
@@ -251,6 +280,7 @@ def run_fold(f, items, folds, E, R, runs_E, runs_R, enc_arm, F, blocks_vox, args
     if te.sum() < MIN_TEST_ITEMS:
         return
     seed = args.seed + f
+    variants = score_variants(ctx["info"], items[te])
     # reliability preselection on training three-exposure items, per block
     t_enc = enc_arm["trials"]
     ids_enc = t_enc["mmmId"].astype(int).to_numpy()
@@ -289,19 +319,23 @@ def run_fold(f, items, folds, E, R, runs_E, runs_R, enc_arm, F, blocks_vox, args
         fwd = fit_classes(k, W, En, Rn, Ev, F_tr, seed, with_f, F_te=F_te)
         rev = fit_classes(k, W, Rn, En, Rv, None, seed, False)
         fitted_by_k[k] = {n: o for n, (o, _) in fwd.items()}
-        id_fwd = score.identify(fwd["identity"][1], Rv @ Wk, runs_R[te])["acc_2afc"]
-        id_rev = score.identify(rev["identity"][1], Ev @ Wk, runs_E[te])["acc_2afc"]
+        id_fwd = score.identify_variants(fwd["identity"][1], Rv @ Wk, runs_R[te], variants)
+        id_rev = score.identify_variants(rev["identity"][1], Ev @ Wk, runs_E[te], variants)
         for direction, fitted, truth, runs, id_acc in (
                 ("forward", fwd, Rv @ Wk, runs_R[te], id_fwd),
                 ("reverse", rev, Ev @ Wk, runs_E[te], id_rev)):
             for name, (obj, R_hat) in fitted.items():
-                sc = score.identify(R_hat, truth, runs)
-                gain = sc["acc_2afc"] - id_acc
+                sc = score.identify_variants(R_hat, truth, runs, variants)
+                gain = sc["acc_2afc"] - id_acc["acc_2afc"]
                 row = dict(base, direction=direction, **{"class": name},
                            det_sign=getattr(obj, "det_sign", "n/a"), rank=k, rank_selected=False,
                            n_params=obj.n_params, acc_2afc=sc["acc_2afc"], acc_rank=sc["acc_rank"],
                            n_pairs=sc["n_pairs"], gain=gain, ceiling=ceil,
                            gain_frac_ceiling=score.gain_fraction(gain, ceil, CHANCE))
+                for s in variants:        # reCon strata x foil pools (see score_variants)
+                    row[f"acc_2afc{s}"] = sc[f"acc_2afc{s}"]
+                    row[f"n_items{s}"] = sc[f"n_items{s}"]
+                    row[f"gain{s}"] = sc[f"acc_2afc{s}"] - id_acc[f"acc_2afc{s}"]
                 ctx["class_rows"].append(row)
                 rows_by[(direction, name, k)] = row
         ctx["geometry_rows"].append(dict(
@@ -330,11 +364,14 @@ def run_fold(f, items, folds, E, R, runs_E, runs_R, enc_arm, F, blocks_vox, args
             perm = score.permute_within_run(rng, runs_R[tr])
             fitted = fit_classes(k, W, En, Rn[perm], Ev, F_tr, seed, with_f,
                                  pinned=fitted_by_k[k], only={name})
-            nulls.append(score.identify(fitted[name][1], Rv @ Wk, runs_R[te])["acc_2afc"])
+            nulls.append(score.identify_variants(fitted[name][1], Rv @ Wk, runs_R[te], variants))
+        all_ = [n["acc_2afc"] for n in nulls]
         obs["null_n"] = len(nulls)
-        obs["null_p"] = score.null_p(obs["acc_2afc"], nulls)
-        obs["null_mean"] = float(np.mean(nulls)) if nulls else float("nan")
-        obs["null_q95"] = float(np.quantile(nulls, 0.95)) if nulls else float("nan")
+        obs["null_p"] = score.null_p(obs["acc_2afc"], all_)
+        obs["null_mean"] = float(np.mean(all_)) if nulls else float("nan")
+        obs["null_q95"] = float(np.quantile(all_, 0.95)) if nulls else float("nan")
+        for s in variants:
+            obs[f"null_p{s}"] = score.null_p(obs[f"acc_2afc{s}"], [n[f"acc_2afc{s}"] for n in nulls])
 
     # rotation metric of the orthogonal map at its chosen rank
     k = chosen["procrustes"]
@@ -474,6 +511,7 @@ def composition(items, folds, X: dict, runs: dict, enc_arm, blocks_vox, args, ct
         tr, te = folds != f, folds == f
         if te.sum() < MIN_TEST_ITEMS:
             continue
+        variants = score_variants(ctx["info"], items[te])
         rel = basis.split_half_reliability(enc_arm["P"], ids_enc, t_enc["exposure"].to_numpy(), items[tr])
         keep = basis.preselect(rel, args.preselect, blocks_vox)
         # one normaliser over the three phases: centre each, scale jointly
@@ -491,16 +529,21 @@ def composition(items, folds, X: dict, runs: dict, enc_arm, blocks_vox, args, ct
             q1 = maps.OrthogonalProcrustes().fit(E[tr], Rw[tr])
             q2 = maps.OrthogonalProcrustes().fit(Rw[tr], Ri[tr])
             q3 = maps.OrthogonalProcrustes().fit(E[tr], Ri[tr])
-            direct = score.identify(E[te] @ q3.Q, Ri[te], runs["ret-image"][te])["acc_2afc"]
-            composed = score.identify(E[te] @ q1.Q @ q2.Q, Ri[te], runs["ret-image"][te])["acc_2afc"]
-            ident = score.identify(E[te], Ri[te], runs["ret-image"][te])["acc_2afc"]
+            sd = score.identify_variants(E[te] @ q3.Q, Ri[te], runs["ret-image"][te], variants)
+            sc = score.identify_variants(E[te] @ q1.Q @ q2.Q, Ri[te], runs["ret-image"][te], variants)
+            si = score.identify_variants(E[te], Ri[te], runs["ret-image"][te], variants)
             consistency = float(np.linalg.norm(q1.Q @ q2.Q - q3.Q) / np.sqrt(k))
-            ctx["composition_rows"].append(dict(
+            row = dict(
                 subject=args.subject, rung=args.rung, roi=args.roi, pair=args.pair,
                 beta_type=args.beta_type, fold=int(f), rank=k, n_test_items=int(te.sum()),
-                n_vox=int(keep.sum()), acc_identity=ident, acc_direct=direct,
-                acc_composed=composed, shortfall=direct - composed,
-                map_inconsistency=consistency))
+                n_vox=int(keep.sum()), acc_identity=si["acc_2afc"], acc_direct=sd["acc_2afc"],
+                acc_composed=sc["acc_2afc"], shortfall=sd["acc_2afc"] - sc["acc_2afc"],
+                map_inconsistency=consistency)
+            for s in variants:
+                row[f"acc_identity{s}"], row[f"acc_direct{s}"], row[f"acc_composed{s}"] = (
+                    si[f"acc_2afc{s}"], sd[f"acc_2afc{s}"], sc[f"acc_2afc{s}"])
+                row[f"shortfall{s}"] = sd[f"acc_2afc{s}"] - sc[f"acc_2afc{s}"]
+            ctx["composition_rows"].append(row)
 
 
 # ── checkpoint (a fold at a time, so a wall-time kill loses one fold) ────────
@@ -557,15 +600,24 @@ def write_tables(out_dir: Path, stem: str, ctx: dict, args, t0: float) -> None:
             continue
         df = pd.DataFrame(rows)
         if name == "transformation_class":
-            for col in ("null_p", "null_mean", "null_q95", "null_n"):
+            for col in ["null_p", "null_mean", "null_q95", "null_n"] + [f"null_p{s}" for s in VARIANT_SUFFIXES]:
                 if col not in df:
                     df[col] = np.nan
-            # fold CIs of gain per (direction, class, rank) -> ci_lo / ci_hi on every row
-            g = df.groupby(["direction", "class", "rank"])["gain"]
-            ci = g.apply(lambda v: pd.Series(score.fold_ci(v.to_numpy(), seed=args.seed)[1:], index=["ci_lo", "ci_hi"]))
-            ci = ci.unstack() if isinstance(ci, pd.Series) else ci
-            df = df.merge(ci.reset_index(), on=["direction", "class", "rank"], how="left")
+            # fold CIs of gain per (direction, class, rank) -> ci_lo / ci_hi on every row,
+            # and the same per variant (ci_lo_reCon1, ci_lo_ntf, ...)
+            for suffix in ("",) + VARIANT_SUFFIXES:
+                gcol = f"gain{suffix}"
+                if gcol not in df:
+                    continue
+                g = df.groupby(["direction", "class", "rank"])[gcol]
+                ci = g.apply(lambda v: pd.Series(score.fold_ci(v.to_numpy(), seed=args.seed)[1:],
+                                                 index=[f"ci_lo{suffix}", f"ci_hi{suffix}"]))
+                ci = ci.unstack() if isinstance(ci, pd.Series) else ci
+                df = df.merge(ci.reset_index(), on=["direction", "class", "rank"], how="left")
             df["gate_passed"] = (df["null_p"] < 0.05) & (df["gain"] > 0)
+            for s in VARIANT_SUFFIXES:
+                if f"gain{s}" in df:
+                    df[f"gate_passed{s}"] = (df[f"null_p{s}"] < 0.05) & (df[f"gain{s}"] > 0)
         p = out_dir / f"{stem}_{name}.tsv"
         df.to_csv(p, sep="\t", index=False, na_rep="n/a", float_format="%.6g")
         written.append(p.name)
@@ -584,8 +636,9 @@ def main():
     ap.add_argument("--pair", required=True,
                     help="enc:ret-word | enc:ret-image | ret-word:ret-image | enc:ret-word:ret-image")
     ap.add_argument("--beta-type", default="D", choices=["B", "C", "D"])
-    ap.add_argument("--preselect", type=float, default=0.5,
-                    help="fraction of voxels kept per block by encoding reliability (1.0 = plain PCA)")
+    ap.add_argument("--preselect", type=float, default=1.0,
+                    help="fraction of voxels kept per block by encoding reliability (1.0 = plain PCA, "
+                         "the default since 2026-09-23: 0.5 dropped the word-cued signal in mPFC/AG)")
     ap.add_argument("--k-max", type=int, default=None, help="cap on the basis dimension ('full')")
     ap.add_argument("--n-perm", type=int, default=200, help="identity-permutation null draws")
     ap.add_argument("--n-perm-rot", type=int, default=50, help="item-permuted null draws for the rotation metric")
