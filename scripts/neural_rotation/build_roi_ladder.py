@@ -14,7 +14,11 @@ grid (the GLMsingle fit grid):
   rung ii   VTC (Ye et al. 2020: inferior temporal, parahippocampal, temporal
             fusiform) and VTC + angular gyrus
   rung iii  the union of every rung-(i) ROI ("Posterior"), plus a dseg volume
-            carrying each voxel's rung-(i) ROI index for block bookkeeping
+            carrying each voxel's rung-(i) ROI index for block bookkeeping;
+            plus the remapping-vs-capacity controls: random size-matched
+            subsets of Posterior (RandUnion<size>S<seed>), so a union rung's
+            gain can be read against "the same number of voxels with no
+            anatomical structure"
 
 Rung (iv), the pRF-defined populations, is build_prf_masks.py.
 
@@ -89,6 +93,12 @@ RUNG_I_SUBCORTICAL = {"hippocampus": [9, 19]}
 # definition (pattern_similarity PATTERN_CORTICAL_ROIS), added 2026-09-23 so
 # the pilot reads the benchmark's one enc<->word cell.
 RUNG_I_CONTROL = {"frontal": [25]}
+# Remapping-vs-capacity controls (DECIDED Ben 2026-09-24): uniform random
+# subsets of the Posterior union, sizes matched to the union ROIs of sub-03
+# (VTCAG 10,630; PrfPosThr2p5 33,637; PrfUnionThr2p5 58,535), two seeds each.
+RANDOM_UNIONS = {"10k": 10630, "33k": 33637, "58k": 58535}
+RANDOM_SEEDS = (0, 1)
+RANDOM_NOTE = "random size-matched subset of Posterior (remapping-vs-capacity control); no blocks"
 CONTROL_NOTE = "control ROI outside the stated lobes; fitted alone, NOT in the Posterior union"
 EDGE_NOTE = "edge of the stated lobes; prune on Ben's call"
 EDGE_LABELS = {17, 43, 44, 46}
@@ -199,6 +209,15 @@ def build_ladder(atlases: dict, min_vox: int, brain: dict):
     add("iii", "Posterior", "HOCPA+HOSPA", ["rung-i"], rung_i, posterior,
         f"union of every rung-(i) ROI except the control ROIs; {n_overlap} voxels in two ROIs "
         "(subcortical vs cortical atlas) carry the cortical block in the dseg", in_posterior=False)
+    post_idx = np.flatnonzero(posterior.ravel(order="C"))
+    for tag, n in RANDOM_UNIONS.items():
+        for seed in RANDOM_SEEDS:
+            rng = np.random.default_rng(20260924 + 1000 * seed + n)
+            pick = rng.choice(post_idx, size=min(n, len(post_idx)), replace=False)
+            m = np.zeros(posterior.size, dtype=bool)
+            m[pick] = True
+            add("iii", f"RandUnion{tag}S{seed}", "HOCPA+HOSPA", ["random"], [f"{n} of Posterior, seed {seed}"],
+                m.reshape(posterior.shape, order="C"), RANDOM_NOTE, in_posterior=False)
     return rows, masks, dseg, block_rows
 
 
@@ -276,6 +295,7 @@ def main():
                 "shape": list(ref_img.shape[:3]), "affine": ref_img.affine.tolist()},
             "min_vox": args.min_vox, "rung_i_cortical": RUNG_I_CORTICAL,
             "rung_i_subcortical": RUNG_I_SUBCORTICAL, "rung_i_control": RUNG_I_CONTROL,
+            "random_unions": RANDOM_UNIONS, "random_seeds": list(RANDOM_SEEDS),
             "vtc_labels": list(ps.PATTERN_CORTICAL_ROIS["VTC"]),
             "subjects_counted": subjects}
     if args.dry_run:
