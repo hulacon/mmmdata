@@ -68,9 +68,16 @@ def reference_config(regime: str = "reference", *, calibrated: bool = False, **o
     regimes = spec["confound_regimes"]
     if regime not in regimes:
         raise KeyError(f"Unknown confound regime {regime!r}; the reference spec has {sorted(regimes)}")
+    entry = regimes[regime]
+    if entry.get("drift", "cosine") != "cosine":
+        raise ValueError(
+            f"Confound regime {regime!r} declares drift={entry.get('drift')!r}, which GlmConfig "
+            "cannot express (it relies on fMRIPrep's cosine columns). Such regimes are for the "
+            "data-quality cleaner (neuroimaging.confounds.regime_design), not the reference GLM."
+        )
     fields = dict(spec["config"])
-    fields["confounds"] = tuple(regimes[regime]["confounds"])
-    fields["acompcor_n"] = int(regimes[regime]["acompcor_n"])
+    fields["confounds"] = tuple(entry["confounds"])
+    fields["acompcor_n"] = int(entry["acompcor_n"])
     if calibrated:
         fields["noise_model"] = spec["estimation"]["calibrated_noise_model"]
     return dataclasses.replace(GlmConfig(**fields), **overrides)

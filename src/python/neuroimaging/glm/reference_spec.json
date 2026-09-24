@@ -79,6 +79,125 @@
       ],
       "acompcor_n": 6,
       "description": "Six rigid-body motion parameters plus the first six aCompCor components (fMRIPrep's combined WM+CSF mask, in fMRIPrep's variance order); cosines and non-steady-state spikes ride along via config."
+    },
+    "none": {
+      "status": "defined",
+      "confounds": [],
+      "acompcor_n": 0,
+      "drift": "none",
+      "description": "Intercept only: the raw floor every other regime is read against (data-quality DECIDED 2026-09-24). Not a GLM regime: reference_config() refuses it because it carries no drift model."
+    },
+    "drift": {
+      "status": "defined",
+      "confounds": [],
+      "acompcor_n": 0,
+      "drift": "polynomial",
+      "drift_order": 2,
+      "description": "Linear + quadratic drift only: the no-regression reference of the data-quality collection."
+    },
+    "base": {
+      "status": "provisional",
+      "confounds": [
+        "trans_x",
+        "trans_y",
+        "trans_z",
+        "rot_x",
+        "rot_y",
+        "rot_z",
+        "trans_x_derivative1",
+        "trans_y_derivative1",
+        "trans_z_derivative1",
+        "rot_x_derivative1",
+        "rot_y_derivative1",
+        "rot_z_derivative1",
+        "framewise_displacement"
+      ],
+      "acompcor_n": 0,
+      "drift": "polynomial",
+      "drift_order": 2,
+      "description": "12 motion (6 + first derivatives) + framewise displacement + linear + quadratic drift.",
+      "source": "colleague's initial QC (slides 'MMM Data Cleaning Regimes', 2026-09-16); provisional until the global-signal column and lead-in handling are confirmed (data-quality charter, 2026-09-23)"
+    },
+    "basecsfwm": {
+      "status": "provisional",
+      "confounds": [
+        "trans_x",
+        "trans_y",
+        "trans_z",
+        "rot_x",
+        "rot_y",
+        "rot_z",
+        "trans_x_derivative1",
+        "trans_y_derivative1",
+        "trans_z_derivative1",
+        "rot_x_derivative1",
+        "rot_y_derivative1",
+        "rot_z_derivative1",
+        "framewise_displacement",
+        "csf",
+        "white_matter"
+      ],
+      "acompcor_n": 0,
+      "drift": "polynomial",
+      "drift_order": 2,
+      "description": "base + mean CSF + mean white matter.",
+      "source": "colleague's initial QC (slides 'MMM Data Cleaning Regimes', 2026-09-16); provisional until the global-signal column and lead-in handling are confirmed (data-quality charter, 2026-09-23)"
+    },
+    "baseacc6": {
+      "status": "provisional",
+      "confounds": [
+        "trans_x",
+        "trans_y",
+        "trans_z",
+        "rot_x",
+        "rot_y",
+        "rot_z",
+        "trans_x_derivative1",
+        "trans_y_derivative1",
+        "trans_z_derivative1",
+        "rot_x_derivative1",
+        "rot_y_derivative1",
+        "rot_z_derivative1",
+        "framewise_displacement"
+      ],
+      "acompcor_n": 6,
+      "drift": "polynomial",
+      "drift_order": 2,
+      "description": "base + first 6 aCompCor components (fMRIPrep's combined WM+CSF mask; the only mask fMRIPrep 25.2.5 writes a_comp_cor_* from).",
+      "source": "colleague's initial QC (slides 'MMM Data Cleaning Regimes', 2026-09-16); provisional until the global-signal column and lead-in handling are confirmed (data-quality charter, 2026-09-23)"
+    },
+    "baseacc20": {
+      "status": "provisional",
+      "confounds": [
+        "trans_x",
+        "trans_y",
+        "trans_z",
+        "rot_x",
+        "rot_y",
+        "rot_z",
+        "trans_x_derivative1",
+        "trans_y_derivative1",
+        "trans_z_derivative1",
+        "rot_x_derivative1",
+        "rot_y_derivative1",
+        "rot_z_derivative1",
+        "framewise_displacement"
+      ],
+      "acompcor_n": 20,
+      "drift": "polynomial",
+      "drift_order": 2,
+      "description": "base + first 20 aCompCor components.",
+      "source": "colleague's initial QC (slides 'MMM Data Cleaning Regimes', 2026-09-16); provisional until the global-signal column and lead-in handling are confirmed (data-quality charter, 2026-09-23)"
+    },
+    "gsr": {
+      "status": "provisional",
+      "confounds": [
+        "global_signal"
+      ],
+      "acompcor_n": 0,
+      "drift": "none",
+      "description": "Global signal alone, no motion, no drift (the colleague's wording: 'just global signal on its own'). Whether it is fMRIPrep's global_signal column is unconfirmed.",
+      "source": "colleague's initial QC (slides 'MMM Data Cleaning Regimes', 2026-09-16); provisional until the global-signal column and lead-in handling are confirmed (data-quality charter, 2026-09-23)"
     }
   },
   "sha256": "af8965e68db1e827"
