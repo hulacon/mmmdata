@@ -125,11 +125,17 @@ def tree(tmp_path):
     return {"bids": bids, "fmriprep": fp, "atlases": atlases, "run": run, "conf": conf, "mask": mask}
 
 
+_TIER1 = None
+
+
 def _tier1():
-    spec = importlib.util.spec_from_file_location("tier1", REPO / "scripts" / "data_quality" / "tier1.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    """The driver module, loaded once: re-executing it must not touch sys.path again."""
+    global _TIER1
+    if _TIER1 is None:
+        spec = importlib.util.spec_from_file_location("tier1", REPO / "scripts" / "data_quality" / "tier1.py")
+        _TIER1 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_TIER1)
+    return _TIER1
 
 
 def _argv(tree, *rest):

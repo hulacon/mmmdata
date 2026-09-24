@@ -35,7 +35,8 @@ from pathlib import Path
 from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT / "src" / "python"))
+if str(REPO_ROOT / "src" / "python") not in sys.path:  # idempotent: tests import this module repeatedly
+    sys.path.insert(0, str(REPO_ROOT / "src" / "python"))
 
 from core.config import load_config  # noqa: E402
 from neuroimaging import data_quality as dq  # noqa: E402
