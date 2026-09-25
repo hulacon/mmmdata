@@ -105,7 +105,7 @@ def test_full_fit_writes_contract_a_named_maps_and_description(tree):
     z = nib.load(str(fx)).get_fdata()
     assert z[0:2, 0:2, 0:2].mean() > 3.0
     assert abs(z[3:, 3:, 3:].mean()) < 1.5
-    meta = json.loads((func / "sub-aa_task-motor_model-motor_run_metadata.json").read_text())
+    meta = json.loads((func / f"sub-aa_task-motor_space-{SPACE}_model-motor_run_metadata.json").read_text())
     assert meta["estimator"] == "nilearn" and len(meta["runs"]) == 2
     assert meta["config"]["space"] == SPACE
     # Defaults are the frozen reference: OLS, unsmoothed, motion + 6 aCompCor.
@@ -126,3 +126,64 @@ def test_split_design_guard_reaches_the_cli(tree):
         find_fmriprep_runs(task="motor", bids_root=tree)
     assert glm_contrast_maps.main(["--subject", "bb", "--model", "motor", "--dry-run",
                                    "--bids-root", str(tree)]) == 0
+
+
+N_VERT = {"L": 30, "R": 24}
+
+
+def _seed_surface(root: Path, sub: str, ses: str, runs=("01", "02")):
+    """fsnative BOLD GIfTIs beside the volume runs, plus the subject's midthickness mesh."""
+    rng = np.random.default_rng(7)
+    anat = root / "derivatives" / "fmriprep" / f"sub-{sub}" / "anat"
+    anat.mkdir(parents=True, exist_ok=True)
+    for hemi, n in N_VERT.items():
+        coords = nib.gifti.GiftiDataArray(rng.normal(size=(n, 3)).astype(np.float32), intent="NIFTI_INTENT_POINTSET")
+        faces = nib.gifti.GiftiDataArray(np.array([[i, i + 1, i + 2] for i in range(n - 2)], dtype=np.int32),
+                                         intent="NIFTI_INTENT_TRIANGLE")
+        nib.save(nib.gifti.GiftiImage(darrays=[coords, faces]),
+                 str(anat / f"sub-{sub}_acq-X_hemi-{hemi}_midthickness.surf.gii"))
+    block = np.zeros(N_SCANS)
+    for start in (0.0, 100.0, 200.0):
+        block[int(start / TR) : int((start + 20) / TR)] = 1.0
+    fp = root / "derivatives" / "fmriprep" / f"sub-{sub}" / f"ses-{ses}" / "func"
+    for run in runs:
+        for hemi, n in N_VERT.items():
+            data = rng.normal(loc=100.0, scale=1.0, size=(n, N_SCANS)).astype(np.float32)
+            data[:5] += 3.0 * block  # hand-responsive vertices
+            data[-2:] = 0.0  # medial-wall-like: no signal, must be masked out
+            darrays = [nib.gifti.GiftiDataArray(data[:, t]) for t in range(N_SCANS)]
+            nib.save(nib.gifti.GiftiImage(darrays=darrays),
+                     str(fp / f"sub-{sub}_ses-{ses}_task-motor_run-{run}_hemi-{hemi}_space-fsnative_bold.func.gii"))
+
+
+def test_fsnative_fit_writes_hemisphere_gifti_maps(tree):
+    pytest.importorskip("nilearn")
+    _seed_surface(tree, "aa", "30")
+    rc = glm_contrast_maps.main(["--subject", "aa", "--model", "motor", "--space", "fsnative",
+                                 "--noise-model", "ar1", "--output-tree", "glm_reference_ar1",
+                                 "--bids-root", str(tree)])
+    assert rc == 0
+    func = tree / "derivatives" / "glm_reference_ar1" / "sub-aa" / "ses-30" / "func"
+    for hemi, n in N_VERT.items():
+        z = nib.load(str(func / f"sub-aa_ses-30_task-motor_hemi-{hemi}_space-fsnative_"
+                                "contrast-handVsRest_stat-z_statmap.func.gii")).darrays[0].data
+        assert z.shape == (n,) and z.dtype == np.float32
+        assert z[:5].mean() > 3.0 and abs(z[5:-2].mean()) < 1.5
+        assert np.all(z[-2:] == 0)  # masked vertices carry no estimate
+    meta = json.loads((func / "sub-aa_task-motor_space-fsnative_model-motor_run_metadata.json").read_text())
+    assert meta["config"]["space"] == "fsnative" and set(meta["surface_mesh"]) == {"L", "R"}
+    # The volume fit's metadata in the same directory is not overwritten.
+    glm_contrast_maps.main(["--subject", "aa", "--model", "motor", "--noise-model", "ar1",
+                            "--output-tree", "glm_reference_ar1", "--bids-root", str(tree)])
+    assert (func / f"sub-aa_task-motor_space-{SPACE}_model-motor_run_metadata.json").exists()
+    assert (func / "sub-aa_task-motor_space-fsnative_model-motor_run_metadata.json").exists()
+
+
+def test_fsnative_without_a_mesh_is_a_named_error(tree):
+    fp = tree / "derivatives" / "fmriprep" / "sub-aa" / "ses-30" / "func"
+    for run in ("01", "02"):
+        for hemi in N_VERT:
+            (fp / f"sub-aa_ses-30_task-motor_run-{run}_hemi-{hemi}_space-fsnative_bold.func.gii").write_text("")
+    with pytest.raises(SystemExit, match="midthickness"):
+        glm_contrast_maps.main(["--subject", "aa", "--model", "motor", "--space", "fsnative", "--dry-run",
+                                "--bids-root", str(tree)])

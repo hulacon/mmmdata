@@ -14,8 +14,17 @@ Defaults are the frozen reference specification
 confound regime, unsmoothed, every run fitted and pooled inside the
 intersection of the runs' brain masks. `--noise-model ar1` is the spec's
 calibrated-inference engine. Any other flag departs from the reference, and
-the fit's metadata records the whole config so the departure is visible. Every output filename carries Contract A
-keys plus `contrast-` and `stat-` entities.
+the fit's metadata records the whole config so the departure is visible.
+Every output filename carries Contract A keys plus `contrast-` and `stat-`
+entities. The two noise models share filenames, so each writes its own tree
+(`--output-tree`); spaces share a tree, told apart by `space-`.
+
+`--space` takes any volumetric space fMRIPrep wrote (the MNI reference,
+`T1w`, `func`) or the subject surface `fsnative`. A surface fit reads the
+per-hemisphere `.func.gii` BOLD on the subject's midthickness mesh, masks to
+vertices with signal in every run, and writes `hemi-L`/`hemi-R` `.func.gii`
+maps (neuroimaging.glm.surface); the estimator and fixed effects are the
+volume ones.
 
 Run discovery goes through neuroimaging.io.find_fmriprep_runs, which
 refuses a task-motor or task-auditory selection spanning both session
@@ -23,14 +32,13 @@ groups unless --sessions or --allow-mixed-designs says so. For motor the
 two-protocol claim behind that guard was withdrawn 2026-09-08
 (OPEN-QUESTIONS Q19); the guard stays as a caution.
 
-Nothing here has run on real data yet. The first real fit is a cluster step:
-mmmdata-agents docs/cluster-reentry.md R15.
-
 Usage:
     python glm_contrast_maps.py --subject sub-03 --model motor --sessions ses-30 --dry-run
     python glm_contrast_maps.py --subject sub-03 --model tbrepetition   # adapter needs all 42 runs
     python glm_contrast_maps.py --subject sub-03 --model floc
-    python glm_contrast_maps.py --subject sub-03 --model floc --estimator nilearn --noise-model ols
+    python glm_contrast_maps.py --subject sub-03 --model floc --noise-model ar1 --output-tree glm_reference_ar1
+    python glm_contrast_maps.py --subject sub-03 --model floc --space T1w
+    python glm_contrast_maps.py --subject sub-03 --model floc --space fsnative
 """
 
 from __future__ import annotations
@@ -60,6 +68,17 @@ from neuroimaging.glm.outputs import (  # noqa: E402
     save_statmap,
     statmap_name,
     write_run_metadata,
+)
+from neuroimaging.glm.surface import (  # noqa: E402
+    HEMIS,
+    is_surface_space,
+    load_mesh,
+    load_surface_bold,
+    n_scans_surface,
+    save_surface_statmap,
+    subject_mesh_paths,
+    surface_bold_path,
+    surface_mask_intersection,
 )
 from neuroimaging.io import FmriprepRun, find_fmriprep_runs, load_confounds, mask_intersection  # noqa: E402
 
@@ -124,7 +143,11 @@ def select_runs(args: argparse.Namespace, task: str, bids_root: Path) -> list[Fm
     if missing:
         sys.exit("ERROR: runs without an events.tsv cannot be modelled: " + ", ".join(missing)
                  + ". Generate events first (raw2bids_converters) or exclude them with --sessions.")
-    incomplete = [r.entity_prefix for r in runs if r.bold is None or r.mask is None or r.confounds is None]
+    if is_surface_space(args.space):
+        incomplete = [r.entity_prefix for r in runs if r.confounds is None
+                      or not all(surface_bold_path(r, h, args.space).exists() for h in HEMIS)]
+    else:
+        incomplete = [r.entity_prefix for r in runs if r.bold is None or r.mask is None or r.confounds is None]
     if incomplete:
         sys.exit("ERROR: runs missing BOLD, mask or confounds in the requested space: " + ", ".join(incomplete))
     return runs
@@ -152,14 +175,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     runs = select_runs(args, model.task, bids_root)
     subject = runs[0].subject
+    fmriprep_dir = bids_root / DERIVATIVES_DIRS[args.variant]
+    surface = is_surface_space(cfg.space)
     # One mask for every run and for the pool: fitting each run inside its own
     # mask and pooling under one run's leaves edge voxels estimated from a
-    # varying subset of runs.
+    # varying subset of runs. A surface mask needs every run's data, so it is
+    # built after the dry-run exit below.
+    mesh, mesh_paths, mask_img = None, None, None
     try:
-        mask_img, _ = mask_intersection(runs)
-    except ValueError as e:
+        if surface:
+            mesh_paths = subject_mesh_paths(fmriprep_dir, subject)
+            mesh = load_mesh(mesh_paths)
+        else:
+            mask_img, _ = mask_intersection(runs)
+    except (ValueError, FileNotFoundError) as e:
         sys.exit(f"ERROR: {e}")
-    fmriprep_dir = bids_root / DERIVATIVES_DIRS[args.variant]
 
     print(f"model {model.name}: task-{model.task}, {len(model.conditions)} conditions, "
           f"{len(model.contrasts)} contrasts ({', '.join(c.name for c in model.contrasts)})")
@@ -176,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     designs = []
     for run, events in zip(runs, all_events):
         t_r = repetition_time(run, bids_root)
-        n_scans = nib.load(str(run.bold)).shape[-1]
+        n_scans = n_scans_surface(run, cfg.space) if surface else nib.load(str(run.bold)).shape[-1]
         confounds = load_confounds(run)
         dm = build_design_matrix(events, confounds, t_r, n_scans, model, cfg, strict=strict_for(model))
         # Adapter-derived levels may be absent from a run (a TBencoding run with
@@ -193,13 +223,27 @@ def main(argv: list[str] | None = None) -> int:
         print("dry run: designs built, nothing fitted or written")
         return 0
 
+    if surface:
+        try:
+            mask_img = surface_mask_intersection(runs, cfg.space, mesh)
+        except ValueError as e:
+            sys.exit(f"ERROR: {e}")
+
+    def write_map(img, d: Path, name: str, stat: str, session, run=None) -> list[str]:
+        if surface:
+            paths = {h: d / statmap_name(subject, model.task, cfg.space, name, stat, session=session, run=run,
+                                         hemi=h, ext=".func.gii") for h in HEMIS}
+            return [p.name for p in save_surface_statmap(img, paths)]
+        path = d / statmap_name(subject, model.task, cfg.space, name, stat, session=session, run=run)
+        return [save_statmap(img, path).name]
+
     estimator = get_estimator(args.estimator)
     out_base = derivatives / cfg.output_tree
     ensure_dataset_description(out_base, fmriprep_dir, model.name, estimator.name)
 
     per_contrast: dict[str, list] = {c.name: [] for c in model.contrasts}
     for run, t_r, dm, vectors in designs:
-        bold = nib.load(str(run.bold))
+        bold = load_surface_bold(run, cfg.space, mesh) if surface else nib.load(str(run.bold))
         est = estimator.fit_run(bold, dm, vectors, t_r=t_r, mask=mask_img, cfg=cfg)
         for name, ce in est.items():
             per_contrast[name].append(ce)
@@ -208,8 +252,7 @@ def main(argv: list[str] | None = None) -> int:
                 d.mkdir(parents=True, exist_ok=True)
                 for stat, img in (("effect", ce.effect), ("variance", ce.variance), ("t", ce.stat), ("z", ce.z)):
                     if img is not None:
-                        save_statmap(img, d / statmap_name(run.subject, model.task, cfg.space, name, stat,
-                                                           session=run.session, run=run.run))
+                        write_map(img, d, name, stat, run.session, run.run)
         print(f"  fitted {run.entity_prefix}")
 
     # Fixed effects across every run selected: sessions pool together, so the
@@ -233,9 +276,7 @@ def main(argv: list[str] | None = None) -> int:
         for stat, img in maps:
             if img is None:
                 continue
-            path = d / statmap_name(subject, model.task, cfg.space, name, stat, session=fx_session)
-            save_statmap(img, path)
-            written.append(path.name)
+            written += write_map(img, d, name, stat, fx_session)
 
     meta = {
         "model": model.name,
@@ -248,7 +289,11 @@ def main(argv: list[str] | None = None) -> int:
         "contrasts": {c.name: c.weights for c in model.contrasts},
         "outputs": written,
     }
-    write_run_metadata(d / f"sub-{subject}_task-{model.task}_model-{model.name}_run_metadata.json", meta)
+    if surface:
+        meta["surface_mesh"] = {h: str(p) for h, p in mesh_paths.items()}
+    # space- in the name: fits in several spaces share a directory.
+    write_run_metadata(d / f"sub-{subject}_task-{model.task}_space-{cfg.space}_model-{model.name}_run_metadata.json",
+                       meta)
     print(f"wrote {len(written)} maps to {d}")
     return 0
 

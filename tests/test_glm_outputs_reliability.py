@@ -99,3 +99,9 @@ def test_save_statmap_writes_float32_even_from_a_uint8_header(tmp_path):
     assert back.get_data_dtype() == np.float32
     np.testing.assert_allclose(np.asarray(back.dataobj), data.astype(np.float32), rtol=0, atol=0)
     assert np.unique(np.asarray(back.dataobj)).size == data.size
+
+
+def test_statmap_name_surface_puts_hemi_before_space():
+    assert statmap_name("03", "floc", "fsnative", "faceVsAll", "z", session="03", hemi="L", ext=".func.gii") == (
+        "sub-03_ses-03_task-floc_hemi-L_space-fsnative_contrast-faceVsAll_stat-z_statmap.func.gii"
+    )

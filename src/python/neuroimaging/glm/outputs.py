@@ -48,12 +48,14 @@ def statmap_name(
     session: Optional[str] = None,
     run: Optional[str] = None,
     ext: str = ".nii.gz",
+    hemi: Optional[str] = None,
 ) -> str:
-    """``sub-XX[_ses-YY]_task-T[_run-RR]_space-S_contrast-C_stat-X_statmap.nii.gz``.
+    """``sub-XX[_ses-YY]_task-T[_run-RR][_hemi-H]_space-S_contrast-C_stat-X_statmap.nii.gz``.
 
     Bare labels in, prefixes added here — the same rule the QC tools use.
     A fixed-effects map over runs carries no ``run``; one pooled over sessions
-    carries no ``session`` either.
+    carries no ``session`` either. A surface map carries ``hemi`` (before
+    ``space``, as fMRIPrep orders it) and ``ext=".func.gii"``.
     """
     if stat not in STATS:
         raise ValueError(f"stat must be one of {STATS}, got {stat!r}")
@@ -63,6 +65,8 @@ def statmap_name(
     parts.append(f"task-{task}")
     if run:
         parts.append(f"run-{_bare(run, 'run')}")
+    if hemi:
+        parts.append(f"hemi-{hemi}")
     parts += [f"space-{space}", f"contrast-{contrast}", f"stat-{stat}", "statmap"]
     return "_".join(parts) + ext
 
