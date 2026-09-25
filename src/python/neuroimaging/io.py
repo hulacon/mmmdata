@@ -34,6 +34,7 @@ from .constants import (
     EVENTFILES_DIR,
     FMRIPREP_VARIANTS,
     MOTION_24,
+    NATIVE_SPACE,
     MixedLocalizerDesignError,
     check_single_design,
 )
@@ -190,8 +191,9 @@ def find_fmriprep_runs(
     space : str
         Volumetric template and resolution (e.g., "MNI152NLin2009cAsym_res-2"),
         or ``NATIVE_SPACE`` ("func") for the space-less native-grid files.
-        Native grids differ across sessions: pool native runs only within
-        one session, or resample to a common reference first.
+        Native grids differ across sessions and move with the head between
+        runs; mask_intersection refuses a native pool that does not share one
+        anatomy (check_native_pool). Pool across sessions in T1w.
     bids_root : Path, optional
         BIDS root. If None, resolved via config.
     allow_mixed_designs : bool
@@ -466,15 +468,99 @@ def load_mask(run: FmriprepRun) -> Any:
     return nib.load(str(run.mask))
 
 
+#: Native-space runs pooled voxelwise must map to the same anatomy to within
+#: this fraction of the smallest voxel dimension (see check_native_pool).
+NATIVE_POOL_TOL_VOX = 0.5
+
+
+def coreg_xfm_path(run: FmriprepRun) -> Path:
+    """fMRIPrep's ``<run>_from-boldref_to-T1w_mode-image_desc-coreg_xfm.txt``, beside the confounds."""
+    return Path(run.confounds).parent / f"{run.entity_prefix}_from-boldref_to-T1w_mode-image_desc-coreg_xfm.txt"
+
+
+def read_itk_affine(path: Path) -> tuple[Any, Any, Any]:
+    """(matrix 3x3, translation 3, center 3) of a single-transform ITK affine text file.
+
+    ITK maps a physical point x (LPS) as ``A (x - c) + c + t``.
+    """
+    import numpy as np
+
+    params = fixed = None
+    for line in Path(path).read_text().splitlines():
+        if line.startswith("Parameters:"):
+            params = np.array(line.split(":", 1)[1].split(), dtype=float)
+        elif line.startswith("FixedParameters:"):
+            fixed = np.array(line.split(":", 1)[1].split(), dtype=float)
+    if params is None or params.size != 12:
+        raise ValueError(f"{path}: expected one 3-D affine (12 parameters)")
+    return params[:9].reshape(3, 3), params[9:], (fixed if fixed is not None else np.zeros(3))
+
+
+def check_native_pool(runs: Sequence[FmriprepRun], mask: Any = None) -> float:
+    """Refuse native-space (``func``) runs that do not share one anatomy.
+
+    fMRIPrep's native space is each run's own boldref grid. Runs from
+    different sessions can share a header affine (same prescription) while the
+    head sits millimetres elsewhere, so the grid check in
+    :func:`mask_intersection` cannot see it; what decides alignment is each
+    run's boldref-to-T1w coregistration. Two conditions, both errors:
+
+    - every run comes from one session (across sessions: use ``T1w``);
+    - within the session, every run's coregistration maps the brain to within
+      ``NATIVE_POOL_TOL_VOX`` of a voxel of the first run's (head moved
+      between runs otherwise).
+
+    Returns the largest displacement found, in mm, over the voxels of
+    ``mask`` (default: the first run's brain mask).
+    """
+    import numpy as np
+
+    sessions = sorted({r.session for r in runs})
+    if len(sessions) > 1:
+        raise ValueError(
+            f"native-space runs span sessions {', '.join('ses-' + s for s in sessions)}; each session's "
+            "native grid sits on a different head position. Pool in T1w (or a template) instead, "
+            "or fit one session at a time"
+        )
+    if len(runs) < 2:
+        return 0.0
+    ref = mask if mask is not None else load_mask(runs[0])
+    ijk = np.argwhere(np.asarray(ref.dataobj).astype(bool))[::7]  # a subsample is plenty for a max over a rigid map
+    ras = ijk @ ref.affine[:3, :3].T + ref.affine[:3, 3]
+    lps = ras * np.array([-1.0, -1.0, 1.0])
+
+    def apply(xfm):
+        a, t, c = xfm
+        return (lps - c) @ a.T + c + t
+
+    y0 = apply(read_itk_affine(coreg_xfm_path(runs[0])))
+    tol = NATIVE_POOL_TOL_VOX * float(min(ref.header.get_zooms()[:3]))
+    worst = 0.0
+    for r in runs[1:]:
+        d = float(np.linalg.norm(apply(read_itk_affine(coreg_xfm_path(r))) - y0, axis=1).max())
+        worst = max(worst, d)
+        if d > tol:
+            raise ValueError(
+                f"{r.entity_prefix} is {d:.2f} mm from {runs[0].entity_prefix} in native space "
+                f"(tolerance {tol:.2f} mm, half a voxel): the head moved between runs. "
+                "Pool in T1w (or a template) instead"
+            )
+    return worst
+
+
 def mask_intersection(runs: Sequence[FmriprepRun]) -> tuple[Any, Any]:
     """The voxels inside every run's brain mask, as (image, boolean array).
 
     Raises ValueError when two runs' masks sit on different grids: runs pooled
-    into one map must share a space and resolution.
+    into one map must share a space and resolution. Native-space (``func``)
+    runs must also share one anatomy, which a matching grid does not prove
+    (:func:`check_native_pool`).
     """
     import nibabel as nib
     import numpy as np
 
+    if runs and runs[0].space == NATIVE_SPACE:
+        check_native_pool(runs)
     first = load_mask(runs[0])
     inter = np.asarray(first.dataobj).astype(bool)
     for r in runs[1:]:

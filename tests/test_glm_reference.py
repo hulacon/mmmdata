@@ -17,7 +17,7 @@ from neuroimaging.glm.reference import (
     reference_config,
     spec_digest,
 )
-from neuroimaging.io import FmriprepRun, mask_intersection
+from neuroimaging.io import FmriprepRun, check_native_pool, mask_intersection
 
 
 def test_spec_matches_its_digest():
@@ -91,3 +91,49 @@ def test_mask_intersection_refuses_mixed_grids(tmp_path):
     b = _mask_run(tmp_path, "02", np.ones((3, 3, 3)), affine=np.diag([2.0, 2.0, 2.0, 1.0]))
     with pytest.raises(ValueError, match="grid differs"):
         mask_intersection([a, b])
+
+
+def _native_run(tmp_path, ses, run, translation, shape=(10, 10, 10), zoom=2.0):
+    """A func-space run with a brain mask and a boldref->T1w ITK coreg transform."""
+    nib = pytest.importorskip("nibabel")
+    d = tmp_path / f"ses-{ses}"
+    d.mkdir(exist_ok=True)
+    prefix = f"sub-aa_ses-{ses}_task-t_run-{run}"
+    mask = d / f"{prefix}_desc-brain_mask.nii.gz"
+    nib.Nifti1Image(np.ones(shape, dtype=np.uint8), np.diag([zoom, zoom, zoom, 1.0])).to_filename(str(mask))
+    conf = d / f"{prefix}_desc-confounds_timeseries.tsv"
+    conf.write_text("x\n0\n")
+    t = " ".join(str(v) for v in translation)
+    (d / f"{prefix}_from-boldref_to-T1w_mode-image_desc-coreg_xfm.txt").write_text(
+        "#Insight Transform File V1.0\n#Transform 0\nTransform: AffineTransform_float_3_3\n"
+        f"Parameters: 1 0 0 0 1 0 0 0 1 {t}\nFixedParameters: 0 0 0\n")
+    return FmriprepRun(subject="aa", session=ses, task="t", run=run, space="func", variant="fmriprep",
+                       mask=mask, confounds=conf)
+
+
+def test_native_pool_within_a_session_passes_under_half_a_voxel(tmp_path):
+    runs = [_native_run(tmp_path, "02", "01", (0, 0, 0)), _native_run(tmp_path, "02", "02", (0.3, 0, 0))]
+    assert check_native_pool(runs) == pytest.approx(0.3)
+    _, inter = mask_intersection(runs)
+    assert inter.all()
+
+
+def test_native_pool_refuses_head_movement_between_runs(tmp_path):
+    # Same grid, same session, but the second run's anatomy sits 1.5 mm away (> 1 mm = half a 2 mm voxel).
+    runs = [_native_run(tmp_path, "02", "01", (0, 0, 0)), _native_run(tmp_path, "02", "02", (0, 1.5, 0))]
+    with pytest.raises(ValueError, match="head moved"):
+        mask_intersection(runs)
+
+
+def test_native_pool_refuses_sessions_even_on_an_identical_grid(tmp_path):
+    runs = [_native_run(tmp_path, "02", "01", (0, 0, 0)), _native_run(tmp_path, "03", "01", (0, 0, 0))]
+    with pytest.raises(ValueError, match="span sessions"):
+        mask_intersection(runs)
+
+
+def test_template_space_pools_across_sessions_without_the_native_check(tmp_path):
+    a = _native_run(tmp_path, "02", "01", (0, 0, 0))
+    b = _native_run(tmp_path, "03", "01", (0, 9, 0))
+    a, b = (dataclasses.replace(r, space="T1w") for r in (a, b))
+    _, inter = mask_intersection([a, b])
+    assert inter.all()
