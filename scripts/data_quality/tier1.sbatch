@@ -13,7 +13,9 @@
 # NATencoding run 38 s / 5.4 G peak; the 1,858-volume NATretrieval run (the
 # longest in the dataset) 94 s / 15.8 G. The peak is one full float32 read of
 # the 4D plus the masked copy; the solver itself is chunked. 24 G / 20 min is
-# headroom for every run. Revise from seff after the first array.
+# headroom for every run. First whole-dataset array (47406490, 712 tasks, 3
+# regimes): elapsed median 22 s / p95 195 s / max 493 s; MaxRSS median 1.8 G /
+# p95 6.7 G / max 14.8 G; 0 failures; ~1.9 M on disk per cell.
 
 #==============================================================================
 # data-quality tier 1 — one run per array task, every requested regime
