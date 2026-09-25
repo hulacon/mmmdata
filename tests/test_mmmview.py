@@ -295,6 +295,43 @@ class TestResolveUnderlay:
         plan = self._plan(roots, p, underlay=str(u))
         assert plan.inputs["underlay"] == u
 
+    # fMRIPrep writes a subject's anatomy under ses-##/anat/ when only one
+    # session holds a T1w; there is then no subject-level anat/ at all
+    def _sessioned_anat(self, roots, sub, *sessions):
+        for ses in sessions:
+            anat = roots.deriv / "fmriprep" / f"sub-{sub}" / f"ses-{ses}" / "anat"
+            touch(anat / f"sub-{sub}_ses-{ses}_acq-MPR_desc-preproc_T1w.nii.gz")
+            touch(anat / f"sub-{sub}_ses-{ses}_acq-MPR_space-"
+                  "MNI152NLin2009cAsym_res-2_desc-preproc_T1w.nii.gz")
+
+    def test_t1w_falls_back_to_the_one_sessioned_anat(self, roots, tmp_path):
+        self._sessioned_anat(roots, "08", "01")
+        p = touch(tmp_path / "x" / "sub-08_task-prf_space-T1w_desc-R2_prf.nii.gz")
+        plan = self._plan(roots, p)
+        assert plan.inputs["underlay"].name == (
+            "sub-08_ses-01_acq-MPR_desc-preproc_T1w.nii.gz")
+
+    def test_mni_falls_back_to_the_one_sessioned_anat(self, roots, tmp_path):
+        self._sessioned_anat(roots, "08", "01")
+        p = touch(tmp_path / "x" / "sub-08_ses-04_task-floc_space-"
+                  "MNI152NLin2009cAsym_res-2_stat-z_statmap.nii.gz")
+        plan = self._plan(roots, p)
+        assert plan.inputs["underlay"].name == (
+            "sub-08_ses-01_acq-MPR_space-MNI152NLin2009cAsym_res-2_"
+            "desc-preproc_T1w.nii.gz")
+
+    def test_two_sessioned_anats_are_ambiguous(self, roots, tmp_path):
+        self._sessioned_anat(roots, "08", "01", "02")
+        p = touch(tmp_path / "x" / "sub-08_task-prf_space-T1w_desc-R2_prf.nii.gz")
+        with pytest.raises(Unplaceable, match="ambiguous.*ses-01.*ses-02.*--underlay"):
+            self._plan(roots, p)
+
+    def test_subject_level_anat_wins_over_sessioned(self, roots, tmp_path):
+        self._sessioned_anat(roots, "07", "01")
+        p = touch(tmp_path / "x" / "sub-07_task-prf_space-T1w_desc-R2_prf.nii.gz")
+        plan = self._plan(roots, p)
+        assert plan.inputs["underlay"].name == "sub-07_acq-MPR_desc-preproc_T1w.nii.gz"
+
     def test_ambiguous_underlay_lists_candidates(self, roots, tmp_path):
         anat = roots.deriv / "fmriprep" / "sub-07" / "anat"
         touch(anat / "sub-07_acq-MP2RAGE_desc-preproc_T1w.nii.gz")

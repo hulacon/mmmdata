@@ -699,16 +699,24 @@ def find_underlay(entities, roots):
     # without a space- entity; with no task- they cannot be functional
     if space is None and not entities.get("task"):
         space = "T1w"
-    if space == "T1w":
-        cands = [p for p in sorted(anat.glob(f"sub-{sub}*_desc-preproc_T1w.nii.gz"))
-                 if "_space-" not in p.name and "_ses-" not in p.name]
-        where = f"{anat}/sub-{sub}*_desc-preproc_T1w.nii.gz (no space-)"
-    elif space == "MNI152NLin2009cAsym":
-        res = entities.get("res")
-        pat = (f"sub-{sub}*_space-{space}_"
-               + (f"res-{res}_" if res else "*") + "desc-preproc_T1w.nii.gz")
-        cands = [p for p in sorted(anat.glob(pat)) if "_ses-" not in p.name]
-        where = f"{anat}/{pat}"
+    if space in ("T1w", "MNI152NLin2009cAsym"):
+        if space == "T1w":
+            pat = f"sub-{sub}*_desc-preproc_T1w.nii.gz"
+            keep = lambda p: "_space-" not in p.name  # noqa: E731
+        else:
+            res = entities.get("res")
+            pat = (f"sub-{sub}*_space-{space}_"
+                   + (f"res-{res}_" if res else "*") + "desc-preproc_T1w.nii.gz")
+            keep = lambda p: True  # noqa: E731
+        cands = [p for p in sorted(anat.glob(pat))
+                 if keep(p) and "_ses-" not in p.name]
+        where = f"{anat}/{pat}" + (" (no space-)" if space == "T1w" else "")
+        if not cands:
+            # fMRIPrep puts the anatomy under ses-##/anat/ when one session
+            # holds the only T1w; more than one session stays ambiguous
+            cands = [p for p in sorted(fp.glob(f"sub-{sub}/ses-*/anat/{pat}"))
+                     if keep(p)]
+            where += f" or {fp}/sub-{sub}/ses-*/anat/"
     elif space is None:
         ses, task, run = (entities.get(k) for k in ("ses", "task", "run"))
         if not (ses and task):
