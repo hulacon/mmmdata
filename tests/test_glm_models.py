@@ -41,6 +41,20 @@ def test_floc_contrasts_follow_the_archived_plan():
     assert "baseline" not in m.conditions  # implicit baseline, not a regressor
 
 
+def test_floc_domain_vs_all_and_place_vs_face():
+    m = load_model("floc")
+    assert m.contrast("placeVsFace").weights == {"corridor": 0.5, "house": 0.5, "adult": -0.5, "child": -0.5}
+    # fLoc toolbox definition: one domain against the mean of the other four,
+    # every condition in the model carrying a weight, the whole summing to zero.
+    domains = {"face": {"adult", "child"}, "place": {"corridor", "house"}, "body": {"body", "limb"},
+               "character": {"word", "number"}, "object": {"car", "instrument"}}
+    for name, members in domains.items():
+        w = m.contrast(f"{name}VsAll").weights
+        assert set(w) == set(m.conditions)
+        assert {c for c, x in w.items() if x > 0} == members
+        assert sum(w.values()) == pytest.approx(0.0)
+
+
 def test_motor_contrasts_are_against_explicit_rest():
     m = load_model("motor")
     for c in m.contrasts:

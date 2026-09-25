@@ -1,7 +1,7 @@
 {
   "Name": "floc",
   "BIDSModelVersion": "1.0.0",
-  "Description": "Stanford fLoc category localizer: condition-level contrast maps for category-selective ROI definition. Block-level events (converter: src/python/raw2bids_converters/floc_events.py); the ten category conditions are modelled, the `baseline` blocks are the implicit baseline. Contrasts follow the archived plan (mmmdata-agents docs/archive/localizer-analysis-plan.md §1), each domain against the object domain. Estimator and fixed-effects policy are the runner's (neuroimaging.glm), not this file's.",
+  "Description": "Stanford fLoc category localizer: condition-level contrast maps for category-selective ROI definition. Block-level events (converter: src/python/raw2bids_converters/floc_events.py); the ten category conditions are modelled, the `baseline` blocks are the implicit baseline. Contrasts follow the archived plan (mmmdata-agents docs/archive/localizer-analysis-plan.md §1), each domain against the object domain. Added 2026-09-25: `placeVsFace` (the classic PPA contrast; its negative tail is face > place) and the fLoc toolbox's own definition, each domain against the mean of the other four (`<domain>VsAll`, Stigliani et al. 2015). The frozen glm bake-off (passes 1-2) scored only the first four contrasts; a bake-off refit under this file would score all ten. Estimator and fixed-effects policy are the runner's (neuroimaging.glm), not this file's.",
   "Input": {
     "task": ["floc"]
   },
@@ -61,6 +61,42 @@
           "Name": "characterVsObject",
           "ConditionList": ["trial_type.word", "trial_type.number", "trial_type.car", "trial_type.instrument"],
           "Weights": [0.5, 0.5, -0.5, -0.5],
+          "Test": "t"
+        },
+        {
+          "Name": "placeVsFace",
+          "ConditionList": ["trial_type.corridor", "trial_type.house", "trial_type.adult", "trial_type.child"],
+          "Weights": [0.5, 0.5, -0.5, -0.5],
+          "Test": "t"
+        },
+        {
+          "Name": "faceVsAll",
+          "ConditionList": ["trial_type.adult", "trial_type.child", "trial_type.corridor", "trial_type.house", "trial_type.body", "trial_type.limb", "trial_type.word", "trial_type.number", "trial_type.car", "trial_type.instrument"],
+          "Weights": [0.5, 0.5, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125],
+          "Test": "t"
+        },
+        {
+          "Name": "placeVsAll",
+          "ConditionList": ["trial_type.corridor", "trial_type.house", "trial_type.adult", "trial_type.child", "trial_type.body", "trial_type.limb", "trial_type.word", "trial_type.number", "trial_type.car", "trial_type.instrument"],
+          "Weights": [0.5, 0.5, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125],
+          "Test": "t"
+        },
+        {
+          "Name": "bodyVsAll",
+          "ConditionList": ["trial_type.body", "trial_type.limb", "trial_type.adult", "trial_type.child", "trial_type.corridor", "trial_type.house", "trial_type.word", "trial_type.number", "trial_type.car", "trial_type.instrument"],
+          "Weights": [0.5, 0.5, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125],
+          "Test": "t"
+        },
+        {
+          "Name": "characterVsAll",
+          "ConditionList": ["trial_type.word", "trial_type.number", "trial_type.adult", "trial_type.child", "trial_type.corridor", "trial_type.house", "trial_type.body", "trial_type.limb", "trial_type.car", "trial_type.instrument"],
+          "Weights": [0.5, 0.5, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125],
+          "Test": "t"
+        },
+        {
+          "Name": "objectVsAll",
+          "ConditionList": ["trial_type.car", "trial_type.instrument", "trial_type.adult", "trial_type.child", "trial_type.corridor", "trial_type.house", "trial_type.body", "trial_type.limb", "trial_type.word", "trial_type.number"],
+          "Weights": [0.5, 0.5, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125, -0.125],
           "Test": "t"
         }
       ]
