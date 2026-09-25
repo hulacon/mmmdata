@@ -5,6 +5,14 @@ mmmview.py — one path into the dataset in, the right interactive view out.
     mmmview PATH [--no-open] [--out-dir DIR] [--underlay NII | --mesh SURF]
                  [--surf inflated|pial|white] [--r2-floor F] [--force]
                  [--films-dir DIR]
+    mmmview glm [SUB [TASK]] [--ses S] [--space S] [--desc D] [--stat S]
+    mmmview serve | reap ...
+
+`mmmview glm` finds GLM maps by label through the tree's maps.tsv (a fit's
+directory depends on whether it pooled sessions, so the table is the way
+in): with no TASK it lists what exists; with one it builds a bundle per
+(scope, space, hemi, desc, stat), contrasts as layers, and opens the
+subject's viz index. Defaults: the pooled fit, every space, AR(1), z.
 
 mmmview is a dispatcher, not a viewer. The viewers exist (the NiiVue bundle
 builder in src/python/neuroimaging/viewer.py, the three *2psy dashboards);
@@ -338,6 +346,33 @@ def _classify_dir(path):
                           source=path,
                           variants=vnames if len(vnames) > 1 else None))
     return out + results
+
+
+def glm_split(target):
+    """The narrower bundles inside one directory-level GLM group: one per
+    (desc, stat). A directory merge of a GLM tree puts every contrast x stat
+    x fit variant on one page (80+ maps, >100 MB); `mmmview glm` builds these
+    instead, and `_claims_for` claims them so reap keeps them. Returns []
+    when the group is not stat maps or already holds a single (desc, stat)."""
+    if target.kind not in ("volume", "surface") or target.variants:
+        return []
+    groups = {}
+    for m in target.maps:
+        ents = parse_entities(m.name)[0]
+        if "stat" not in ents:
+            return []
+        groups.setdefault((ents.get("desc") or "", ents["stat"]), []).append(m)
+    if len(groups) < 2:
+        return []
+    out = []
+    for _, maps in sorted(groups.items()):
+        common = parse_entities(maps[0].name)[0]
+        for m in maps[1:]:
+            ents = parse_entities(m.name)[0]
+            common = {k: v for k, v in common.items() if ents.get(k) == v}
+        out.append(Target(target.kind, maps, common, target.suffix,
+                          source=target.source))
+    return out
 
 
 def _results_target(specs, source):
@@ -764,7 +799,12 @@ def viz_dir_for(path):
 
 
 def bundle_name(entities, suffix):
+    # desc- belongs to the viewer marker, so a desc every map shares (one
+    # map, or a `mmmview glm` selection) is kept as srcdesc-: dropping it
+    # gave desc-variant twins (a GLM's OLS and AR(1) z-map) one name
     bits = [f"{k}-{v}" for k, v in entities.items() if k != "desc"]
+    if entities.get("desc"):
+        bits.append(f"srcdesc-{entities['desc']}")
     bits.append("desc-viewer")
     name = "_".join(bits)
     return name + (f"_{suffix}" if suffix else "") + ".html"
@@ -1416,7 +1456,13 @@ def _index_label(name):
     if name.endswith(RESULTS_MARK + ".html"):
         return name[: -len(RESULTS_MARK + ".html")] + " (results)"
     ents, suffix, _ = parse_entities(name)
-    bits = [f"{k}-{v}" for k, v in ents.items() if k not in ("sub", "desc")]
+    if set(ents) == {"desc"}:
+        # an entity-less feature dashboard (clap_text_chunks_desc-viewer):
+        # its stem is the name; the "last dash-less token" rule would say
+        # only "chunks"
+        return name.split("_desc-viewer", 1)[0]
+    bits = [f"{'desc' if k == 'srcdesc' else k}-{v}" for k, v in ents.items()
+            if k not in ("sub", "desc")]
     if suffix:
         bits.append(suffix)
     return " ".join(bits) or name
@@ -2220,6 +2266,8 @@ def _claims_for(viz, roots, opts):
         try:
             for t in classify(data_dir):
                 add(t)
+                for narrow in glm_split(t):     # `mmmview glm` bundles
+                    add(narrow)
         except Unplaceable:
             pass
         # ...and from each file on its own: `mmmview <one map>` is a
@@ -2437,7 +2485,481 @@ def reap_main(argv):
     return 0
 
 
-VERBS = {"serve": serve_main, "reap": reap_main}
+# ---------------------------------------------------------------------------
+# glm — GLM maps by label. A fit's directory depends on whether it pooled
+# sessions (BIDS: a one-session fit under ses-, a cross-session pool at
+# subject level), so the tree's maps.tsv, not the path, is how to find one.
+# ---------------------------------------------------------------------------
+
+GLM_TREE = "nilearn_glm"    # = neuroimaging.glm.config.GlmConfig.output_tree
+                            # (not imported: 5 s on GPFS; pinned by a test)
+POOLED = "pooled"           # scope of a fit whose maps carry no ses-
+GLM_DEFAULT_DESC = "AR1"    # the calibrated-z engine (glm-strategy R8)
+
+
+def load_maps_index(path):
+    """Rows of a GLM tree's maps.tsv, each with its absolute `file` and its
+    `scope` (the session label, or POOLED)."""
+    import csv
+    path = Path(path)
+    if not path.exists():
+        raise Unplaceable(f"no maps index at {path}; a GLM tree writes one "
+                          "after every fit (neuroimaging.glm.outputs."
+                          "update_tree_index) — pass --maps or --tree")
+    with open(path, newline="") as fh:
+        rows = list(csv.DictReader(fh, delimiter="\t"))
+    for r in rows:
+        r["file"] = path.parent / r["path"]
+        r["scope"] = r.get("session") or POOLED
+    return rows
+
+
+def match_label(value, choices, what):
+    """A short label to the values it names, case-insensitively: an exact
+    match, else a unique prefix, else every value containing it. `all` and
+    comma lists are accepted. Raises Unplaceable listing the choices."""
+    choices = sorted(set(choices))
+    if value is None or value.lower() == "all":
+        return choices
+    got = []
+    for part in value.split(","):
+        p = part.strip().lower()
+        exact = [c for c in choices if c.lower() == p]
+        prefix = [c for c in choices if c.lower().startswith(p)]
+        within = [c for c in choices if p in c.lower()]
+        hit = exact or (prefix if len(prefix) == 1 else None) or within
+        if not hit:
+            raise Unplaceable(f"no {what} matches {part!r}; available: "
+                              f"{', '.join(choices)}")
+        got += [c for c in hit if c not in got]
+    return got
+
+
+def _glm_listing(rows):
+    """One line per (subject, task, scope): what exists to view."""
+    groups = {}
+    for r in rows:
+        groups.setdefault((r["subject"], r["task"], r["scope"]), []).append(r)
+
+    def vals(rs, col):
+        return ",".join(sorted({r[col] for r in rs if r[col]})) or "-"
+    lines = []
+    for (sub, task, scope), rs in sorted(groups.items()):
+        scope_s = scope if scope == POOLED else f"ses-{scope}"
+        lines.append(f"sub-{sub}  {task:<12} {scope_s:<8} "
+                     f"{len({r['contrast'] for r in rs}):>3} contrasts  "
+                     f"space {vals(rs, 'space')}  desc {vals(rs, 'desc')}  "
+                     f"stat {vals(rs, 'stat')}")
+    return lines
+
+
+def glm_select(rows, sub, task, ses=None, space=None, desc=None, stat="z"):
+    """Filter maps.tsv rows by label. Defaults: the pooled fit when there is
+    one (else every session), every space, the AR(1) fit when there is a
+    choice, z maps. Raises Unplaceable naming what is available."""
+    sub = sub[4:] if sub.startswith("sub-") else sub
+    rs = [r for r in rows if r["subject"] == sub]
+    if not rs:
+        raise Unplaceable(f"no maps for sub-{sub}; subjects: " + ", ".join(
+            f"sub-{s}" for s in sorted({r['subject'] for r in rows})))
+    tasks = match_label(task, [r["task"] for r in rs], f"task for sub-{sub}")
+    rs = [r for r in rs if r["task"] in tasks]
+    scopes = {r["scope"] for r in rs}
+    if ses is None:
+        want = [POOLED] if POOLED in scopes else sorted(scopes)
+    else:
+        want = match_label(ses[4:] if ses.startswith("ses-") else ses,
+                           scopes, "session scope")
+    rs = [r for r in rs if r["scope"] in want]
+    spaces = match_label(space, [r["space"] for r in rs], "space")
+    rs = [r for r in rs if r["space"] in spaces]
+    descs = sorted({r["desc"] for r in rs})
+    if desc is None and len(descs) > 1:
+        desc = GLM_DEFAULT_DESC
+    descs = match_label(desc, descs, "desc")
+    rs = [r for r in rs if r["desc"] in descs]
+    stats = match_label(stat, [r["stat"] for r in rs], "stat")
+    return [r for r in rs if r["stat"] in stats]
+
+
+def glm_targets(selected):
+    """The bundles covering a selection, taken from the directory classifier
+    (whole groups, or their glm_split pieces) so reap and Refresh claim
+    every one. Only groups the selection covers entirely are kept."""
+    chosen = {Path(r["file"]) for r in selected}
+    out = []
+    for d in sorted({f.parent for f in chosen}):
+        for t in classify(d):
+            for cand in (glm_split(t) or [t]):
+                if set(cand.maps) <= chosen:
+                    out.append(cand)
+    return out
+
+
+def glm_main(argv):
+    ap = argparse.ArgumentParser(
+        prog="mmmview glm",
+        description="find GLM maps by label through the tree's maps.tsv "
+                    "and open them: one bundle per (scope, space, hemi, "
+                    "desc, stat), contrasts as layers, all in <sub-##>/viz/ "
+                    "under one index. Without SUB and TASK, list what exists.",
+        epilog="labels match case-insensitively by exact name, unique "
+               "prefix or substring (tb -> TBencoding, mni -> "
+               "MNI152NLin2009cAsym, ols -> referenceOLS); `all` and comma "
+               "lists work for --ses/--space/--desc/--stat.")
+    ap.add_argument("sub", nargs="?", help="subject, ## or sub-##")
+    ap.add_argument("task", nargs="?", help="task label (tb, floc, motor, ...)")
+    ap.add_argument("--ses", help=f"session scope: ## or {POOLED} (default "
+                    f"{POOLED} when a pooled fit exists, else every session)")
+    ap.add_argument("--space", help="default: every space")
+    ap.add_argument("--desc", help=f"fit variant (default: the {GLM_DEFAULT_DESC}"
+                    " fit when there is more than one)")
+    ap.add_argument("--stat", default="z", help="z, t, effect, variance "
+                    "(default z)")
+    ap.add_argument("--list", action="store_true",
+                    help="list the matching maps' groups; build nothing")
+    ap.add_argument("--tree", default=GLM_TREE,
+                    help=f"GLM tree under the derivatives root (default "
+                         f"{GLM_TREE})")
+    ap.add_argument("--maps", help="explicit maps.tsv (overrides --tree)")
+    ap.add_argument("--no-open", action="store_true")
+    ap.add_argument("--force", action="store_true")
+    ap.add_argument("--surf", default="inflated")
+    ap.add_argument("--deriv-root", help="override config derivatives root")
+    args = ap.parse_args(argv)
+
+    roots = load_roots(args.deriv_root)
+    maps = Path(args.maps) if args.maps else roots.deriv / args.tree / "maps.tsv"
+    try:
+        rows = load_maps_index(maps)
+        if not (args.sub and args.task):
+            if args.sub:
+                sub = args.sub[4:] if args.sub.startswith("sub-") else args.sub
+                rows = [r for r in rows if r["subject"] == sub]
+            lines = _glm_listing(rows)
+            print("\n".join(lines) if lines else f"no maps in {maps}")
+            if lines:
+                print(f"-- open one: mmmview glm SUB TASK  (source {maps})")
+            return 0 if lines else EXIT_UNPLACEABLE
+        selected = glm_select(rows, args.sub, args.task, args.ses,
+                              args.space, args.desc, args.stat)
+        if args.list:
+            print("\n".join(_glm_listing(selected)))
+            return 0
+        opts = Opts(surf=args.surf, force=args.force)
+        plans = [resolve(t, roots, opts) for t in glm_targets(selected)]
+    except Unplaceable as exc:
+        print(f"mmmview glm: {exc}", file=sys.stderr)
+        return EXIT_UNPLACEABLE
+    if not plans:
+        print("mmmview glm: the selection covers no whole bundle",
+              file=sys.stderr)
+        return EXIT_UNPLACEABLE
+    return _render_and_open(plans, opts, args.no_open)
+
+
+# ---------------------------------------------------------------------------
+# prf — a subject's pRF maps by label (derivatives/prf is flat per subject;
+# the prf/negprf/... fit variants merge into one bundle per space and hemi)
+# ---------------------------------------------------------------------------
+
+PRF_TREE = "prf"            # derivatives/prf, the pooled product (public-
+                            # release B16); no config key names it
+
+
+def _bare_sub(sub):
+    return sub[4:] if sub.startswith("sub-") else sub
+
+
+def _prf_listing(tree, subs):
+    lines = []
+    for sub in subs:
+        spaces, variants, params = set(), set(), set()
+        for p in (tree / f"sub-{sub}").iterdir():
+            if not (p.is_file() and p.name.endswith(MAP_EXTS + SURF_EXTS)):
+                continue
+            ents, sfx, _ = parse_entities(p.name)
+            spaces.add(ents.get("space", "-"))
+            variants.add(sfx)
+            params.add(ents.get("desc", "-"))
+        lines.append(f"sub-{sub}  space {','.join(sorted(spaces))}  "
+                     f"variants {','.join(sorted(variants, key=_variant_rank))}"
+                     f"  params {','.join(sorted(params))}")
+    return lines
+
+
+def prf_main(argv):
+    ap = argparse.ArgumentParser(
+        prog="mmmview prf",
+        description="a subject's pRF maps: one bundle per space (and hemi) "
+                    "with every fit variant (prf, negprf, ...) as a "
+                    "selector, in <sub-##>/viz/ under one index. Without "
+                    "SUB, list what exists.")
+    ap.add_argument("sub", nargs="?", help="subject, ## or sub-##")
+    ap.add_argument("--space", help="T1w, fsnative, or all (default all)")
+    ap.add_argument("--r2-floor", type=float, default=R2_FLOOR_DEFAULT,
+                    help="maps are masked to R2 > this (percent)")
+    ap.add_argument("--tree", default=PRF_TREE,
+                    help=f"tree under the derivatives root (default "
+                         f"{PRF_TREE})")
+    ap.add_argument("--no-open", action="store_true")
+    ap.add_argument("--force", action="store_true")
+    ap.add_argument("--surf", default="inflated")
+    ap.add_argument("--deriv-root", help="override config derivatives root")
+    args = ap.parse_args(argv)
+
+    roots = load_roots(args.deriv_root)
+    tree = roots.deriv / args.tree
+    subs = sorted(p.name[4:] for p in tree.glob("sub-*") if p.is_dir())
+    if not subs:
+        print(f"mmmview prf: no sub-* directories under {tree}; pass --tree "
+              "or --deriv-root", file=sys.stderr)
+        return EXIT_UNPLACEABLE
+    if not args.sub:
+        print("\n".join(_prf_listing(tree, subs)))
+        print(f"-- open one: mmmview prf SUB  (source {tree})")
+        return 0
+    opts = Opts(r2_floor=args.r2_floor, surf=args.surf, force=args.force)
+    try:
+        sub = _bare_sub(args.sub)
+        if sub not in subs:
+            raise Unplaceable(f"no pRF maps for sub-{sub}; subjects: "
+                              + ", ".join(f"sub-{s}" for s in subs))
+        targets = classify(tree / f"sub-{sub}")
+        spaces = match_label(args.space, {t.entities.get("space") or "-"
+                                          for t in targets}, "space")
+        plans = [resolve(t, roots, opts) for t in targets
+                 if (t.entities.get("space") or "-") in spaces]
+    except Unplaceable as exc:
+        print(f"mmmview prf: {exc}", file=sys.stderr)
+        return EXIT_UNPLACEABLE
+    return _render_and_open(plans, opts, args.no_open)
+
+
+# ---------------------------------------------------------------------------
+# stimfeat — Contract B feature tables by set and model label. A model is a
+# sidecar stem (<model>.meta.json); its tables are the feature files that
+# resolve to it (clap_text -> clap_text_chunks.csv + clap_text_words.csv).
+# ---------------------------------------------------------------------------
+
+STIMFEAT_TREE = "stimuli_features"
+TIMELINE = "timeline"               # the model label for psytwill's viewer
+TIMELINE_TABLES = {"movies": "psytwill"}   # set -> dir of movies_* tables
+TB_SET = "tb"                       # composed TB runs (workbench tb-timelines)
+_STIMFEAT_NOT_SETS = ("figures", "psytwill", TB_SET)
+
+
+def feature_models(d):
+    """{model: [tables]} for one directory of Contract B feature tables."""
+    models = {}
+    for p in sorted(d.iterdir()):
+        if p.is_file() and p.name.endswith(FEATURE_EXTS):
+            sc = find_sidecar(p)
+            if sc is not None:
+                models.setdefault(sc.name[: -len(".meta.json")], []).append(p)
+    return models
+
+
+def _extractor_of(d, model):
+    try:
+        return json.loads((d / f"{model}.meta.json").read_text()).get(
+            "extractor") or "?"
+    except (OSError, ValueError):
+        return "?"
+
+
+def stimfeat_sets(tree):
+    """{set: directory} — every directory of feature tables under the tree
+    (not _-prefixed staging, not the psytwill aggregates or figures), plus
+    the composed TB tree."""
+    sets = {}
+    for d in sorted(p for p in tree.iterdir() if p.is_dir()):
+        if d.name.startswith("_") or d.name in _STIMFEAT_NOT_SETS:
+            continue
+        if feature_models(d):
+            sets[d.name] = d
+    if (tree / TB_SET).is_dir():
+        sets[TB_SET] = tree / TB_SET
+    return sets
+
+
+def _films(d):
+    return sorted(p.name for p in d.iterdir()
+                  if p.is_dir() and p.name != "viz" and feature_models(p))
+
+
+def _stimfeat_listing(tree, sets):
+    lines = []
+    for name, d in sets.items():
+        if name == TB_SET:
+            subs = sorted(p.name for p in d.glob("sub-*") if p.is_dir())
+            runs = sum(1 for _ in d.glob("sub-*/ses-*/*/features"))
+            lines.append(f"{name:<12} composed runs: {len(subs)} subjects, "
+                         f"{runs} runs  (mmmview stimfeat tb SUB SES RUN)")
+            continue
+        n = len(feature_models(d))
+        extra = []
+        films = _films(d)
+        if films:
+            extra.append(f"{len(films)} films (--film)")
+        if name in TIMELINE_TABLES:
+            extra.append(f"model '{TIMELINE}'")
+        lines.append(f"{name:<12} {n} models"
+                     + (f"  + {', '.join(extra)}" if extra else ""))
+    return lines
+
+
+def _model_listing(d):
+    by = {}
+    for m in feature_models(d):
+        by.setdefault(_extractor_of(d, m), []).append(m)
+    return [f"{ex:<9} {' '.join(ms)}" for ex, ms in sorted(by.items())]
+
+
+def _tb_label(run_dir):
+    ents = parse_entities(run_dir.name)[0]
+    return f"{ents.get('task', '?')}_run-{ents.get('run', '?')}"
+
+
+def _stimfeat_tb(tb, rest, roots, opts, no_open):
+    """tb [SUB [SES [RUN]]]: list down to the runs, then open the matched
+    runs' timelines (RUN matches like any label: `enc` = every encoding
+    run of the session, `encoding_run-02` = one)."""
+    if len(rest) > 3:
+        raise Unplaceable("tb takes SUB SES RUN at most")
+    subs = sorted(p.name[4:] for p in tb.glob("sub-*") if p.is_dir())
+    if not rest:
+        for s in subs:
+            n = sum(1 for _ in (tb / f"sub-{s}").glob("ses-*/*/features"))
+            print(f"sub-{s}  {len(list((tb / f'sub-{s}').glob('ses-*')))} "
+                  f"sessions, {n} runs")
+        return 0
+    sub = _bare_sub(rest[0])
+    if sub not in subs:
+        raise Unplaceable(f"no composed runs for sub-{sub}; subjects: "
+                          + ", ".join(f"sub-{s}" for s in subs))
+    sdir = tb / f"sub-{sub}"
+    sess = sorted(p.name[4:] for p in sdir.glob("ses-*") if p.is_dir())
+    if len(rest) == 1:
+        for s in sess:
+            runs = sorted(_tb_label(p) for p in (sdir / f"ses-{s}").iterdir()
+                          if (p / "features").is_dir())
+            print(f"sub-{sub} ses-{s}  {' '.join(runs)}")
+        return 0
+    ses = rest[1][4:] if rest[1].startswith("ses-") else rest[1]
+    if ses not in sess:
+        raise Unplaceable(f"no ses-{ses} for sub-{sub}; sessions: "
+                          + ", ".join(sess))
+    runs = {_tb_label(p): p for p in sorted((sdir / f"ses-{ses}").iterdir())
+            if (p / "features").is_dir()}
+    if len(rest) == 2:
+        print(f"sub-{sub} ses-{ses}  {' '.join(runs)}")
+        print(f"-- open: mmmview stimfeat tb {sub} {ses} RUN  (e.g. "
+              f"{next(iter(runs), 'RUN')}, or a fragment such as enc)")
+        return 0
+    picked = match_label(rest[2], runs, "run")
+    plans = [resolve(t, roots, opts) for r in picked
+             for t in classify(runs[r])]
+    return _render_and_open(plans, opts, no_open)
+
+
+def stimfeat_main(argv):
+    ap = argparse.ArgumentParser(
+        prog="mmmview stimfeat",
+        description="stimulus feature tables by set and model label: "
+                    "list the sets, a set's models (by extractor), or open "
+                    "a model's dashboard(s). `movies timeline` opens "
+                    "psytwill's movies viewer; `tb SUB SES RUN` a composed "
+                    "TB run's timeline.",
+        epilog="labels match like mmmview glm's: exact, unique prefix, or "
+               "substring (shared -> shared1000, clap -> every model "
+               "containing clap); `all` and comma lists work.")
+    ap.add_argument("set", nargs="?", help="stimulus set (shared1000, "
+                    "twp1000, movie_cues, movies, tb, ...)")
+    ap.add_argument("rest", nargs="*", help="MODEL; for tb: SUB SES RUN")
+    ap.add_argument("--film", help="movies: a film's own tables")
+    ap.add_argument("--grain", help="only tables whose name contains this "
+                    "(chunks, words, frames, ...)")
+    ap.add_argument("--tree", default=STIMFEAT_TREE,
+                    help=f"tree under the derivatives root (default "
+                         f"{STIMFEAT_TREE})")
+    ap.add_argument("--no-open", action="store_true")
+    ap.add_argument("--force", action="store_true")
+    ap.add_argument("--deriv-root", help="override config derivatives root")
+    args = ap.parse_args(argv)
+
+    roots = load_roots(args.deriv_root)
+    tree = roots.deriv / args.tree
+    opts = Opts(force=args.force)
+    try:
+        if not tree.is_dir():
+            raise Unplaceable(f"no feature tree at {tree}; pass --tree or "
+                              "--deriv-root")
+        sets = stimfeat_sets(tree)
+        if not args.set:
+            print("\n".join(_stimfeat_listing(tree, sets)))
+            print(f"-- list a set's models: mmmview stimfeat SET  "
+                  f"(source {tree})")
+            return 0
+        picked = match_label(args.set, sets, "stimulus set")
+        if len(picked) != 1:
+            raise Unplaceable(f"{args.set!r} names several sets "
+                              f"({', '.join(picked)}); be more specific")
+        name, d = picked[0], sets[picked[0]]
+        if name == TB_SET:
+            return _stimfeat_tb(d, args.rest, roots, opts, args.no_open)
+        if len(args.rest) > 1:
+            raise Unplaceable("one MODEL label per call (a comma list, a "
+                              "fragment, or `all` selects several)")
+        if args.film:
+            films = match_label(args.film, _films(d), "film")
+            if len(films) != 1:
+                raise Unplaceable(f"{args.film!r} names several films "
+                                  f"({', '.join(films)})")
+            d = d / films[0]
+        if not args.rest:
+            print("\n".join(_model_listing(d)))
+            if d == sets[name] and _films(d):
+                print(f"-- {len(_films(d))} films carry their own tables: "
+                      f"--film NAME")
+            if d == sets[name] and name in TIMELINE_TABLES:
+                print(f"-- the whole set in one viewer: mmmview stimfeat "
+                      f"{name} {TIMELINE}")
+            print(f"-- open one: mmmview stimfeat {name} MODEL")
+            return 0
+        if args.rest[0].lower() == TIMELINE and name in TIMELINE_TABLES:
+            src = tree / TIMELINE_TABLES[name]
+            plans = [resolve(_movies_target(src, source=src), roots, opts)]
+            return _render_and_open(plans, opts, args.no_open)
+        models = feature_models(d)
+        try:
+            chosen = match_label(args.rest[0], models, "model")
+        except Unplaceable:
+            films = _films(d) if d == sets[name] else []
+            per_film = (sorted(feature_models(d / films[0])) if films
+                        else [])
+            if any(args.rest[0].lower() in m.lower() for m in per_film):
+                raise Unplaceable(f"{args.rest[0]!r} is a per-film model in "
+                                  f"{name}: add --film NAME (films: "
+                                  f"mmmview stimfeat {name} --film ?)")
+            raise
+        tables = [p for m in chosen for p in models[m]]
+        if args.grain:
+            tables = [p for p in tables
+                      if args.grain.lower() in p.name.lower()]
+            if not tables:
+                raise Unplaceable(f"no {args.rest[0]} table matches grain "
+                                  f"{args.grain!r}")
+        plans = [resolve(t, roots, opts) for p in tables
+                 for t in classify(p)]
+    except Unplaceable as exc:
+        print(f"mmmview stimfeat: {exc}", file=sys.stderr)
+        return EXIT_UNPLACEABLE
+    return _render_and_open(plans, opts, args.no_open, index_features=True)
+
+
+VERBS = {"serve": serve_main, "reap": reap_main, "glm": glm_main,
+         "prf": prf_main, "stimfeat": stimfeat_main}
 
 
 def main(argv=None):
@@ -2493,7 +3015,13 @@ def main(argv=None):
             note = open_view(page)
             print(note if note else OPEN_HINT)
         return 0
+    return _render_and_open(plans, opts, args.no_open)
 
+
+def _render_and_open(plans, opts, no_open, index_features=False):
+    """Build each plan, index the viz dirs they landed in, open the result.
+    `index_features` also indexes feature dashboards (`mmmview stimfeat`
+    collects a set's dashboards under one pulldown)."""
     outs = []
     for plan in plans:
         for m in plan.messages:
@@ -2515,15 +3043,16 @@ def main(argv=None):
     # a viz dir holding several bundles gets a pulldown index; open that
     # (preselecting this run's first bundle) instead of "the first of N"
     index = None
-    bundle_outs = [p.out for p in plans
-                   if p.renderer in ("volume", "surface", "results")]
+    indexed = ("volume", "surface", "results") + (
+        ("features",) if index_features else ())
+    bundle_outs = [p.out for p in plans if p.renderer in indexed]
     for d in sorted({o.parent for o in bundle_outs}):
         got = write_index(d)
         if got:
             index = got
             print(f"index {got}")
 
-    if not args.no_open and outs:
+    if not no_open and outs:
         if index:
             note = open_view(index, fragment=bundle_outs[0].name)
         else:

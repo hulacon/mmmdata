@@ -2008,3 +2008,263 @@ class TestRefreshEndpoints:
         _, _, port = served
         status, _ = self.call(port, "GET", f"/__status?page={page}")
         assert status == code
+
+
+# ---------------------------------------------------------------------------
+# glm — maps by label through a GLM tree's maps.tsv; narrow bundles per
+# (desc, stat) that reap claims; desc-variant twins no longer share a name
+# ---------------------------------------------------------------------------
+
+class TestGlm:
+    CONTRASTS = ("faceVsObject", "placeVsObject")
+
+    @pytest.fixture
+    def tree(self, roots):
+        """A GLM tree for sub-07: floc pooled (subject level) and one
+        session (ses-04), 2 contrasts x z/t x OLS/AR(1) in T1w, plus the
+        maps.tsv the real writer produces."""
+        from neuroimaging.glm.outputs import update_tree_index
+        base = roots.deriv / "nilearn_glm"
+        ones = np.ones((3, 3, 2), np.float32)
+        for d, ses in ((base / "sub-07" / "func", ""),
+                       (base / "sub-07" / "ses-04" / "func", "ses-04_")):
+            d.mkdir(parents=True)
+            for c in self.CONTRASTS:
+                for stat in ("z", "t"):
+                    for desc in ("referenceOLS", "referenceAR1"):
+                        nib.save(nib.Nifti1Image(ones, np.eye(4)), d / (
+                            f"sub-07_{ses}task-floc_space-T1w_contrast-{c}_"
+                            f"stat-{stat}_desc-{desc}_statmap.nii.gz"))
+        update_tree_index(base, "referenceAR1", "test")
+        # the fixture's anat underlay is an empty placeholder; render reads it
+        nib.save(nib.Nifti1Image(ones, np.eye(4)), roots.deriv / "fmriprep" /
+                 "sub-07" / "anat" / "sub-07_acq-MPR_desc-preproc_T1w.nii.gz")
+        return base
+
+    def test_tree_name_matches_the_glm_config(self):
+        from neuroimaging.glm.config import GlmConfig
+        assert mmmview.GLM_TREE == GlmConfig.output_tree
+
+    def test_desc_twins_get_distinct_bundle_names(self, roots, tree):
+        d = tree / "sub-07" / "func"
+        names = {resolve(classify(d / (
+            f"sub-07_task-floc_space-T1w_contrast-faceVsObject_stat-z_"
+            f"desc-{desc}_statmap.nii.gz"))[0], roots).out.name
+            for desc in ("referenceOLS", "referenceAR1")}
+        assert names == {
+            f"sub-07_task-floc_space-T1w_contrast-faceVsObject_stat-z_"
+            f"srcdesc-{desc}_desc-viewer_statmap.html"
+            for desc in ("referenceOLS", "referenceAR1")}
+
+    def test_split_is_one_bundle_per_desc_and_stat(self, roots, tree):
+        (t,) = classify(tree / "sub-07" / "func")
+        parts = mmmview.glm_split(t)
+        assert len(parts) == 4 and all(len(p.maps) == 2 for p in parts)
+        names = sorted(resolve(p, roots).out.name for p in parts)
+        assert names[0] == ("sub-07_task-floc_space-T1w_stat-t_"
+                            "srcdesc-referenceAR1_desc-viewer_statmap.html")
+        assert mmmview._index_label(names[0]) == (
+            "task-floc space-T1w stat-t desc-referenceAR1 statmap")
+
+    def test_split_leaves_prf_and_single_groups_alone(self, tmp_path):
+        d = tmp_path / "sub-07"
+        for param in ("R2", "angle"):
+            touch(d / f"sub-07_task-prf_space-T1w_desc-{param}_prf.nii.gz")
+        (t,) = classify(d)
+        assert mmmview.glm_split(t) == []
+        one = touch(tmp_path / "o" / "sub-07_space-T1w_stat-z_statmap.nii.gz")
+        assert mmmview.glm_split(classify(one)[0]) == []
+
+    @pytest.mark.parametrize("value,expect", [
+        ("tb", ["TBencoding"]), ("FLOC", ["floc"]), ("all", None),
+        ("floc,tb", ["floc", "TBencoding"])])
+    def test_match_label(self, value, expect):
+        choices = ["TBencoding", "floc", "motor"]
+        got = mmmview.match_label(value, choices, "task")
+        assert got == (sorted(choices) if expect is None else expect)
+
+    def test_match_label_substring_and_miss(self):
+        assert mmmview.match_label("ols", ["referenceAR1", "referenceOLS"],
+                                   "desc") == ["referenceOLS"]
+        with pytest.raises(Unplaceable, match="available: floc, motor"):
+            mmmview.match_label("tone", ["floc", "motor"], "task")
+
+    def test_select_defaults(self, tree):
+        rows = mmmview.load_maps_index(tree / "maps.tsv")
+        sel = mmmview.glm_select(rows, "sub-07", "floc")
+        # pooled over ses-04, AR(1) over OLS, z over t
+        assert {(r["scope"], r["desc"], r["stat"]) for r in sel} == {
+            (mmmview.POOLED, "referenceAR1", "z")}
+        assert len(sel) == 2
+        sel = mmmview.glm_select(rows, "07", "floc", ses="ses-04",
+                                 desc="all", stat="all")
+        assert len(sel) == 8 and {r["scope"] for r in sel} == {"04"}
+
+    def test_missing_index_names_its_fix(self, tmp_path):
+        with pytest.raises(Unplaceable, match="--maps or --tree"):
+            mmmview.load_maps_index(tmp_path / "maps.tsv")
+
+    def test_cli_lists_without_task(self, roots, tree, capsys, monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        assert mmmview.main(["glm"]) == 0
+        out = capsys.readouterr().out.splitlines()
+        assert out[0].startswith("sub-07  floc") and "ses-04" in out[0]
+        assert "pooled" in out[1] and "2 contrasts" in out[1]
+
+    def test_cli_unknown_subject_exits_2(self, roots, tree, capsys,
+                                         monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        assert mmmview.main(["glm", "99", "floc", "--no-open"]) == 2
+        assert "subjects: sub-07" in capsys.readouterr().err
+
+    def test_cli_builds_indexes_and_reap_keeps(self, roots, tree, capsys,
+                                               monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        rc = mmmview.main(["glm", "sub-07", "floc", "--no-open",
+                           "--desc", "all"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        viz = tree / "sub-07" / "viz"
+        built = sorted(p.name for p in viz.glob("*_desc-viewer_*.html"))
+        assert built == [
+            f"sub-07_task-floc_space-T1w_stat-z_srcdesc-{d}_"
+            "desc-viewer_statmap.html"
+            for d in ("referenceAR1", "referenceOLS")]
+        assert f"index {viz / 'index.html'}" in out
+        # a second call reuses; reap claims both (none orphaned)
+        assert mmmview.main(["glm", "07", "floc", "--no-open"]) == 0
+        assert "current " in capsys.readouterr().out
+        assert mmmview.main(["reap", str(tree / "sub-07")]) == 0
+        rep = capsys.readouterr().out
+        assert "0 stale" in rep and rep.count("keep\t") == 2
+
+
+# ---------------------------------------------------------------------------
+# prf / stimfeat verbs — the same label-driven entry as glm, over
+# derivatives/prf and derivatives/stimuli_features
+# ---------------------------------------------------------------------------
+
+class TestPrfVerb:
+    @pytest.fixture
+    def tree(self, roots):
+        d = roots.deriv / "prf" / "sub-07"
+        ones = np.ones((3, 3, 2), np.float32)
+        d.mkdir(parents=True)
+        for pol in ("prf", "negprf"):
+            for param in ("R2", "angle"):
+                nib.save(nib.Nifti1Image(ones * 50, np.eye(4)),
+                         d / f"sub-07_task-prf_space-T1w_desc-{param}_{pol}.nii.gz")
+                touch(d / f"sub-07_task-prf_space-fsnative_hemi-L_"
+                      f"desc-{param}_{pol}.shape.gii")
+        nib.save(nib.Nifti1Image(ones, np.eye(4)), roots.deriv / "fmriprep" /
+                 "sub-07" / "anat" / "sub-07_acq-MPR_desc-preproc_T1w.nii.gz")
+        return d
+
+    def test_lists_subjects(self, roots, tree, capsys, monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        assert mmmview.main(["prf"]) == 0
+        line = capsys.readouterr().out.splitlines()[0]
+        assert line.startswith("sub-07  space T1w,fsnative")
+        assert "variants prf,negprf" in line and "params R2,angle" in line
+
+    def test_space_filter_builds_one_merged_bundle(self, roots, tree, capsys,
+                                                   monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        assert mmmview.main(["prf", "sub-07", "--space", "t1",
+                             "--no-open"]) == 0
+        built = sorted(p.name for p in (tree / "viz").glob("*_desc-viewer*"))
+        assert built == ["sub-07_task-prf_space-T1w_desc-viewer_prfvariants.html"]
+
+    def test_unknown_subject_exits_2(self, roots, tree, capsys, monkeypatch):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        assert mmmview.main(["prf", "99"]) == 2
+        assert "subjects: sub-07" in capsys.readouterr().err
+
+
+class TestStimfeatVerb:
+    @pytest.fixture
+    def tree(self, roots):
+        t = roots.deriv / "stimuli_features"
+        for m, ex in (("clip", "viz2psy"), ("caption_clap_text", "word2psy")):
+            touch(t / "images" / f"{m}.meta.json",
+                  json.dumps({"extractor": ex, "input": {"paths": []}}))
+        touch(t / "images" / "clip.csv", "a\n1\n")
+        touch(t / "images" / "caption_clap_text_chunks.csv", "a\n1\n")
+        touch(t / "images" / "caption_clap_text_words.csv", "a\n1\n")
+        touch(t / "films" / "transcript_emotion.meta.json",
+              json.dumps({"extractor": "word2psy"}))
+        touch(t / "films" / "transcript_emotion_chunks.csv", "a\n1\n")
+        touch(t / "films" / "film-a" / "gist.meta.json",
+              json.dumps({"extractor": "viz2psy", "input": {"paths": []}}))
+        touch(t / "films" / "film-a" / "gist.csv", "a\n1\n")
+        touch(t / "_inputs" / "x.meta.json", json.dumps({"extractor": "x"}))
+        touch(t / "_inputs" / "x.csv", "a\n1\n")
+        run = t / "tb" / "sub-07" / "ses-04" / "sub-07_ses-04_task-TBencoding_run-01"
+        touch(run / "features" / "movies_frames_features.parquet")
+        (run / "movies").mkdir(parents=True)
+        return t
+
+    @pytest.fixture
+    def built(self, monkeypatch):
+        """render() stubbed: the dashboards shell out to the stimfeat env."""
+        calls = []
+
+        def fake(plan, force=False):
+            calls.append(plan)
+            touch(plan.out, "<html></html>")
+            return plan.out, True
+        monkeypatch.setattr(mmmview, "render", fake)
+        return calls
+
+    def run(self, roots, monkeypatch, *args):
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        return mmmview.main(["stimfeat", *args])
+
+    def test_sets_skip_staging_and_count_models(self, roots, tree, capsys,
+                                                monkeypatch):
+        assert self.run(roots, monkeypatch) == 0
+        out = capsys.readouterr().out
+        assert "_inputs" not in out
+        assert "images       2 models" in out
+        assert "films        1 models  + 1 films (--film)" in out
+        assert "1 subjects, 1 runs" in out
+
+    def test_models_grouped_by_extractor(self, roots, tree, capsys,
+                                         monkeypatch):
+        assert self.run(roots, monkeypatch, "ima") == 0
+        out = capsys.readouterr().out.splitlines()
+        assert out[0].split() == ["viz2psy", "clip"]
+        assert out[1].split() == ["word2psy", "caption_clap_text"]
+
+    def test_model_builds_every_table_and_indexes(self, roots, tree, built,
+                                                  capsys, monkeypatch):
+        assert self.run(roots, monkeypatch, "images", "clap",
+                        "--no-open") == 0
+        assert sorted(p.out.name for p in built) == [
+            "caption_clap_text_chunks_desc-viewer.html",
+            "caption_clap_text_words_desc-viewer.html"]
+        html = (tree / "images" / "viz" / "index.html").read_text()
+        assert ">caption_clap_text_chunks</option>" in html
+
+    def test_grain_narrows(self, roots, tree, built, monkeypatch):
+        assert self.run(roots, monkeypatch, "images", "clap", "--grain",
+                        "words", "--no-open") == 0
+        assert [p.out.name for p in built] == [
+            "caption_clap_text_words_desc-viewer.html"]
+
+    def test_per_film_model_names_the_flag(self, roots, tree, capsys,
+                                           monkeypatch):
+        assert self.run(roots, monkeypatch, "films", "gist") == 2
+        assert "--film NAME" in capsys.readouterr().err
+
+    def test_film_flag(self, roots, tree, built, monkeypatch):
+        assert self.run(roots, monkeypatch, "films", "gist", "--film",
+                        "film-a", "--no-open") == 0
+        assert built[0].out.parent == tree / "films" / "film-a" / "viz"
+
+    def test_tb_run_by_fragment(self, roots, tree, built, monkeypatch):
+        assert self.run(roots, monkeypatch, "tb", "07", "ses-04", "enc",
+                        "--no-open") == 0
+        (plan,) = built
+        assert plan.renderer == "movies"
+        assert plan.out.parts[-4] == "movies" and plan.out.name == "index.html"
