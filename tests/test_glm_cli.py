@@ -75,7 +75,7 @@ def test_dry_run_builds_designs_and_writes_nothing(tree, capsys):
     out = capsys.readouterr().out
     assert "runs (2)" in out and "dry run" in out
     assert "design columns" in out
-    assert not (tree / "derivatives" / "glm_reference").exists()
+    assert not (tree / "derivatives" / "nilearn_glm").exists()
 
 
 def test_run_without_events_is_refused_before_any_fit(tree):
@@ -94,18 +94,18 @@ def test_full_fit_writes_contract_a_named_maps_and_description(tree):
     rc = glm_contrast_maps.main(["--subject", "sub-aa", "--model", "motor", "--bids-root", str(tree),
                                  "--per-run-maps"])
     assert rc == 0
-    base = tree / "derivatives" / "glm_reference"
+    base = tree / "derivatives" / "nilearn_glm"
     desc = json.loads((base / "dataset_description.json").read_text())
     assert desc["DatasetType"] == "derivative"
     func = base / "sub-aa" / "ses-30" / "func"  # one session selected -> ses- kept
-    fx = func / f"sub-aa_ses-30_task-motor_space-{SPACE}_contrast-handVsRest_stat-z_statmap.nii.gz"
+    fx = func / f"sub-aa_ses-30_task-motor_space-{SPACE}_contrast-handVsRest_stat-z_desc-referenceOLS_statmap.nii.gz"
     assert fx.exists(), sorted(p.name for p in func.iterdir())
-    per_run = func / f"sub-aa_ses-30_task-motor_run-01_space-{SPACE}_contrast-handVsRest_stat-effect_statmap.nii.gz"
+    per_run = func / f"sub-aa_ses-30_task-motor_run-01_space-{SPACE}_contrast-handVsRest_stat-effect_desc-referenceOLS_statmap.nii.gz"
     assert per_run.exists()
     z = nib.load(str(fx)).get_fdata()
     assert z[0:2, 0:2, 0:2].mean() > 3.0
     assert abs(z[3:, 3:, 3:].mean()) < 1.5
-    meta = json.loads((func / f"sub-aa_task-motor_space-{SPACE}_model-motor_run_metadata.json").read_text())
+    meta = json.loads((func / f"sub-aa_task-motor_space-{SPACE}_desc-referenceOLS_model-motor_run_metadata.json").read_text())
     assert meta["estimator"] == "nilearn" and len(meta["runs"]) == 2
     assert meta["config"]["space"] == SPACE
     # Defaults are the frozen reference: OLS, unsmoothed, motion + 6 aCompCor.
@@ -160,23 +160,23 @@ def test_fsnative_fit_writes_hemisphere_gifti_maps(tree):
     pytest.importorskip("nilearn")
     _seed_surface(tree, "aa", "30")
     rc = glm_contrast_maps.main(["--subject", "aa", "--model", "motor", "--space", "fsnative",
-                                 "--noise-model", "ar1", "--output-tree", "glm_reference_ar1",
+                                 "--noise-model", "ar1",
                                  "--bids-root", str(tree)])
     assert rc == 0
-    func = tree / "derivatives" / "glm_reference_ar1" / "sub-aa" / "ses-30" / "func"
+    func = tree / "derivatives" / "nilearn_glm" / "sub-aa" / "ses-30" / "func"
     for hemi, n in N_VERT.items():
         z = nib.load(str(func / f"sub-aa_ses-30_task-motor_hemi-{hemi}_space-fsnative_"
-                                "contrast-handVsRest_stat-z_statmap.func.gii")).darrays[0].data
+                                "contrast-handVsRest_stat-z_desc-referenceAR1_statmap.func.gii")).darrays[0].data
         assert z.shape == (n,) and z.dtype == np.float32
         assert z[:5].mean() > 3.0 and abs(z[5:-2].mean()) < 1.5
         assert np.all(z[-2:] == 0)  # masked vertices carry no estimate
-    meta = json.loads((func / "sub-aa_task-motor_space-fsnative_model-motor_run_metadata.json").read_text())
+    meta = json.loads((func / "sub-aa_task-motor_space-fsnative_desc-referenceAR1_model-motor_run_metadata.json").read_text())
     assert meta["config"]["space"] == "fsnative" and set(meta["surface_mesh"]) == {"L", "R"}
     # The volume fit's metadata in the same directory is not overwritten.
     glm_contrast_maps.main(["--subject", "aa", "--model", "motor", "--noise-model", "ar1",
-                            "--output-tree", "glm_reference_ar1", "--bids-root", str(tree)])
-    assert (func / f"sub-aa_task-motor_space-{SPACE}_model-motor_run_metadata.json").exists()
-    assert (func / "sub-aa_task-motor_space-fsnative_model-motor_run_metadata.json").exists()
+                            "--bids-root", str(tree)])
+    assert (func / f"sub-aa_task-motor_space-{SPACE}_desc-referenceAR1_model-motor_run_metadata.json").exists()
+    assert (func / "sub-aa_task-motor_space-fsnative_desc-referenceAR1_model-motor_run_metadata.json").exists()
 
 
 def test_fsnative_without_a_mesh_is_a_named_error(tree):
@@ -187,3 +187,25 @@ def test_fsnative_without_a_mesh_is_a_named_error(tree):
     with pytest.raises(SystemExit, match="midthickness"):
         glm_contrast_maps.main(["--subject", "aa", "--model", "motor", "--space", "fsnative", "--dry-run",
                                 "--bids-root", str(tree)])
+
+
+def test_both_engines_share_one_tree_and_the_index_lists_every_map(tree):
+    pytest.importorskip("nilearn")
+    for engine in ("ols", "ar1"):
+        assert glm_contrast_maps.main(["--subject", "aa", "--model", "motor", "--noise-model", engine,
+                                       "--bids-root", str(tree)]) == 0
+    base = tree / "derivatives" / "nilearn_glm"
+    func = base / "sub-aa" / "ses-30" / "func"
+    for desc in ("referenceOLS", "referenceAR1"):
+        assert (func / f"sub-aa_ses-30_task-motor_space-{SPACE}_contrast-handVsRest_stat-z_desc-{desc}"
+                       "_statmap.nii.gz").exists()
+    descs = pd.read_csv(base / "descriptions.tsv", sep="\t")
+    assert set(descs.desc_id) == {"referenceOLS", "referenceAR1"}
+    assert descs.set_index("desc_id").loc["referenceAR1", "description"].count("AR(1)") == 1
+    maps = pd.read_csv(base / "maps.tsv", sep="\t", dtype=str, keep_default_na=False)
+    on_disk = sorted(str(p.relative_to(base)) for p in base.glob("sub-*/**/*_statmap.nii.gz"))
+    assert sorted(maps.path) == on_disk and len(on_disk) == 2 * 4 * 4  # engines x contrasts x stats
+    row = maps[(maps.contrast == "handVsRest") & (maps.stat == "z") & (maps.desc == "referenceAR1")].iloc[0]
+    assert (row.subject, row.session, row.task) == ("aa", "30", "motor")
+    assert (row.space, row.res) == ("MNI152NLin2009cAsym", "2")  # the project's space label spans two entities
+    assert (base / row.path).exists()

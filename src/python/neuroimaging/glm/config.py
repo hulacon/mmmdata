@@ -79,7 +79,7 @@ class GlmConfig:
     include_cosine: bool = True
     acompcor_n: int = 0
     include_non_steady_state: bool = True
-    output_tree: str = "glm_localizer"
+    output_tree: str = "nilearn_glm"
 
     def confound_columns(self, available: list[str]) -> list[str]:
         """The confound columns to regress, given what a confounds TSV has.

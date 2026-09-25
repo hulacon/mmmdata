@@ -16,8 +16,13 @@ intersection of the runs' brain masks. `--noise-model ar1` is the spec's
 calibrated-inference engine. Any other flag departs from the reference, and
 the fit's metadata records the whole config so the departure is visible.
 Every output filename carries Contract A keys plus `contrast-` and `stat-`
-entities. The two noise models share filenames, so each writes its own tree
-(`--output-tree`); spaces share a tree, told apart by `space-`.
+entities, and `desc-<regime><ENGINE>` (e.g. `desc-referenceAR1`) naming the
+processing variant, so every engine, regime and space shares one tree,
+derivatives/nilearn_glm. After each fit the tree's `descriptions.tsv` (one row
+per desc label) and `maps.tsv` (every map: subject, session, task, space,
+contrast, stat, desc, path) are refreshed under a lock. Maps sit where BIDS
+puts them — a one-session pool under ses-XX/, a cross-session pool at
+sub-XX/ — so find them through maps.tsv or the catalog.
 
 `--space` takes any volumetric space fMRIPrep wrote (the MNI reference,
 `T1w`, `func`) or the subject surface `fsnative`. A surface fit reads the
@@ -36,7 +41,7 @@ Usage:
     python glm_contrast_maps.py --subject sub-03 --model motor --sessions ses-30 --dry-run
     python glm_contrast_maps.py --subject sub-03 --model tbrepetition   # adapter needs all 42 runs
     python glm_contrast_maps.py --subject sub-03 --model floc
-    python glm_contrast_maps.py --subject sub-03 --model floc --noise-model ar1 --output-tree glm_reference_ar1
+    python glm_contrast_maps.py --subject sub-03 --model floc --noise-model ar1
     python glm_contrast_maps.py --subject sub-03 --model floc --space T1w
     python glm_contrast_maps.py --subject sub-03 --model floc --space fsnative
 """
@@ -63,8 +68,11 @@ from neuroimaging.glm.estimators import fixed_effects, get_estimator  # noqa: E4
 from neuroimaging.glm.models import list_models, load_model  # noqa: E402
 from neuroimaging.glm.reference import load_reference_spec, reference_config  # noqa: E402
 from neuroimaging.glm.outputs import (  # noqa: E402
+    describe_glm_desc,
     ensure_dataset_description,
+    glm_desc,
     output_dir,
+    update_tree_index,
     save_statmap,
     statmap_name,
     write_run_metadata,
@@ -112,7 +120,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="named confound regime from the reference spec")
     p.add_argument("--smoothing-fwhm", type=float, default=ref.smoothing_fwhm,
                    help="mm; 0 or unset = unsmoothed (the reference)")
-    p.add_argument("--output-tree", default="glm_reference")
+    p.add_argument("--output-tree", default="nilearn_glm")
     p.add_argument("--allow-mixed-designs", action="store_true",
                    help="pool a split-design task across both session groups (see find_fmriprep_runs)")
     p.add_argument("--per-run-maps", action="store_true", help="also write each run's maps")
@@ -173,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         hrf_model=model.hrf_model,
         output_tree=args.output_tree,
     )
+    desc = glm_desc(args.regime, cfg.noise_model, cfg.smoothing_fwhm, cfg.variant)
     runs = select_runs(args, model.task, bids_root)
     subject = runs[0].subject
     fmriprep_dir = bids_root / DERIVATIVES_DIRS[args.variant]
@@ -195,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
           f"{len(model.contrasts)} contrasts ({', '.join(c.name for c in model.contrasts)})")
     print(f"runs ({len(runs)}): " + ", ".join(r.entity_prefix for r in runs))
     print(f"config: {json.dumps(cfg.to_dict())}")
+    print(f"desc: {desc} -> {cfg.output_tree}")
 
     # Designs first, for every run, before any fitting: a bad run fails the
     # whole job here rather than after an hour of estimation.
@@ -232,9 +242,9 @@ def main(argv: list[str] | None = None) -> int:
     def write_map(img, d: Path, name: str, stat: str, session, run=None) -> list[str]:
         if surface:
             paths = {h: d / statmap_name(subject, model.task, cfg.space, name, stat, session=session, run=run,
-                                         hemi=h, ext=".func.gii") for h in HEMIS}
+                                         hemi=h, ext=".func.gii", desc=desc) for h in HEMIS}
             return [p.name for p in save_surface_statmap(img, paths)]
-        path = d / statmap_name(subject, model.task, cfg.space, name, stat, session=session, run=run)
+        path = d / statmap_name(subject, model.task, cfg.space, name, stat, session=session, run=run, desc=desc)
         return [save_statmap(img, path).name]
 
     estimator = get_estimator(args.estimator)
@@ -283,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
         "model_path": str(model.path),
         "task": model.task,
         "estimator": estimator.name,
+        "regime": args.regime,
+        "desc": desc,
         "config": cfg.to_dict(),
         "runs": [{"subject": r.subject, "session": r.session, "run": r.run, "events": str(r.events)} for r in runs],
         "fixed_effects": model.fixed_effects,
@@ -291,9 +303,10 @@ def main(argv: list[str] | None = None) -> int:
     }
     if surface:
         meta["surface_mesh"] = {h: str(p) for h, p in mesh_paths.items()}
-    # space- in the name: fits in several spaces share a directory.
-    write_run_metadata(d / f"sub-{subject}_task-{model.task}_space-{cfg.space}_model-{model.name}_run_metadata.json",
-                       meta)
+    # space- and desc- in the name: fits in several spaces and variants share a directory.
+    write_run_metadata(d / f"sub-{subject}_task-{model.task}_space-{cfg.space}_desc-{desc}_model-{model.name}"
+                           "_run_metadata.json", meta)
+    update_tree_index(out_base, desc, describe_glm_desc(args.regime, cfg.noise_model, cfg.smoothing_fwhm, cfg.variant))
     print(f"wrote {len(written)} maps to {d}")
     return 0
 

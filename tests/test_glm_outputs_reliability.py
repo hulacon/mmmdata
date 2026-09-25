@@ -105,3 +105,14 @@ def test_statmap_name_surface_puts_hemi_before_space():
     assert statmap_name("03", "floc", "fsnative", "faceVsAll", "z", session="03", hemi="L", ext=".func.gii") == (
         "sub-03_ses-03_task-floc_hemi-L_space-fsnative_contrast-faceVsAll_stat-z_statmap.func.gii"
     )
+
+
+def test_glm_desc_names_regime_engine_and_every_departure():
+    from neuroimaging.glm.outputs import glm_desc
+
+    assert glm_desc("reference", "ols") == "referenceOLS"
+    assert glm_desc("gsr", "ar1") == "gsrAR1"
+    assert glm_desc("reference", "ar1", smoothing_fwhm=4.0) == "referenceAR1Fwhm4"
+    assert glm_desc("reference", "ar1", smoothing_fwhm=2.5, variant="fmriprep_nordic") == "referenceAR1Fwhm2p5Nordic"
+    assert statmap_name("03", "floc", "T1w", "faceVsAll", "z", desc="referenceAR1").endswith(
+        "_contrast-faceVsAll_stat-z_desc-referenceAR1_statmap.nii.gz")

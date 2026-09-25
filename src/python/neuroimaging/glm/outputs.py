@@ -11,6 +11,7 @@ directory.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -49,13 +50,15 @@ def statmap_name(
     run: Optional[str] = None,
     ext: str = ".nii.gz",
     hemi: Optional[str] = None,
+    desc: Optional[str] = None,
 ) -> str:
-    """``sub-XX[_ses-YY]_task-T[_run-RR][_hemi-H]_space-S_contrast-C_stat-X_statmap.nii.gz``.
+    """``sub-XX[_ses-YY]_task-T[_run-RR][_hemi-H]_space-S_contrast-C_stat-X[_desc-D]_statmap.nii.gz``.
 
     Bare labels in, prefixes added here — the same rule the QC tools use.
     A fixed-effects map over runs carries no ``run``; one pooled over sessions
     carries no ``session`` either. A surface map carries ``hemi`` (before
-    ``space``, as fMRIPrep orders it) and ``ext=".func.gii"``.
+    ``space``, as fMRIPrep orders it) and ``ext=".func.gii"``. ``desc`` names
+    the processing variant (:func:`glm_desc`), so several variants share a tree.
     """
     if stat not in STATS:
         raise ValueError(f"stat must be one of {STATS}, got {stat!r}")
@@ -67,7 +70,10 @@ def statmap_name(
         parts.append(f"run-{_bare(run, 'run')}")
     if hemi:
         parts.append(f"hemi-{hemi}")
-    parts += [f"space-{space}", f"contrast-{contrast}", f"stat-{stat}", "statmap"]
+    parts += [f"space-{space}", f"contrast-{contrast}", f"stat-{stat}"]
+    if desc:
+        parts.append(f"desc-{desc}")
+    parts.append("statmap")
     return "_".join(parts) + ext
 
 
@@ -84,6 +90,106 @@ def noise_map_name(entity_prefix: str, space: str, param: str) -> str:
 
 def _bare(label: str, prefix: str) -> str:
     return label[len(prefix) + 1 :] if label.startswith(prefix + "-") else label
+
+
+ENGINE_LABELS = {"ols": "OLS", "ar1": "AR1"}
+
+
+def glm_desc(regime: str, noise_model: str, smoothing_fwhm: Optional[float] = None,
+             variant: str = "fmriprep") -> str:
+    """The ``desc-`` label of a fit: confound regime + engine, plus any departure.
+
+    ``referenceAR1``, ``gsrOLS``; a smoothed or non-default-input fit appends
+    ``Fwhm5`` / ``Nordic`` so it can never overwrite a reference-spec map.
+    BIDS asks ``desc`` to distinguish versions of processing of the same
+    input; every choice the runner exposes that changes the numbers is in it.
+    """
+    label = regime + ENGINE_LABELS.get(noise_model, noise_model.upper())
+    if smoothing_fwhm:
+        label += "Fwhm" + f"{smoothing_fwhm:g}".replace(".", "p")
+    if variant != "fmriprep":
+        label += "".join(w.capitalize() for w in variant.split("_") if w != "fmriprep")
+    if not label.isalnum():
+        raise ValueError(f"desc label must be alphanumeric, got {label!r}")
+    return label
+
+
+def describe_glm_desc(regime: str, noise_model: str, smoothing_fwhm: Optional[float] = None,
+                      variant: str = "fmriprep") -> str:
+    """One line for ``descriptions.tsv``."""
+    engine = {"ols": "OLS (no serial-correlation model)", "ar1": "AR(1) prewhitening"}.get(noise_model, noise_model)
+    smooth = f"{smoothing_fwhm:g} mm FWHM smoothing" if smoothing_fwhm else "unsmoothed"
+    return (f"nilearn first-level GLM, {engine}; confound regime '{regime}' from "
+            f"neuroimaging/glm/reference_spec.json; SPM canonical HRF; {smooth}; input {variant}")
+
+
+@contextmanager
+def _tree_lock(out_base: Path):
+    """Exclusive POSIX lock on the tree's index files; GPFS honours it across nodes."""
+    import fcntl
+
+    out_base.mkdir(parents=True, exist_ok=True)
+    with open(out_base / ".index.lock", "a") as fh:
+        fcntl.lockf(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.lockf(fh, fcntl.LOCK_UN)
+
+
+def _entities(name: str) -> dict[str, str]:
+    stem = name.split(".", 1)[0]
+    parts = stem.split("_")
+    ents = dict(p.split("-", 1) for p in parts[:-1] if "-" in p)
+    ents["suffix"] = parts[-1]
+    return ents
+
+
+MAPS_INDEX_COLUMNS = ("subject", "session", "task", "run", "hemi", "space", "res", "contrast", "stat", "desc", "path")
+
+
+def update_tree_index(out_base: Path, desc: str, description: str) -> tuple[Path, Path]:
+    """Refresh ``descriptions.tsv`` (upsert ``desc``) and ``maps.tsv`` (every statmap in the tree).
+
+    ``maps.tsv`` is rebuilt from a scan, never appended, so it cannot drift
+    from the tree; both files are written under one lock and renamed into
+    place, so concurrent fits in an array cannot interleave. A map's place in
+    the tree follows BIDS (a one-session pool under ``ses-``, a cross-session
+    pool at subject level); this table is how to find one without knowing which.
+    """
+    import csv
+    import os
+
+    out_base = Path(out_base)
+    desc_path, maps_path = out_base / "descriptions.tsv", out_base / "maps.tsv"
+    with _tree_lock(out_base):
+        rows = {}
+        if desc_path.exists():
+            with open(desc_path, newline="") as fh:
+                rows = {r["desc_id"]: r["description"] for r in csv.DictReader(fh, delimiter="\t")}
+        rows[desc] = description
+        tmp = desc_path.with_suffix(".tsv.tmp")
+        with open(tmp, "w", newline="") as fh:
+            w = csv.writer(fh, delimiter="\t", lineterminator="\n")
+            w.writerow(["desc_id", "description"])
+            w.writerows(sorted(rows.items()))
+        os.replace(tmp, desc_path)
+
+        entries = []
+        for p in sorted(out_base.glob("sub-*/**/*_statmap.*")):
+            if not (p.name.endswith(".nii.gz") or p.name.endswith(".func.gii")):
+                continue
+            e = _entities(p.name)
+            entries.append([e.get("sub", ""), e.get("ses", ""), e.get("task", ""), e.get("run", ""), e.get("hemi", ""),
+                            e.get("space", ""), e.get("res", ""), e.get("contrast", ""), e.get("stat", ""), e.get("desc", ""),
+                            str(p.relative_to(out_base))])
+        tmp = maps_path.with_suffix(".tsv.tmp")
+        with open(tmp, "w", newline="") as fh:
+            w = csv.writer(fh, delimiter="\t", lineterminator="\n")
+            w.writerow(MAPS_INDEX_COLUMNS)
+            w.writerows(entries)
+        os.replace(tmp, maps_path)
+    return desc_path, maps_path
 
 
 def output_dir(derivatives_dir: Path, tree: str, subject: str, session: Optional[str] = None) -> Path:
@@ -110,7 +216,7 @@ def ensure_dataset_description(
     dd.write_text(
         json.dumps(
             {
-                "Name": "Condition-level GLM contrast maps (localizers)",
+                "Name": "nilearn first-level GLM contrast maps",
                 "BIDSVersion": "1.8.0",
                 "DatasetType": "derivative",
                 "GeneratedBy": [
