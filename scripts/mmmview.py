@@ -6,13 +6,36 @@ mmmview.py — one path into the dataset in, the right interactive view out.
                  [--surf inflated|pial|white] [--r2-floor F] [--force]
                  [--films-dir DIR]
     mmmview glm [SUB [TASK]] [--ses S] [--space S] [--desc D] [--stat S]
+    mmmview prf [SUB] [--space S] [--r2-floor F]
+    mmmview stimfeat [SET [MODEL]] [--film F] [--grain G]
+    mmmview stimfeat tb [SUB [SES [RUN]]]
     mmmview serve | reap ...
+
+The label verbs (glm, prf, stimfeat) open results by name rather than by
+path, and each lists what exists when called with fewer labels. A label
+matches case-insensitively by exact name, else unique prefix, else every
+value containing it (tb -> TBencoding, clap -> every clap model); `all` and
+comma lists work. Each verb's --help has its flags.
 
 `mmmview glm` finds GLM maps by label through the tree's maps.tsv (a fit's
 directory depends on whether it pooled sessions, so the table is the way
 in): with no TASK it lists what exists; with one it builds a bundle per
 (scope, space, hemi, desc, stat), contrasts as layers, and opens the
 subject's viz index. Defaults: the pooled fit, every space, AR(1), z.
+
+`mmmview prf` opens a subject's pRF maps from derivatives/prf (the pooled
+product): one bundle per space (and hemi), every fit variant (prf, negprf,
+...) behind a selector, masked to R2 above --r2-floor. With no SUB it lists
+each subject's spaces, variants and parameters.
+
+`mmmview stimfeat` opens Contract B feature tables from
+derivatives/stimuli_features by stimulus set and model label (a model is a
+sidecar stem, so caption_clap_text opens its _chunks and _words tables
+together; --grain keeps one). With no SET it lists the sets; with no MODEL, a set's models by
+extractor. Films carry per-film tables (--film); `stimfeat movies timeline`
+opens psytwill's movies viewer over the whole set, and `stimfeat tb SUB SES
+RUN` a composed TB run's timeline (RUN may be a fragment: enc = every
+encoding run of the session).
 
 mmmview is a dispatcher, not a viewer. The viewers exist (the NiiVue bundle
 builder in src/python/neuroimaging/viewer.py, the three *2psy dashboards);
