@@ -5,9 +5,17 @@ on:
     branches: ["main"]
     paths:
       - "docs/**"
+      - "src/python/**"
+      - "scripts/mmmview.py"
+      - "scripts/generate_docs.py"
+      - "scripts/update_docs.sh"
   pull_request:
     paths:
       - "docs/**"
+      - "src/python/**"
+      - "scripts/mmmview.py"
+      - "scripts/generate_docs.py"
+      - "scripts/update_docs.sh"
 
 jobs:
   build:
@@ -27,5 +35,14 @@ jobs:
           bundler-cache: true
           cache-version: 0
           working-directory: '${{ github.workspace }}/docs'
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate code documentation
+        # docs/doc/code/ is gitignored: pages are built from docstrings on
+        # every deploy so they cannot drift from the code. Stdlib only.
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/update_docs.sh
       - name: Build with Jekyll
         run: bundle exec jekyll build

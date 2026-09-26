@@ -10,6 +10,14 @@ Hierarchy (3 levels, matching just-the-docs sidebar limits):
     Code Documentation  (level 1 – code_index.md)
     └── Package         (level 2 – <package>.md)
         └── Module      (level 3 – <package>_<module>.md, items inline)
+
+Subpackages (``neuroimaging/glm``) would need a fourth level, so they are
+flattened into level-2 entries of their own ("Neuroimaging / GLM").
+
+Command-line tools passed with ``--tools`` get a separate top-level "Tools"
+section: one page per script, rendered from its module docstring. A tool's
+docstring is its user guide; its internal functions are not an API anyone
+calls, so they are not listed.
 """
 
 import ast
@@ -295,11 +303,17 @@ _DISPLAY_OVERRIDES = {
     "dcm2bids_config": "DCM2BIDS Config",
     "raw2bids_converters": "Raw-to-BIDS Converters",
     "core": "Core",
+    "glm": "GLM",
+    "resultsview": "Results View",
 }
 
 
 def _pkg_display_name(name: str) -> str:
-    return _DISPLAY_OVERRIDES.get(name, name.replace("_", " ").title())
+    """Display name for a package; dotted subpackages join with " / "."""
+    return " / ".join(
+        _DISPLAY_OVERRIDES.get(part, part.replace("_", " ").title())
+        for part in name.split(".")
+    )
 
 
 class JekyllGenerator:
@@ -327,10 +341,10 @@ class JekyllGenerator:
             )
             for pkg in packages:
                 display = _pkg_display_name(pkg["name"])
-                f.write(f"### [{display}]({pkg['name']})\n\n")
+                f.write(f"### [{display}]({pkg['slug']})\n\n")
                 for mod in pkg["modules"]:
                     f.write(
-                        f"- [{mod['name']}]({pkg['name']}_{mod['name']})\n"
+                        f"- [{mod['name']}]({pkg['slug']}_{mod['name']})\n"
                     )
                 f.write("\n")
         return p
@@ -339,12 +353,13 @@ class JekyllGenerator:
 
     def write_package_index(
         self,
-        pkg_name: str,
+        pkg: Dict[str, Any],
         modules: List[Dict[str, Any]],
         nav_order: int,
     ) -> Path:
+        pkg_name, slug = pkg["name"], pkg["slug"]
         display = _pkg_display_name(pkg_name)
-        p = self.output_dir / f"{pkg_name}.md"
+        p = self.output_dir / f"{slug}.md"
         with open(p, "w") as f:
             f.write("---\n")
             f.write(f"title: {display}\n")
@@ -359,7 +374,7 @@ class JekyllGenerator:
             for mod in modules:
                 short = mod.get("module_docstring", "").split("\n")[0][:80]
                 f.write(
-                    f"| [{mod['name']}]({pkg_name}_{mod['name']}) "
+                    f"| [{mod['name']}]({slug}_{mod['name']}) "
                     f"| {short} |\n"
                 )
         return p
@@ -368,12 +383,12 @@ class JekyllGenerator:
 
     def write_module_page(
         self,
-        pkg_name: str,
+        pkg: Dict[str, Any],
         mod: Dict[str, Any],
         nav_order: float,
     ) -> Path:
-        display = _pkg_display_name(pkg_name)
-        fname = f"{pkg_name}_{mod['name']}.md"
+        display = _pkg_display_name(pkg["name"])
+        fname = f"{pkg['slug']}_{mod['name']}.md"
         p = self.output_dir / fname
         with open(p, "w") as f:
             f.write("---\n")
@@ -385,10 +400,10 @@ class JekyllGenerator:
             f.write(f"# {mod['name']}\n\n")
 
             if mod.get("module_docstring"):
-                f.write(f"{mod['module_docstring']}\n\n")
+                f.write(f"{_escape_prose(mod['module_docstring'])}\n\n")
 
             f.write(
-                f"**Source:** `src/python/{pkg_name}/{mod['name']}.py`\n"
+                f"**Source:** `src/python/{pkg['relpath']}/{mod['name']}.py`\n"
             )
             f.write("{: .fs-3 .text-grey-dk-000 }\n\n")
 
@@ -410,12 +425,54 @@ class JekyllGenerator:
 
         return p
 
+    # -- tools (command-line scripts) --------------------------------------
+
+    def write_tools(self, tools: List[Path], nav_order: int) -> List[Path]:
+        """Write the Tools section: an index plus one page per script."""
+        written = []
+        p = self.output_dir / "tools_index.md"
+        with open(p, "w") as f:
+            f.write("---\n")
+            f.write("title: Tools\n")
+            f.write(f"nav_order: {nav_order}\n")
+            f.write("has_children: true\n")
+            f.write("---\n\n")
+            f.write("# Tools\n\n")
+            f.write(
+                "Command-line tools in the MMMData repository. Each page is "
+                "the tool's own\nguide, auto-generated from its module "
+                "docstring.\n\n"
+            )
+            f.write("| Tool | Description |\n")
+            f.write("|------|-------------|\n")
+            for tool in tools:
+                short = _tool_summary(DocExtractor(tool).module_docstring())
+                f.write(f"| [{tool.stem}](tools_{tool.stem}) | {short} |\n")
+        written.append(p)
+
+        for idx, tool in enumerate(tools):
+            doc = DocExtractor(tool).module_docstring()
+            p = self.output_dir / f"tools_{tool.stem}.md"
+            with open(p, "w") as f:
+                f.write("---\n")
+                f.write(f"title: {tool.stem}\n")
+                f.write("parent: Tools\n")
+                f.write(f"nav_order: {idx + 1}\n")
+                f.write("---\n\n")
+                f.write(f"# {tool.stem}\n\n")
+                f.write(f"**Source:** `scripts/{tool.name}` · every flag: "
+                        f"`{tool.stem} --help`\n")
+                f.write("{: .fs-3 .text-grey-dk-000 }\n\n")
+                f.write(_escape_prose(doc) + "\n")
+            written.append(p)
+        return written
+
     # -- renderers ---------------------------------------------------------
 
     def _write_function(self, f, func: Dict[str, Any]):
         f.write(f"### `{func['name']}`\n\n")
         if func["description"]:
-            f.write(f"{func['description']}\n\n")
+            f.write(f"{_escape_prose(func['description'])}\n\n")
         f.write("```python\n")
         f.write(func["signature"])
         f.write("\n```\n\n")
@@ -426,7 +483,7 @@ class JekyllGenerator:
         label = "dataclass" if cls.get("is_dataclass") else "class"
         f.write(f"### `{cls['name']}` ({label})\n\n")
         if cls["description"]:
-            f.write(f"{cls['description']}\n\n")
+            f.write(f"{_escape_prose(cls['description'])}\n\n")
 
         if cls.get("fields"):
             f.write("**Fields**\n\n")
@@ -444,7 +501,7 @@ class JekyllGenerator:
             for m in cls["methods"]:
                 f.write(f"#### `{m['name']}`\n\n")
                 if m["description"]:
-                    f.write(f"{m['description']}\n\n")
+                    f.write(f"{_escape_prose(m['description'])}\n\n")
                 f.write("```python\n")
                 f.write(m["signature"])
                 f.write("\n```\n\n")
@@ -456,12 +513,12 @@ class JekyllGenerator:
         if item.get("parameters"):
             f.write("**Parameters**\n\n")
             for p in item["parameters"]:
-                desc = p["description"] or ""
+                desc = _escape_prose(p["description"] or "")
                 f.write(f"- **`{p['name']}`** (`{p['type']}`) — {desc}\n")
             f.write("\n")
 
         if item.get("returns"):
-            f.write(f"**Returns**\n\n{item['returns']}\n\n")
+            f.write(f"**Returns**\n\n{_escape_prose(item['returns'])}\n\n")
 
         if item.get("examples"):
             f.write("**Examples**\n\n```python\n")
@@ -469,7 +526,40 @@ class JekyllGenerator:
             f.write("\n```\n\n")
 
         if item.get("notes"):
-            f.write(f"**Notes**\n\n{item['notes']}\n\n")
+            f.write(f"**Notes**\n\n{_escape_prose(item['notes'])}\n\n")
+
+
+def _tool_summary(docstring: str) -> str:
+    """First line of a tool docstring, minus a leading ``name.py — ``."""
+    first = docstring.strip().split("\n")[0]
+    return re.sub(r"^\S+\.py\s+[—-]+\s+", "", first)[:100]
+
+
+# A code span: a backtick run, then anything, then a run of the same length
+# (so RST-style ``double`` spans are matched whole).
+_CODE_SPAN = re.compile(r"(`+).*?(?<!`)\1(?!`)")
+
+
+def _escape_prose(text: str) -> str:
+    """Escape ``<`` in prose so kramdown does not read ``<sub-##>`` as HTML.
+
+    A raw ``<name>`` is emitted as a tag and the browser hides it. Indented
+    lines (markdown code blocks) and code spans are left alone: they render
+    literally already, and escaping inside them would show ``&lt;``.
+    """
+    out = []
+    for line in text.split("\n"):
+        if line.startswith(("    ", "\t")):
+            out.append(line)
+            continue
+        pieces, pos = [], 0
+        for m in _CODE_SPAN.finditer(line):
+            pieces.append(line[pos:m.start()].replace("<", "&lt;"))
+            pieces.append(m.group(0))
+            pos = m.end()
+        pieces.append(line[pos:].replace("<", "&lt;"))
+        out.append("".join(pieces))
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -478,10 +568,21 @@ class JekyllGenerator:
 
 
 def discover_packages(src_root: Path) -> List[Dict[str, Any]]:
-    """Find packages (directories with ``__init__.py``) under *src_root*."""
+    """Find packages (directories with ``__init__.py``) under *src_root*.
+
+    Subpackages are included and flattened: ``neuroimaging/glm`` becomes
+    package ``neuroimaging.glm`` with page slug ``neuroimaging_glm``.
+    """
     packages = []
-    for init in sorted(src_root.glob("*/__init__.py")):
+    for init in sorted(src_root.rglob("__init__.py")):
         pkg_dir = init.parent
+        rel = pkg_dir.relative_to(src_root)
+        # every ancestor must be a package too, or it is not importable
+        if not all(
+            (src_root / Path(*rel.parts[:i]) / "__init__.py").exists()
+            for i in range(1, len(rel.parts))
+        ):
+            continue
         modules = sorted(
             p
             for p in pkg_dir.glob("*.py")
@@ -489,7 +590,13 @@ def discover_packages(src_root: Path) -> List[Dict[str, Any]]:
         )
         if modules:
             packages.append(
-                {"name": pkg_dir.name, "dir": pkg_dir, "files": modules}
+                {
+                    "name": ".".join(rel.parts),
+                    "slug": "_".join(rel.parts),
+                    "relpath": rel.as_posix(),
+                    "dir": pkg_dir,
+                    "files": modules,
+                }
             )
     return packages
 
@@ -525,6 +632,13 @@ def main():
         action="store_true",
         help="Remove existing .md files from output dir before generating",
     )
+    parser.add_argument(
+        "--tools",
+        type=Path,
+        nargs="+",
+        default=[],
+        help="Command-line scripts to document in a top-level Tools section",
+    )
 
     args = parser.parse_args()
     gen = JekyllGenerator(args.output_dir, args.nav_order)
@@ -541,6 +655,7 @@ def main():
         return
 
     all_pkg_info: List[Dict[str, Any]] = []
+    written: set = set()
 
     for pkg_idx, pkg in enumerate(packages):
         pkg_nav = args.nav_order + pkg_idx + 1
@@ -563,16 +678,23 @@ def main():
                 "classes": classes,
             }
             mod_nav = pkg_nav + (mod_idx + 1) * 0.01
-            gen.write_module_page(pkg["name"], mod_info, mod_nav)
+            page = gen.write_module_page(pkg, mod_info, mod_nav)
+            if page.name in written:
+                raise SystemExit(f"page name collision: {page.name}")
+            written.add(page.name)
             mod_infos.append(mod_info)
 
             n_items = len(funcs) + len(classes)
             print(f"  {mod_file.stem}: {n_items} items")
 
         if mod_infos:
-            gen.write_package_index(pkg["name"], mod_infos, pkg_nav)
+            page = gen.write_package_index(pkg, mod_infos, pkg_nav)
+            if page.name in written:
+                raise SystemExit(f"page name collision: {page.name}")
+            written.add(page.name)
             all_pkg_info.append(
-                {"name": pkg["name"], "modules": mod_infos}
+                {"name": pkg["name"], "slug": pkg["slug"],
+                 "modules": mod_infos}
             )
 
     if all_pkg_info:
@@ -587,6 +709,14 @@ def main():
         )
     else:
         print("No documentable items found")
+
+    if args.tools:
+        missing = [t for t in args.tools if not t.is_file()]
+        if missing:
+            raise SystemExit(f"--tools: no such file: {missing}")
+        # Tools sits beside Code Documentation, after the packages' range
+        gen.write_tools(args.tools, args.nav_order + len(packages) + 1)
+        print(f"Tools — {len(args.tools)} page(s)")
 
 
 if __name__ == "__main__":

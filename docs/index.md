@@ -18,8 +18,13 @@ file organization, and preprocessing pipelines. Start with the
 
 ## [Code Documentation](doc/code/code_index)
 
-API documentation for Python utility functions used in data management and
-analysis.
+API documentation for the Python packages used in data management and
+analysis, generated from their docstrings on every deploy.
+
+## [Tools](doc/code/tools_index)
+
+Guides to the command-line tools, such as `mmmview` for opening any map,
+feature table or results page in an interactive viewer.
 
 ## [Access](doc/shared/access)
 

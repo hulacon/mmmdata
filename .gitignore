@@ -8,6 +8,9 @@ vendor/
 !src/python/neuroimaging/vendor/
 !src/python/resultsview/vendor/
 
+# Generated in CI by scripts/update_docs.sh (Pages workflow)
+docs/doc/code/
+
 # Jekyll (root-level, in case of accidental builds)
 _site/
 .sass-cache/

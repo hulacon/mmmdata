@@ -12,6 +12,10 @@ on:
       - "main"
     paths:
       - "docs/**"
+      - "src/python/**"
+      - "scripts/mmmview.py"
+      - "scripts/generate_docs.py"
+      - "scripts/update_docs.sh"
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
@@ -46,6 +50,15 @@ jobs:
           bundler-cache: true # runs 'bundle install' and caches installed gems automatically
           cache-version: 0 # Increment this number if you need to re-download cached gems
           working-directory: '${{ github.workspace }}/docs'
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate code documentation
+        # docs/doc/code/ is gitignored: pages are built from docstrings on
+        # every deploy so they cannot drift from the code. Stdlib only.
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/update_docs.sh
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v5
