@@ -103,6 +103,7 @@ paths.bids_project_dir, paths.stimfeat_env.
 
 import argparse
 import datetime
+import errno
 import functools
 import hashlib
 import json
@@ -1792,7 +1793,7 @@ __SIGNATURE__
 <body>
 <header>
 <h1>__TITLE__</h1>
-<p>static snapshot — may be stale; regenerate with: <code>__COMMAND__</code></p>
+<p>__MODE__</p>
 <p>generated __DATE__ by mmmview</p>
 </header>
 <main>
@@ -1881,13 +1882,21 @@ def _browse_sections(model, link, build_link=None, dir_link=None):
     return "\n".join(out)
 
 
-def render_browse(model, link, build_link=None, dir_link=None):
+def render_browse(model, link, build_link=None, dir_link=None,
+                  served=False):
     """Render a browse model to HTML. Data-free by construction: filenames
-    and entity labels only, never imaging data or participant values."""
+    and entity labels only, never imaging data or participant values.
+    *served* pages are generated per request, so their header must not
+    call them a snapshot that may be stale."""
+    if served:
+        mode = "live — generated for this request by <code>mmmview serve</code>"
+    else:
+        mode = ("static snapshot — may be stale; regenerate with: "
+                f"<code>{_escape(model['command'])}</code>")
     return (_BROWSE_TEMPLATE
             .replace("__TITLE__", _escape(model["rel"]))
             .replace("__SIGNATURE__", BROWSE_SIGNATURE)
-            .replace("__COMMAND__", _escape(model["command"]))
+            .replace("__MODE__", mode)
             .replace("__DATE__", model["date"])
             .replace("__SECTIONS__",
                      _browse_sections(model, link, build_link, dir_link)))
@@ -2030,7 +2039,8 @@ class _BrowseHandler(SimpleHTTPRequestHandler):
                              self.server.mmm_opts)
         body = render_browse(model, self.url_for,
                              build_link=self.build_url_for,
-                             dir_link=self.url_for).encode()
+                             dir_link=self.url_for,
+                             served=True).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -2209,7 +2219,18 @@ def serve_main(argv):
     if not Path(root).is_dir():
         print(f"mmmview: not a directory: {root}", file=sys.stderr)
         return EXIT_UNPLACEABLE
-    srv = make_server(root, roots, Opts(), args.bind, args.port)
+    try:
+        srv = make_server(root, roots, Opts(), args.bind, args.port)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            print(f"mmmview: port {args.port} is already in use on "
+                  f"{args.bind} (another mmmview serve?); pass --port N, "
+                  "or --port 0 for any free port", file=sys.stderr)
+        else:
+            print(f"mmmview: cannot listen on {args.bind}:{args.port}: "
+                  f"{exc.strerror or exc}; check --bind and --port",
+                  file=sys.stderr)
+        return EXIT_UNPLACEABLE
     port = srv.server_address[1]
     url = f"http://{args.bind}:{port}/"
     print(f"serving {Path(os.path.abspath(str(root)))} at {url}")

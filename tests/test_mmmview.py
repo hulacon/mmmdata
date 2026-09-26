@@ -1052,6 +1052,31 @@ class TestServe:
         assert mmmview.BROWSE_SIGNATURE.encode() in body
         assert b"sub-07" in body
 
+    def test_served_page_header_says_live_not_static(self, server):
+        _, _, port = server
+        _, _, body = self.get(port, "/")
+        assert b"static snapshot" not in body
+        assert b"generated for this request" in body
+
+    def test_port_in_use_exits_2_naming_the_fix(self, roots, tmp_path,
+                                                capsys, monkeypatch):
+        import socket
+        monkeypatch.setattr(mmmview, "load_roots", lambda *_: roots)
+        (tmp_path / "served").mkdir()
+        busy = socket.socket()
+        busy.bind(("127.0.0.1", 0))
+        busy.listen(1)
+        port = busy.getsockname()[1]
+        try:
+            rc = mmmview.serve_main([str(tmp_path / "served"), "--port",
+                                     str(port), "--no-open"])
+        finally:
+            busy.close()
+        err = capsys.readouterr().err
+        assert rc == mmmview.EXIT_UNPLACEABLE
+        assert f"port {port}" in err and "--port" in err
+        assert "Traceback" not in err
+
     def test_served_page_is_not_written_to_disk(self, server):
         _, root, port = server
         self.get(port, "/")
