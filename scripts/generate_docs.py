@@ -326,7 +326,9 @@ class JekyllGenerator:
 
     # -- top-level index ---------------------------------------------------
 
-    def write_main_index(self, packages: List[Dict[str, Any]]) -> Path:
+    def write_main_index(
+        self, packages: List[Dict[str, Any]], tools: List[Path] = ()
+    ) -> Path:
         p = self.output_dir / "code_index.md"
         with open(p, "w") as f:
             f.write("---\n")
@@ -339,6 +341,12 @@ class JekyllGenerator:
                 "API reference for Python packages in the MMMData project.\n"
                 "This documentation is auto-generated from source docstrings.\n\n"
             )
+            if tools:
+                names = ", ".join(f"`{t.stem}`" for t in tools)
+                f.write(
+                    f"Command-line tools ({names}) have their own guides "
+                    "under [Tools](tools_index).\n{: .note }\n\n"
+                )
             for pkg in packages:
                 display = _pkg_display_name(pkg["name"])
                 f.write(f"### [{display}]({pkg['slug']})\n\n")
@@ -698,7 +706,7 @@ def main():
             )
 
     if all_pkg_info:
-        gen.write_main_index(all_pkg_info)
+        gen.write_main_index(all_pkg_info, args.tools)
         total = sum(
             len(m["functions"]) + len(m["classes"])
             for p in all_pkg_info

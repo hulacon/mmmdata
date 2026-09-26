@@ -61,6 +61,7 @@ def test_subpackages_are_flattened_to_level_two(tmp_path):
     assert "under &lt;root>/x" in top          # module prose escaped too
     assert "``<kept>/y``" in top               # RST double-backtick span untouched
     assert not any("deep" in p.name or "hidden" in p.name for p in out.iterdir())
+    assert "Tools" not in (out / "code_index.md").read_text()   # no tools, no pointer
 
 
 def test_tools_section_renders_docstring(tmp_path):
@@ -71,6 +72,8 @@ def test_tools_section_renders_docstring(tmp_path):
     index = out / "tools_index.md"
     assert "parent" not in _front_matter(index)
     assert "| [tool](tools_tool) | one line summary. |" in index.read_text()
+
+    assert "under [Tools](tools_index)" in (out / "code_index.md").read_text()
 
     page = out / "tools_tool.md"
     assert _front_matter(page)["parent"] == "Tools"
