@@ -8,7 +8,9 @@ Verbs (all idempotent; state is on disk, never in this process):
             writing a units file for the sbatch array
   run       clean ONE run under every requested regime (one BOLD load shared
             by all of them) and write its tier-1 outputs; skips cells that are
-            current unless --force
+            current unless --force. A regime the run cannot carry (too few
+            aCompCor components) gets a declared-absent marker instead, and
+            the remaining regimes still run
   collect   flatten every sidecar into tier1_runs.tsv and tier1_parcels.tsv
             at the tree root
 
@@ -40,7 +42,12 @@ if str(REPO_ROOT / "src" / "python") not in sys.path:  # idempotent: tests impor
 
 from core.config import load_config  # noqa: E402
 from neuroimaging import data_quality as dq  # noqa: E402
-from neuroimaging.confounds import confirmed_regimes, describe_regimes, load_regimes  # noqa: E402
+from neuroimaging.confounds import (  # noqa: E402
+    RegimeNotApplicable,
+    confirmed_regimes,
+    describe_regimes,
+    load_regimes,
+)
 from neuroimaging.constants import DEFAULT_SPACE, DEFAULT_VARIANT  # noqa: E402
 from neuroimaging.io import FmriprepRun, find_fmriprep_runs  # noqa: E402
 
@@ -130,8 +137,7 @@ def cmd_plan(args: argparse.Namespace) -> None:
         for regime in regimes:
             n_cells += 1
             if sha is None:
-                nii, js = dq.tsnr_paths(paths.tree_root, run, regime.name)
-                current = nii.exists() and js.exists()
+                current = dq.cell_exists(paths.tree_root, run, regime.name)
             else:
                 current = dq.is_current(paths.tree_root, run, regime, sha)
             if not current:
@@ -178,10 +184,20 @@ def cmd_run(args: argparse.Namespace) -> None:
         inputs = dq.load_run_inputs(run, paths.atlases_dir)
         assert inputs.input_bold_sha256 == sha
         for regime in todo:
-            rec = dq.write_run_regime(
-                paths.tree_root, inputs, regime,
-                fmriprep_version=fmriprep_version, code_sha=code_sha,
-            )
+            try:
+                rec = dq.write_run_regime(
+                    paths.tree_root, inputs, regime,
+                    fmriprep_version=fmriprep_version, code_sha=code_sha,
+                )
+            except RegimeNotApplicable as exc:
+                # The run cannot carry this regime; declare it and go on to the next one.
+                dq.write_absent_regime(
+                    paths.tree_root, inputs, regime, str(exc),
+                    fmriprep_version=fmriprep_version, code_sha=code_sha,
+                )
+                print(f"{run.entity_prefix} {regime.name:10s} ABSENT ({exc.n_available} of "
+                      f"{exc.n_required} aCompCor components)")
+                continue
             print(f"{run.entity_prefix} {regime.name:10s} n_vol={rec['n_vol']} nss={rec['n_nss']} "
                   f"p={rec['n_regressors']} dof={rec['dof_resid']} "
                   f"tsnr_med={rec['tsnr_median_mask']:.2f} var_ratio_med={rec['var_ratio_median_mask']:.3f}")
@@ -200,7 +216,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
     print(f"{runs_path}: {len(runs)} run x regime rows")
     print(f"{parcels_path}: {len(parcels)} parcel rows")
     if "regime" in runs:
-        print(runs.groupby("regime").size().to_string())
+        print(runs.groupby("regime").agg(rows=("absent", "size"), absent=("absent", "sum")).to_string())
 
 
 # ---------------------------------------------------------------------------

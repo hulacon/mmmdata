@@ -15,6 +15,7 @@ nib = pytest.importorskip("nibabel")
 
 from neuroimaging import data_quality as dq  # noqa: E402
 from neuroimaging.confounds import (  # noqa: E402
+    RegimeNotApplicable,
     confirmed_regimes,
     describe_regimes,
     get_regime,
@@ -218,6 +219,19 @@ def test_reference_without_cosines_is_not_an_error_and_records_zero_drift(tree):
     assert d.n_drift == 0 and d.n_regressors == 12
 
 
+def test_too_few_acompcor_components_is_not_applicable_not_broken(tree):
+    conf = tree["conf"].drop(columns=["a_comp_cor_18", "a_comp_cor_19"])
+    with pytest.raises(RegimeNotApplicable, match="18 of 20") as info:
+        regime_design(get_regime("base12fdacc20"), conf)
+    assert isinstance(info.value, KeyError)  # callers catching KeyError still see it
+    assert (info.value.n_available, info.value.n_required) == (18, 20)
+    assert regime_design(get_regime("baseacc6"), conf).n_regressors == 6 + 6 + 2
+    # A missing named column is a broken input, not an inapplicable regime.
+    with pytest.raises(KeyError) as info:
+        regime_design(get_regime("base12fd"), conf.drop(columns=["framewise_displacement"]))
+    assert not isinstance(info.value, RegimeNotApplicable)
+
+
 def test_missing_columns_are_named(tree):
     conf = tree["conf"].drop(columns=["framewise_displacement"])
     with pytest.raises(KeyError, match="framewise_displacement"):
@@ -369,6 +383,39 @@ def test_plan_units_and_collect(tree, tmp_path, capsys):
     assert set(runs.columns) >= {"sub", "ses", "task", "run", "regime", "dof_resid", "tsnr_median_mask", "fmriprep_version"}
     assert len(parcels) == len(confirmed) * (3 + 1)
     assert set(parcels["atlas"]) == set(dq.PARCELLATIONS)
+
+
+def test_a_run_short_of_acompcor_declares_the_cell_absent_and_keeps_going(tree, capsys):
+    tier1 = _tier1()
+    root = tree["bids"] / "derivatives" / "data_quality"
+    run = tree["run"]
+    conf = tree["conf"].drop(columns=["a_comp_cor_18", "a_comp_cor_19"])
+    conf.to_csv(run.confounds, sep="\t", index=False, na_rep="n/a")
+    tier1.main(_argv(tree, "run", "--sub", "01", "--ses", "01", "--task", "rest", "--run", "01"))
+    assert "base12fdacc20 ABSENT (18 of 20" in capsys.readouterr().out
+    marker = dq.absent_path(root, run, "base12fdacc20")
+    meta = json.loads(marker.read_text())
+    assert meta["absent"] is True and "18 of 20" in meta["absent_reason"] and meta["n_vol"] == N_VOL
+    assert not dq.tsnr_paths(root, run, "base12fdacc20")[0].exists()
+    # The regime after it in the registry was still built.
+    assert dq.tsnr_paths(root, run, "gsr")[0].exists()
+    # Absent counts as done: the plan has nothing left, with or without hashes.
+    units = root.parent / "units.txt"
+    for extra in ((), ("--check-hashes",)):
+        tier1.main(_argv(tree, "plan", "--units", str(units), *extra))
+        assert units.read_text() == ""
+    # The table keeps a full grid: one row per regime, the absent one with n/a measures.
+    tier1.main(_argv(tree, "collect"))
+    rows = pd.read_csv(root / "tier1_runs.tsv", sep="\t", na_values=["n/a"])
+    assert len(rows) == len(confirmed_regimes())
+    gone = rows[rows["regime"] == "base12fdacc20"].iloc[0]
+    assert bool(gone["absent"]) and pd.isna(gone["tsnr_median_mask"]) and pd.isna(gone["dof_resid"])
+    assert not rows.loc[rows["regime"] != "base12fdacc20", "absent"].astype(bool).any()
+    # Once the input can carry the regime, a rebuild replaces the marker with real outputs.
+    tree["conf"].to_csv(run.confounds, sep="\t", index=False, na_rep="n/a")
+    tier1.main(_argv(tree, "run", "--sub", "01", "--ses", "01", "--task", "rest", "--run", "01",
+                     "--regimes", "base12fdacc20", "--force"))
+    assert dq.tsnr_paths(root, run, "base12fdacc20")[0].exists() and not marker.exists()
 
 
 def test_missing_pipeline_description_is_loud(tmp_path):

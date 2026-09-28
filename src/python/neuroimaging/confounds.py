@@ -120,6 +120,26 @@ def confirmed_regimes(path: Path = SPEC_PATH) -> list[str]:
     return [n for n, r in load_regimes(path).items() if not r.provisional]
 
 
+class RegimeNotApplicable(KeyError):
+    """The run cannot carry this regime: fMRIPrep wrote fewer aCompCor components than it asks for.
+
+    A property of the run, not a defect in its TSV: fMRIPrep keeps fewer
+    components on short runs (the 40-volume math runs carry 17-19). A consumer
+    may record the cell as declared-absent instead of failing; filling the gap
+    with the components that do exist would be a different regime. A missing
+    *named* confound column stays a plain ``KeyError``.
+    """
+
+    def __init__(self, message: str, *, regime: str, n_available: int, n_required: int):
+        super().__init__(message)
+        self.regime = regime
+        self.n_available = n_available
+        self.n_required = n_required
+
+    def __str__(self) -> str:  # KeyError would quote the message
+        return str(self.args[0])
+
+
 def polynomial_drift(n_vol: int, order: int) -> np.ndarray:
     """Legendre polynomials of degree 1..order on the run's time axis, no constant.
 
@@ -182,7 +202,9 @@ def regime_design(regime: Regime, confounds: pd.DataFrame) -> RegimeDesign:
     """Build the regressor columns for ``regime`` from a run's confounds table.
 
     Raises KeyError naming every column the TSV lacks: a design short a
-    regressor is a different model, not a degraded one. A ``cosine`` drift
+    regressor is a different model, not a degraded one. Too few aCompCor
+    components raises the ``RegimeNotApplicable`` subclass, so a consumer can
+    tell a run that cannot carry the regime from a broken input. A ``cosine`` drift
     on a run for which fMRIPrep wrote no cosine columns is NOT an error —
     fMRIPrep writes none for runs shorter than half its high-pass period —
     and ``n_drift`` records the 0 (data-quality DECIDED 2026-09-24: no
@@ -200,9 +222,13 @@ def regime_design(regime: Regime, confounds: pd.DataFrame) -> RegimeDesign:
         acc = [f"{ACOMPCOR_PREFIX}{i:02d}" for i in range(regime.acompcor_n)]
         absent = [c for c in acc if c not in available]
         if absent:
-            raise KeyError(
-                f"Regime {regime.name!r} needs aCompCor columns the TSV lacks: {absent}. "
-                "fMRIPrep writes them only when its aCompCor step ran; check the confounds sidecar."
+            n_available = sum(1 for c in available if c.startswith(ACOMPCOR_PREFIX))
+            raise RegimeNotApplicable(
+                f"Regime {regime.name!r} needs aCompCor columns the TSV lacks: {absent} "
+                f"({n_available} of {regime.acompcor_n} present). fMRIPrep keeps fewer components "
+                "on short runs, and writes none when its aCompCor step did not run; check the "
+                "confounds sidecar.",
+                regime=regime.name, n_available=n_available, n_required=regime.acompcor_n,
             )
         wanted.extend(acc)
     # fMRIPrep writes n/a for the first sample of derivative and FD columns;
