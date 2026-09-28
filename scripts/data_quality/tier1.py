@@ -173,7 +173,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             sys.exit(f"No completed fMRIPrep run matches under {paths.fmriprep_tree}")
     fmriprep_version = dq.pipeline_version(paths.fmriprep_tree)
     code_sha = dq.code_version(REPO_ROOT)
-    dq.ensure_dataset_description(paths.tree_root, fmriprep_version, code_sha)
+    dq.ensure_dataset_description(paths.tree_root, paths.fmriprep_tree, fmriprep_version, code_sha)
 
     atlases_sha = dq.atlases_sha256(paths.atlases_dir)
     for run in runs:

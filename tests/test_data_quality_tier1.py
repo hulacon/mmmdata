@@ -311,6 +311,17 @@ def test_atlas_on_another_grid_is_refused(tree):
 # Driver
 # ---------------------------------------------------------------------------
 
+def test_dataset_description_source_resolves_from_the_tree_itself(tmp_path):
+    # The catalog resolves SourceDatasets URLs against the dataset's own directory.
+    derivs = tmp_path / "derivatives"
+    tree_root, fmriprep = derivs / "data_quality", derivs / "fmriprep"
+    fmriprep.mkdir(parents=True)
+    dd = dq.ensure_dataset_description(tree_root, fmriprep, "25.2.5", "abc1234")
+    (src,) = json.loads(dd.read_text())["SourceDatasets"]
+    assert src == {"URL": "../fmriprep", "Version": "25.2.5"}
+    assert (tree_root / src["URL"]).resolve() == fmriprep.resolve()
+
+
 def test_run_writes_every_output_with_provenance_and_is_idempotent(tree, capsys):
     tier1 = _tier1()
     root = tree["bids"] / "derivatives" / "data_quality"

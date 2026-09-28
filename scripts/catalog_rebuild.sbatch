@@ -24,8 +24,10 @@
 # dataset-specific belongs in this file beyond paths from load_config.sh.
 #
 # Usage:  sbatch catalog_rebuild.sbatch
-# (a full rebuild measures ~40 s on the login node; the job form exists for
-# unattended/scheduled runs)
+# (a full rebuild measured ~40 s in 2026-08; by late 2026-09 the nightly log shows
+# 7-10 min (the supplemental tier now walks ~300k files), so
+# run ad-hoc rebuilds through this job rather than on the login node; the
+# nightly scrontab entry calls rebuild_catalog.sh directly)
 #==============================================================================
 
 # set -e comes AFTER load_config.sh: its heredoc `read -r -d ''` idiom

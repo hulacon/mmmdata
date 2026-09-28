@@ -53,6 +53,7 @@ import dataclasses
 import datetime as _dt
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, Optional
@@ -320,8 +321,14 @@ def cell_exists(tree_root: Path, run: FmriprepRun, regime: str) -> bool:
     return (nii.exists() and js.exists()) or _absent_complete(tree_root, run, regime)
 
 
-def ensure_dataset_description(tree_root: Path, fmriprep_version: str, code_sha: str) -> Path:
-    """Write the tree's ``dataset_description.json`` once so the catalog indexes it."""
+def ensure_dataset_description(tree_root: Path, fmriprep_tree: Path, fmriprep_version: str,
+                               code_sha: str) -> Path:
+    """Write the tree's ``dataset_description.json`` once so the catalog indexes it.
+
+    The source URL is written relative to the tree (``../fmriprep``): the catalog resolves
+    ``SourceDatasets`` against the dataset's own directory, so a BIDS-root-relative
+    ``derivatives/fmriprep`` lands inside this tree.
+    """
     tree_root = Path(tree_root)
     tree_root.mkdir(parents=True, exist_ok=True)
     desc = tree_root / "dataset_description.json"
@@ -340,7 +347,10 @@ def ensure_dataset_description(tree_root: Path, fmriprep_version: str, code_sha:
                 "the measure registry lives in mmmdata-agents docs/workbench/data-quality/."
             ),
         }],
-        "SourceDatasets": [{"URL": "derivatives/fmriprep", "Version": fmriprep_version}],
+        "SourceDatasets": [{
+            "URL": os.path.relpath(Path(fmriprep_tree).resolve(), tree_root.resolve()),
+            "Version": fmriprep_version,
+        }],
         "SchemaVersion": SCHEMA_VERSION,
     }, indent=2) + "\n")
     return desc
