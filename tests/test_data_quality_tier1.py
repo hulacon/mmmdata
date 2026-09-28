@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import json
 from pathlib import Path
@@ -149,24 +150,34 @@ def _argv(tree, *rest):
 
 def test_registry_has_the_charter_regimes_with_their_statuses():
     regimes = load_regimes()
-    assert set(regimes) >= {"reference", "none", "drift", "base", "basecsfwm", "baseacc6", "baseacc20", "gsr"}
+    colleague = {"base", "basecsfwm", "baseacc6", "base12fd", "base12fdcsfwm", "base12fdacc6", "base12fdacc20", "gsr"}
+    assert set(regimes) >= {"reference", "none", "drift"} | colleague
     assert regimes["reference"].status == "frozen"
-    assert {regimes[n].status for n in ("none", "drift", "base", "gsr")} == {"defined"}
-    assert {regimes[n].status for n in ("basecsfwm", "baseacc6", "baseacc20")} == {"provisional"}
-    assert set(confirmed_regimes()) == {"reference", "none", "drift", "base", "gsr"}
+    assert {regimes[n].status for n in {"none", "drift"} | colleague} == {"defined"}
+    assert set(confirmed_regimes()) == set(regimes)
     assert len({r.version for r in regimes.values()}) == len(regimes)
     assert set(describe_regimes()["regime"]) == set(regimes)
 
 
 def test_colleague_regimes_are_verbatim_from_the_slides():
-    base = get_regime("base")
+    base = get_regime("base12fd")
     assert len(base.confounds) == 13 and "framewise_displacement" in base.confounds
     assert all(f"{c}_derivative1" in base.confounds for c in MOTION_6)
     assert (base.drift, base.drift_order) == ("polynomial", 2)
-    assert get_regime("basecsfwm").confounds == base.confounds + ("csf", "white_matter")
-    assert (get_regime("baseacc6").acompcor_n, get_regime("baseacc20").acompcor_n) == (6, 20)
+    assert get_regime("base12fdcsfwm").confounds == base.confounds + ("csf", "white_matter")
+    assert (get_regime("base12fdacc6").acompcor_n, get_regime("base12fdacc20").acompcor_n) == (6, 20)
     gsr = get_regime("gsr")
     assert gsr.confounds == ("global_signal",) and gsr.drift == "none"
+
+
+def test_colleague_revised_base_is_motion6_and_polynomial_drift():
+    base = get_regime("base")
+    assert base.confounds == tuple(MOTION_6) and (base.drift, base.drift_order) == ("polynomial", 2)
+    assert get_regime("basecsfwm").confounds == base.confounds + ("csf", "white_matter")
+    acc6, ref = get_regime("baseacc6"), get_regime("reference")
+    # Same columns as the reference; only the drift model differs.
+    assert (acc6.confounds, acc6.acompcor_n) == (ref.confounds, ref.acompcor_n)
+    assert (acc6.drift, ref.drift) == ("polynomial", "cosine")
 
 
 def test_reference_config_refuses_regimes_glmconfig_cannot_express():
@@ -190,7 +201,7 @@ def test_polynomial_drift_is_orthogonal_and_has_no_constant():
 
 def test_regime_design_columns_and_nss(tree):
     conf = tree["conf"]
-    d = regime_design(get_regime("base"), conf)
+    d = regime_design(get_regime("base12fd"), conf)
     assert d.n_regressors == 15 and d.n_drift == 2
     assert d.nss.sum() == 1 and d.nss[0]
     assert d.dof_resid == N_VOL - 1 - 15 - 1
@@ -210,9 +221,9 @@ def test_reference_without_cosines_is_not_an_error_and_records_zero_drift(tree):
 def test_missing_columns_are_named(tree):
     conf = tree["conf"].drop(columns=["framewise_displacement"])
     with pytest.raises(KeyError, match="framewise_displacement"):
-        regime_design(get_regime("base"), conf)
+        regime_design(get_regime("base12fd"), conf)
     with pytest.raises(KeyError, match="a_comp_cor_19"):
-        regime_design(get_regime("baseacc20"), tree["conf"].drop(columns=["a_comp_cor_19"]))
+        regime_design(get_regime("base12fdacc20"), tree["conf"].drop(columns=["a_comp_cor_19"]))
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +304,7 @@ def test_run_writes_every_output_with_provenance_and_is_idempotent(tree, capsys)
     assert (root / "dataset_description.json").exists()
     run = tree["run"]
     names = sorted(p.name for p in (root / "sub-01" / "ses-01" / "func").iterdir())
-    assert names[0] == "sub-01_ses-01_task-rest_run-01_space-MNI152NLin2009cAsym_res-2_desc-base_tsnr.json"
+    assert {n.split("_desc-")[1].split("_")[0] for n in names} == set(confirmed_regimes())
     assert not any("__" in n for n in names)
     assert len(names) == len(confirmed_regimes()) * (2 + 2 * len(dq.PARCELLATIONS))
     for regime in confirmed_regimes():
@@ -313,7 +324,6 @@ def test_run_writes_every_output_with_provenance_and_is_idempotent(tree, capsys)
             side = json.loads(sj.read_text())
             assert side["SamplingFrequency"] == pytest.approx(1 / TR) and side["atlas"] == seg
     # No provisional regime was built without the flag.
-    assert not dq.tsnr_paths(root, run, "basecsfwm")[0].exists()
     # The second call skips everything.
     capsys.readouterr()
     tier1.main(_argv(tree, "run", "--sub", "01", "--ses", "01", "--task", "rest", "--run", "01"))
@@ -326,16 +336,20 @@ def test_run_writes_every_output_with_provenance_and_is_idempotent(tree, capsys)
     assert not dq.is_current(root, run, get_regime("none"), dq.file_sha256(run.bold))
 
 
-def test_provisional_regimes_need_the_flag(tree):
+def test_provisional_regimes_need_the_flag(tree, monkeypatch):
+    # The registry may hold no provisional regime at a given moment, so add one.
     tier1 = _tier1()
+    probe = dataclasses.replace(get_regime("base"), name="probe", status="provisional")
+    monkeypatch.setattr(tier1, "load_regimes", lambda: {**load_regimes(), "probe": probe})
+    root = tree["bids"] / "derivatives" / "data_quality"
+    tier1.main(_argv(tree, "run", "--sub", "01", "--ses", "01", "--task", "rest", "--run", "01"))
+    assert not dq.tsnr_paths(root, tree["run"], "probe")[0].exists()
     with pytest.raises(SystemExit, match="provisional"):
         tier1.main(_argv(tree, "run", "--sub", "01", "--ses", "01", "--task", "rest", "--run", "01",
-                         "--regimes", "basecsfwm"))
+                         "--regimes", "probe"))
     tier1.main(_argv(tree, "run", "--sub", "01", "--ses", "01", "--task", "rest", "--run", "01",
-                     "--regimes", "basecsfwm,baseacc6", "--include-provisional"))
-    root = tree["bids"] / "derivatives" / "data_quality"
-    assert dq.tsnr_paths(root, tree["run"], "basecsfwm")[0].exists()
-    assert dq.tsnr_paths(root, tree["run"], "baseacc6")[0].exists()
+                     "--regimes", "probe", "--include-provisional"))
+    assert dq.tsnr_paths(root, tree["run"], "probe")[0].exists()
 
 
 def test_plan_units_and_collect(tree, tmp_path, capsys):

@@ -103,6 +103,56 @@
         "trans_z",
         "rot_x",
         "rot_y",
+        "rot_z"
+      ],
+      "acompcor_n": 0,
+      "drift": "polynomial",
+      "drift_order": 2,
+      "description": "6 rigid-body motion parameters + linear + quadratic drift.",
+      "source": "colleagues' revised set (message 2026-09-28, data-quality log): polynomial rather than cosine drift because cosine drift left artifacts in their time-time correlation matrices"
+    },
+    "basecsfwm": {
+      "status": "defined",
+      "confounds": [
+        "trans_x",
+        "trans_y",
+        "trans_z",
+        "rot_x",
+        "rot_y",
+        "rot_z",
+        "csf",
+        "white_matter"
+      ],
+      "acompcor_n": 0,
+      "drift": "polynomial",
+      "drift_order": 2,
+      "description": "base + mean CSF + mean white matter.",
+      "source": "colleagues' revised set (message 2026-09-28, data-quality log): polynomial rather than cosine drift because cosine drift left artifacts in their time-time correlation matrices"
+    },
+    "baseacc6": {
+      "status": "defined",
+      "confounds": [
+        "trans_x",
+        "trans_y",
+        "trans_z",
+        "rot_x",
+        "rot_y",
+        "rot_z"
+      ],
+      "acompcor_n": 6,
+      "drift": "polynomial",
+      "drift_order": 2,
+      "description": "base + first 6 aCompCor components (combined WM+CSF mask). Same columns as `reference` except the drift model: polynomial here, fMRIPrep cosines there.",
+      "source": "colleagues' revised set (message 2026-09-28, data-quality log): polynomial rather than cosine drift because cosine drift left artifacts in their time-time correlation matrices"
+    },
+    "base12fd": {
+      "status": "defined",
+      "confounds": [
+        "trans_x",
+        "trans_y",
+        "trans_z",
+        "rot_x",
+        "rot_y",
         "rot_z",
         "trans_x_derivative1",
         "trans_y_derivative1",
@@ -115,11 +165,11 @@
       "acompcor_n": 0,
       "drift": "polynomial",
       "drift_order": 2,
-      "description": "12 motion (6 + first derivatives) + framewise displacement + linear + quadratic drift. The colleague's original definition, kept so their slide panels stay reproducible; a revised base from the same source enters under a new name, never by redefining this one.",
+      "description": "12 motion (6 + first derivatives) + framewise displacement + linear + quadratic drift. The colleague's original set, kept so their slide panels stay reproducible; renamed from `base*` 2026-09-28 when the revised set took those names.",
       "source": "colleague's initial QC (slides 'MMM Data Cleaning Regimes', 2026-09-16); confirmed against their regression code 2026-09-28 (data-quality log)"
     },
-    "basecsfwm": {
-      "status": "provisional",
+    "base12fdcsfwm": {
+      "status": "defined",
       "confounds": [
         "trans_x",
         "trans_y",
@@ -140,11 +190,11 @@
       "acompcor_n": 0,
       "drift": "polynomial",
       "drift_order": 2,
-      "description": "base + mean CSF + mean white matter.",
-      "source": "colleague's initial QC (slides 'MMM Data Cleaning Regimes', 2026-09-16); provisional: built on the original base, which its source is revising (data-quality log 2026-09-28)"
+      "description": "base12fd + mean CSF + mean white matter. The colleague's original set, kept so their slide panels stay reproducible; renamed from `base*` 2026-09-28 when the revised set took those names.",
+      "source": "colleague's initial QC (slides 'MMM Data Cleaning Regimes', 2026-09-16); confirmed against their regression code 2026-09-28 (data-quality log)"
     },
-    "baseacc6": {
-      "status": "provisional",
+    "base12fdacc6": {
+      "status": "defined",
       "confounds": [
         "trans_x",
         "trans_y",
@@ -163,11 +213,11 @@
       "acompcor_n": 6,
       "drift": "polynomial",
       "drift_order": 2,
-      "description": "base + first 6 aCompCor components (fMRIPrep's combined WM+CSF mask; the only mask fMRIPrep 25.2.5 writes a_comp_cor_* from).",
-      "source": "colleague's initial QC (slides 'MMM Data Cleaning Regimes', 2026-09-16); provisional: built on the original base, which its source is revising (data-quality log 2026-09-28)"
+      "description": "base12fd + first 6 aCompCor components (combined WM+CSF mask). The colleague's original set, kept so their slide panels stay reproducible; renamed from `base*` 2026-09-28 when the revised set took those names.",
+      "source": "colleague's initial QC (slides 'MMM Data Cleaning Regimes', 2026-09-16); confirmed against their regression code 2026-09-28 (data-quality log)"
     },
-    "baseacc20": {
-      "status": "provisional",
+    "base12fdacc20": {
+      "status": "defined",
       "confounds": [
         "trans_x",
         "trans_y",
@@ -186,8 +236,8 @@
       "acompcor_n": 20,
       "drift": "polynomial",
       "drift_order": 2,
-      "description": "base + first 20 aCompCor components.",
-      "source": "colleague's initial QC (slides 'MMM Data Cleaning Regimes', 2026-09-16); provisional: built on the original base, which its source is revising (data-quality log 2026-09-28)"
+      "description": "base12fd + first 20 aCompCor components. The colleague's original set, kept so their slide panels stay reproducible; renamed from `base*` 2026-09-28 when the revised set took those names.",
+      "source": "colleague's initial QC (slides 'MMM Data Cleaning Regimes', 2026-09-16); confirmed against their regression code 2026-09-28 (data-quality log)"
     },
     "gsr": {
       "status": "defined",
