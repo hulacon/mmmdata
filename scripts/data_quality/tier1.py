@@ -192,7 +192,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             except RegimeNotApplicable as exc:
                 # The run cannot carry this regime; declare it and go on to the next one.
                 dq.write_absent_regime(
-                    paths.tree_root, inputs, regime, str(exc),
+                    paths.tree_root, inputs, regime, exc,
                     fmriprep_version=fmriprep_version, code_sha=code_sha,
                 )
                 print(f"{run.entity_prefix} {regime.name:10s} ABSENT ({exc.n_available} of "

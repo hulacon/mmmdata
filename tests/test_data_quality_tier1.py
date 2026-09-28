@@ -393,9 +393,14 @@ def test_a_run_short_of_acompcor_declares_the_cell_absent_and_keeps_going(tree, 
     conf.to_csv(run.confounds, sep="\t", index=False, na_rep="n/a")
     tier1.main(_argv(tree, "run", "--sub", "01", "--ses", "01", "--task", "rest", "--run", "01"))
     assert "base12fdacc20 ABSENT (18 of 20" in capsys.readouterr().out
-    marker = dq.absent_path(root, run, "base12fdacc20")
+    marker_tsv, marker = dq.absent_paths(root, run, "base12fdacc20")
     meta = json.loads(marker.read_text())
     assert meta["absent"] is True and "18 of 20" in meta["absent_reason"] and meta["n_vol"] == N_VOL
+    # The .tsv is what the catalog indexes (suffix 'absent'); the .json is its sidecar.
+    row = pd.read_csv(marker_tsv, sep="\t").to_dict("records")
+    assert row == [{"regime": "base12fdacc20", "reason": meta["absent_reason"],
+                    "acompcor_available": 18, "acompcor_required": 20}]
+    assert marker_tsv.name.endswith("_desc-base12fdacc20_absent.tsv")
     assert not dq.tsnr_paths(root, run, "base12fdacc20")[0].exists()
     # The regime after it in the registry was still built.
     assert dq.tsnr_paths(root, run, "gsr")[0].exists()
@@ -404,6 +409,13 @@ def test_a_run_short_of_acompcor_declares_the_cell_absent_and_keeps_going(tree, 
     for extra in ((), ("--check-hashes",)):
         tier1.main(_argv(tree, "plan", "--units", str(units), *extra))
         assert units.read_text() == ""
+    # Half a pair is not a finished cell: a marker without its .tsv is rebuilt.
+    marker_tsv.unlink()
+    for extra in ((), ("--check-hashes",)):
+        tier1.main(_argv(tree, "plan", "--units", str(units), *extra))
+        assert units.read_text() == "01\t01\trest\t01\n"
+    tier1.main(_argv(tree, "run", "--sub", "01", "--ses", "01", "--task", "rest", "--run", "01"))
+    assert marker_tsv.exists()
     # The table keeps a full grid: one row per regime, the absent one with n/a measures.
     tier1.main(_argv(tree, "collect"))
     rows = pd.read_csv(root / "tier1_runs.tsv", sep="\t", na_values=["n/a"])
@@ -415,7 +427,8 @@ def test_a_run_short_of_acompcor_declares_the_cell_absent_and_keeps_going(tree, 
     tree["conf"].to_csv(run.confounds, sep="\t", index=False, na_rep="n/a")
     tier1.main(_argv(tree, "run", "--sub", "01", "--ses", "01", "--task", "rest", "--run", "01",
                      "--regimes", "base12fdacc20", "--force"))
-    assert dq.tsnr_paths(root, run, "base12fdacc20")[0].exists() and not marker.exists()
+    assert dq.tsnr_paths(root, run, "base12fdacc20")[0].exists()
+    assert not marker.exists() and not marker_tsv.exists()
 
 
 def test_missing_pipeline_description_is_loud(tmp_path):

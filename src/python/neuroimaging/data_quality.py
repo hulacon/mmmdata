@@ -17,10 +17,16 @@ Per run × regime it writes, beside each other in ``sub-XX/ses-YY/func/``::
                                                                 variance removed
 
 or, for a run that cannot carry the regime (too few aCompCor components),
-only a declared-absent marker, so every run x regime cell has exactly one
+only a declared-absent pair, so every run x regime cell has exactly one
 state and ``collect`` still gives it a row (with n/a measures)::
 
-    <prefix>_space-S_desc-<regime>_absent.json       why, + the same provenance
+    <prefix>_space-S_desc-<regime>_absent.tsv        one row: regime, reason, counts
+    <prefix>_space-S_desc-<regime>_absent.json       its sidecar: the same provenance
+
+The ``.tsv`` is what makes the absence visible to the catalog: bids2table
+indexes it as ``suffix='absent'`` with the run's entities and ``desc``, and
+the ``.json`` then pairs with it as a sidecar. A lone ``.json`` is never
+indexed and lands in ``files_supplemental`` as dark.
 
 Definitions (measure registry v0.2, data-quality ``out/measure-registry.md``):
 
@@ -54,7 +60,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
-from .confounds import Regime, RegimeDesign, non_steady_state_mask, regime_design
+from .confounds import Regime, RegimeDesign, RegimeNotApplicable, non_steady_state_mask, regime_design
 from .fmriprep_layout import space_part
 from .io import FmriprepRun, load_bold, load_confounds, load_mask
 
@@ -291,9 +297,14 @@ def timeseries_paths(tree_root: Path, run: FmriprepRun, regime: str, seg: str) -
     return stem.with_name(stem.name + ".tsv"), stem.with_name(stem.name + ".json")
 
 
-def absent_path(tree_root: Path, run: FmriprepRun, regime: str) -> Path:
-    """The declared-absent marker for a run × regime cell the run cannot carry."""
-    return output_dir(tree_root, run) / f"{output_stem(run, regime)}_absent.json"
+def absent_paths(tree_root: Path, run: FmriprepRun, regime: str) -> tuple[Path, Path]:
+    """The declared-absent pair ``(tsv, json)`` for a run × regime cell the run cannot carry."""
+    stem = output_dir(tree_root, run) / f"{output_stem(run, regime)}_absent"
+    return stem.with_name(stem.name + ".tsv"), stem.with_name(stem.name + ".json")
+
+
+def _absent_complete(tree_root: Path, run: FmriprepRun, regime: str) -> bool:
+    return all(p.exists() for p in absent_paths(tree_root, run, regime))
 
 
 def _cell_outputs(tree_root: Path, run: FmriprepRun, regime: str) -> list[Path]:
@@ -306,7 +317,7 @@ def _cell_outputs(tree_root: Path, run: FmriprepRun, regime: str) -> list[Path]:
 def cell_exists(tree_root: Path, run: FmriprepRun, regime: str) -> bool:
     """True when the cell has either its tSNR pair or a declared-absent marker (no hash check)."""
     nii, js = tsnr_paths(tree_root, run, regime)
-    return (nii.exists() and js.exists()) or absent_path(tree_root, run, regime).exists()
+    return (nii.exists() and js.exists()) or _absent_complete(tree_root, run, regime)
 
 
 def ensure_dataset_description(tree_root: Path, fmriprep_version: str, code_sha: str) -> Path:
@@ -338,9 +349,8 @@ def ensure_dataset_description(tree_root: Path, fmriprep_version: str, code_sha:
 def is_current(tree_root: Path, run: FmriprepRun, regime: Regime, input_sha: str) -> bool:
     """True when this run × regime was built from this input: every output, or a declared absence."""
     nii, js = tsnr_paths(tree_root, run, regime.name)
-    marker = absent_path(tree_root, run, regime.name)
-    if marker.exists():
-        js = marker
+    if _absent_complete(tree_root, run, regime.name):
+        js = absent_paths(tree_root, run, regime.name)[1]
     else:
         if not (nii.exists() and js.exists()):
             return False
@@ -474,7 +484,8 @@ def write_run_regime(
         "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
     }
     js.write_text(json.dumps(record, indent=2) + "\n")
-    absent_path(tree_root, run, regime.name).unlink(missing_ok=True)  # the run can carry it now
+    for marker in absent_paths(tree_root, run, regime.name):  # the run can carry it now
+        marker.unlink(missing_ok=True)
 
     for seg, parc in inputs.parcellations.items():
         ts, table = parcel_timeseries(result, parc)
@@ -511,12 +522,12 @@ def write_absent_regime(
     tree_root: Path,
     inputs: RunInputs,
     regime: Regime,
-    reason: str,
+    why: RegimeNotApplicable,
     *,
     fmriprep_version: str,
     code_sha: str,
 ) -> dict[str, Any]:
-    """Declare that this run cannot carry ``regime`` and write only the marker.
+    """Declare that this run cannot carry ``regime`` and write only the marker pair.
 
     Nothing is cleaned and no measure is invented: the marker carries the
     reason and the same provenance as a built cell, so ``is_current`` treats
@@ -536,7 +547,8 @@ def write_absent_regime(
         "space": run.space, "variant": run.variant,
         "regime": regime.name, "regime_status": regime.status, "regime_version": regime.version,
         "absent": True,
-        "absent_reason": reason,
+        "absent_reason": str(why),
+        "acompcor_available": why.n_available, "acompcor_required": why.n_required,
         "n_vol": n_vol, "n_nss": int(non_steady_state_mask(inputs.confounds).sum()),
         "repetition_time": inputs.tr,
         "fmriprep_version": fmriprep_version,
@@ -546,7 +558,12 @@ def write_absent_regime(
         "code_version": code_sha,
         "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
     }
-    absent_path(tree_root, run, regime.name).write_text(json.dumps(record, indent=2) + "\n")
+    tsv, js = absent_paths(tree_root, run, regime.name)
+    pd.DataFrame([{
+        "regime": regime.name, "reason": str(why),
+        "acompcor_available": why.n_available, "acompcor_required": why.n_required,
+    }]).to_csv(tsv, sep="\t", index=False)
+    js.write_text(json.dumps(record, indent=2) + "\n")
     return record
 
 
