@@ -1,14 +1,9 @@
 """get_roi_index: a name identifies one parcel, or it is an error."""
 
-import sys
-from pathlib import Path
-
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "python"))
-
-from neuroimaging.atlas import get_roi_index  # noqa: E402
+from neuroimaging.atlas import get_roi_index
 
 
 @pytest.fixture
