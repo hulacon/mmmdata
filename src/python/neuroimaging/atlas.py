@@ -36,7 +36,7 @@ def load_schaefer_atlas(
     Parameters
     ----------
     n_rois : int, default 400
-        Number of parcels (100, 200, 300, 400, 500, 800, 1000).
+        Number of parcels (100 to 1000 in steps of 100).
     networks : int, default 7
         Network resolution (7 or 17).
     atlases_dir : str, optional
@@ -67,19 +67,29 @@ def load_schaefer_atlas(
 
 
 def get_roi_index(labels_df: pd.DataFrame, roi_name: str) -> int | None:
-    """Find ROI index by partial name match in the labels table.
+    """Find the one parcel a name identifies in the labels table.
+
+    ``roi_name`` matches a parcel's full name, or its trailing ``_``-separated
+    fields (``LH_Vis_1`` for ``7Networks_LH_Vis_1``), case-insensitively. A
+    substring is not enough: ``Vis_1`` must not pick ``Vis_10``.
 
     Parameters
     ----------
     labels_df : pd.DataFrame
         Labels table from ``load_schaefer_atlas()``.
     roi_name : str
-        Partial ROI name to search for (case-insensitive).
+        Full parcel name, or its tail from a ``_`` boundary.
 
     Returns
     -------
     int or None
-        ROI index (1-based), or None if not found.
+        ROI index (1-based), or None if no parcel matches.
+
+    Raises
+    ------
+    ValueError
+        If the name matches more than one parcel (e.g. ``Vis_1`` names one in
+        each hemisphere); the message lists them.
     """
     name_col = None
     for col in labels_df.columns:
@@ -89,11 +99,14 @@ def get_roi_index(labels_df: pd.DataFrame, roi_name: str) -> int | None:
     if name_col is None:
         return None
 
-    matches = labels_df[
-        labels_df[name_col].str.contains(roi_name, case=False, na=False)
-    ]
+    names = labels_df[name_col].astype(str).str.lower()
+    query = roi_name.lower()
+    matches = labels_df[(names == query) | names.str.endswith("_" + query)]
     if matches.empty:
         return None
+    if len(matches) > 1:
+        raise ValueError(f"ROI {roi_name!r} matches {len(matches)} parcels: "
+                         f"{list(matches[name_col])[:6]}; give more of the name")
 
     # Return the index column value (usually first column)
     idx_col = labels_df.columns[0]

@@ -67,7 +67,9 @@ def aseg_path(subject):
 # Schaefer parcel indices (bilateral, collapsed L+R) for each cortical ROI
 SCHAEFER_ROIS = {
     "V1 (VisCent)": {
-        "pattern": "VisCent_ExStr",
+        # Whole VisCent network, 24 parcels; "VisCent_ExStr" matched the same 24 under
+        # TemplateFlow's pre-2019 names (CBIG now calls two of them Striate).
+        "pattern": "_VisCent_",
     },
     "Angular gyrus (DefaultA IPL)": {
         "pattern": "DefaultA_IPL",

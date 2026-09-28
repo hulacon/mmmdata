@@ -55,7 +55,9 @@ SCHAEFER_LUT = (
     / "tpl-MNI152NLin2009cAsym_atlas-Schaefer2018_seg-17n_scale-400_res-2_dseg.tsv"
 )
 SCHAEFER_ROIS = {
-    "V1 (VisCent)": "VisCent_ExStr",
+    # The whole VisCent network (24 parcels at 17n-400). Under TemplateFlow's pre-2019
+    # names "VisCent_ExStr" matched the same 24; CBIG now calls two of them Striate.
+    "V1 (VisCent)": "_VisCent_",
     "Angular gyrus": "DefaultA_IPL",
     "vmPFC": "DefaultA_PFCm",
 }
