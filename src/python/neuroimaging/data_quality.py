@@ -346,10 +346,31 @@ def ensure_dataset_description(tree_root: Path, fmriprep_version: str, code_sha:
     return desc
 
 
-def is_current(tree_root: Path, run: FmriprepRun, regime: Regime, input_sha: str) -> bool:
-    """True when this run × regime was built from this input: every output, or a declared absence."""
+def atlas_sha256(atlases_dir: Path, seg: str) -> str:
+    """One parcellation's identity: sha256 over its label volume's and table's hashes."""
+    stem = Path(atlases_dir) / PARCELLATIONS[seg]["stem"]
+    parts = [file_sha256(Path(f"{stem}{ext}")) for ext in (".nii.gz", ".tsv")]
+    return hashlib.sha256("".join(parts).encode()).hexdigest()
+
+
+def atlases_sha256(atlases_dir: Path) -> str:
+    """Every parcellation tier 1 caches, as one hash (the run-level provenance key)."""
+    parts = [f"{seg}:{atlas_sha256(atlases_dir, seg)}" for seg in sorted(PARCELLATIONS)]
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
+def is_current(
+    tree_root: Path, run: FmriprepRun, regime: Regime, input_sha: str, *, atlases_sha: str
+) -> bool:
+    """True when this run × regime was built from this input: every output, or a declared absence.
+
+    A built cell must also have been built from these atlases (``atlases_sha``, from
+    :func:`atlases_sha256`): restaging an atlas makes every parcel series stale. A
+    declared absence holds no parcel output, so it does not depend on the atlases.
+    """
     nii, js = tsnr_paths(tree_root, run, regime.name)
-    if _absent_complete(tree_root, run, regime.name):
+    absent = _absent_complete(tree_root, run, regime.name)
+    if absent:
         js = absent_paths(tree_root, run, regime.name)[1]
     else:
         if not (nii.exists() and js.exists()):
@@ -366,6 +387,7 @@ def is_current(tree_root: Path, run: FmriprepRun, regime: Regime, input_sha: str
         meta.get("input_bold_sha256") == input_sha
         and meta.get("regime_version") == regime.version
         and meta.get("schema_version") == SCHEMA_VERSION
+        and (absent or meta.get("input_atlases_sha256") == atlases_sha)
     )
 
 
@@ -385,6 +407,8 @@ class RunInputs:
     tr: float
     input_bold_sha256: str
     input_confounds_sha256: str
+    input_atlases_sha256: str
+    input_atlas_sha256: dict[str, str]  # per parcellation
     parcellations: dict[str, Parcellation]
 
 
@@ -431,6 +455,8 @@ def load_run_inputs(run: FmriprepRun, atlases_dir: Path) -> RunInputs:
         tr=tr,
         input_bold_sha256=file_sha256(run.bold),
         input_confounds_sha256=file_sha256(run.confounds),
+        input_atlases_sha256=atlases_sha256(atlases_dir),
+        input_atlas_sha256={seg: atlas_sha256(atlases_dir, seg) for seg in PARCELLATIONS},
         parcellations=parcs,
     )
 
@@ -480,6 +506,7 @@ def write_run_regime(
         "input_bold": str(run.bold),
         "input_bold_sha256": inputs.input_bold_sha256,
         "input_confounds_sha256": inputs.input_confounds_sha256,
+        "input_atlases_sha256": inputs.input_atlases_sha256,
         "code_version": code_sha,
         "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
     }
@@ -510,6 +537,8 @@ def write_run_regime(
                 "volumes are n/a; a parcel with no in-mask voxel is all n/a."
             ),
             "atlas": seg,
+            "atlas_stem": PARCELLATIONS[seg]["stem"],
+            "input_atlas_sha256": inputs.input_atlas_sha256[seg],
             "regime": regime.name, "regime_version": regime.version,
             "input_bold_sha256": inputs.input_bold_sha256,
             "n_nss": design.n_nss,
@@ -555,6 +584,7 @@ def write_absent_regime(
         "input_bold": str(run.bold),
         "input_bold_sha256": inputs.input_bold_sha256,
         "input_confounds_sha256": inputs.input_confounds_sha256,
+        "input_atlases_sha256": inputs.input_atlases_sha256,
         "code_version": code_sha,
         "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
     }

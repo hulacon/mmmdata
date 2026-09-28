@@ -347,7 +347,13 @@ def test_run_writes_every_output_with_provenance_and_is_idempotent(tree, capsys)
     meta = json.loads(js.read_text())
     meta["input_bold_sha256"] = "0" * 64
     js.write_text(json.dumps(meta))
-    assert not dq.is_current(root, run, get_regime("none"), dq.file_sha256(run.bold))
+    atlases_sha = dq.atlases_sha256(tree["atlases"])
+    assert not dq.is_current(root, run, get_regime("none"), dq.file_sha256(run.bold), atlases_sha=atlases_sha)
+    # Restaged atlases make a built cell stale even when the BOLD input is unchanged.
+    meta["input_bold_sha256"] = dq.file_sha256(run.bold)
+    js.write_text(json.dumps(meta))
+    assert dq.is_current(root, run, get_regime("none"), dq.file_sha256(run.bold), atlases_sha=atlases_sha)
+    assert not dq.is_current(root, run, get_regime("none"), dq.file_sha256(run.bold), atlases_sha="0" * 64)
 
 
 def test_provisional_regimes_need_the_flag(tree, monkeypatch):

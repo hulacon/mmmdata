@@ -283,7 +283,7 @@ def main():
     if atlases["HOCPA"][0].shape != ref_img.shape[:3] or not np.allclose(affine, ref_img.affine):
         sys.exit(f"ERROR: staged atlas grid {atlases['HOCPA'][0].shape} != reference "
                  f"grid {ref_img.shape[:3]} (or affines differ); re-run "
-                 "scripts/stage_harvard_oxford.py against this reference")
+                 "scripts/stage_mni_atlases.py against this reference")
 
     rows, masks, dseg, block_rows = build_ladder(atlases, args.min_vox, brain)
     df = pd.DataFrame(rows)

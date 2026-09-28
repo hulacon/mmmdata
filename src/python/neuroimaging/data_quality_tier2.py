@@ -33,12 +33,14 @@ Definitions:
   envelope is binned onto the run's own volumes, and nothing is shifted to match
   the BOLD.
 * **Parcel names.** Tier-1 Schaefer columns carry the names of the MNI
-  ``dseg.tsv`` staged from TemplateFlow, which predates CBIG's label renaming
-  (252 of 400 names agree; e.g. what CBIG now calls ``SomMotB_Ins``/``S2``/``Cent``
-  is ``SomMotB_Aud`` there, and the RH has no ``Aud`` at all). The parcels are
-  the same -- all 400 colours match by index -- so tier 2 renames columns by
-  index to CBIG's current names (the fsaverage table in ``derivatives/atlases``)
-  before selecting anything by name. See :func:`schaefer_current_names`.
+  ``dseg.tsv``. Until 2026-09-28 that table was TemplateFlow's, which predates
+  CBIG's label renaming (252 of 400 names agreed; what CBIG calls
+  ``SomMotB_Ins``/``S2``/``Cent`` was ``SomMotB_Aud`` there). Since the restage
+  (``scripts/stage_mni_atlases.py``) it is CBIG's own, so the rename by index to
+  the fsaverage table is an identity -- kept as a cross-check that the volume and
+  surface tables still agree index for index, and so caches built on the old
+  table fail loudly instead of being read under stale names. See
+  :func:`schaefer_current_names`.
 * **Missing values.** A parcel with any non-finite value in the window is n/a
   for that window. Nothing is imputed. The auditory ROI is the mean of the
   ``_Aud_`` parcels that are finite in the window, and the count used is
@@ -88,7 +90,7 @@ MIN_PAIRS = 10
 AUD_ROI = "SomMotB_Aud"
 AUD_SUBSTRING = "_Aud_"
 
-#: Tier-1 names come from the MNI table; CBIG's current names from the fsaverage one.
+#: Tier-1 names come from the MNI table; CBIG's fsaverage table is the cross-check.
 SCHAEFER_TIER1_TABLE = "tpl-MNI152NLin2009cAsym/anat/tpl-MNI152NLin2009cAsym_atlas-Schaefer2018_seg-17n_scale-400_res-2_dseg.tsv"
 SCHAEFER_CURRENT_TABLE = "tpl-fsaverage/anat/tpl-fsaverage_den-41k_atlas-Schaefer2018_seg-17n_scale-400_dseg.tsv"
 
@@ -126,7 +128,11 @@ def movie_name_index(registry_tsv: Path) -> dict[str, str]:
 
 
 def schaefer_current_names(atlases_dir: Path) -> dict[str, str]:
-    """Tier-1 (TemplateFlow) Schaefer name -> CBIG's current name, matched by index.
+    """Tier-1 (MNI table) Schaefer name -> CBIG's fsaverage-table name, matched by index.
+
+    An identity since the MNI table was restaged from CBIG (2026-09-28); tier-1
+    caches built on the TemplateFlow table then carry names absent from the map,
+    and :func:`load_series` raises on them.
 
     Refuses unless both tables have the same indices and every colour agrees:
     the colour is the only evidence that an index means the same parcel in both.

@@ -101,9 +101,10 @@ PATTERN_SUBCORTICAL_ROIS = {
 PATTERN_ROI_NAMES = ["EVC", "EAC", "Hippocampus", "AG", "Precuneus", "mPFC"]
 
 
-# Staged Harvard-Oxford (scripts/stage_harvard_oxford.py): resampled once onto
-# the shared res-2 grid. Keys are the `atlas-` entity; values the nilearn
-# fetch name used as the fallback and the label-name self-checks below.
+# Staged Harvard-Oxford (scripts/stage_mni_atlases.py): FSL's prob maps carried
+# onto the shared res-2 grid by TemplateFlow's NLin6->2009c xfm, FSL's maxprob
+# rule reapplied. Keys are the `atlas-` entity; values the nilearn fetch name
+# used as the fallback and the label-name self-checks below.
 HO_ATLASES_DIR = DERIV_ROOT / "atlases"
 HO_STAGED = {
     "HOCPA": "cort-maxprob-thr25-2mm",
@@ -120,7 +121,7 @@ def load_ho_on_grid(source: str = "auto", atlases_dir: Path | None = None):
     """The two Harvard-Oxford maxprob-thr25 label volumes, one source.
 
     source:
-        "staged" — the copies resampled once onto the shared res-2 grid in
+        "staged" — the copies on the shared res-2 grid in
                    derivatives/atlases (grid == fMRIPrep MNI res-2 outputs);
                    raises FileNotFoundError naming the path if absent.
         "fetch"  — nilearn's fetch of FSL's copy on its own MNI152NLin6Asym
@@ -152,7 +153,7 @@ def load_ho_on_grid(source: str = "auto", atlases_dir: Path | None = None):
         if not nii.exists():
             raise FileNotFoundError(
                 f"staged Harvard-Oxford atlas missing: {nii} "
-                "(run scripts/stage_harvard_oxford.py, or pass source='fetch')"
+                "(run scripts/stage_mni_atlases.py, or pass source='fetch')"
             )
         img = nib.load(nii)
         labels = _read_tsv(_ho_staged_path(atlases_dir, atlas, ".tsv"))

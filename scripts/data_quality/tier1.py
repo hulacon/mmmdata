@@ -131,6 +131,7 @@ def cmd_plan(args: argparse.Namespace) -> None:
     regimes = selected_regimes(args)
     runs = runs_for(args, paths)
     stale_runs, n_cells, n_missing = [], 0, 0
+    atlases_sha = dq.atlases_sha256(paths.atlases_dir) if args.check_hashes else None
     for run in runs:
         sha = dq.file_sha256(run.bold) if args.check_hashes else None
         missing_here = 0
@@ -139,7 +140,7 @@ def cmd_plan(args: argparse.Namespace) -> None:
             if sha is None:
                 current = dq.cell_exists(paths.tree_root, run, regime.name)
             else:
-                current = dq.is_current(paths.tree_root, run, regime, sha)
+                current = dq.is_current(paths.tree_root, run, regime, sha, atlases_sha=atlases_sha)
             if not current:
                 missing_here += 1
         if missing_here:
@@ -148,7 +149,7 @@ def cmd_plan(args: argparse.Namespace) -> None:
     print(f"runs: {len(runs)}  regimes: {[r.name for r in regimes]}  cells: {n_cells}  "
           f"missing/stale cells: {n_missing}  runs to (re)build: {len(stale_runs)}")
     if not args.check_hashes:
-        print("(existence only; --check-hashes also compares input hashes and regime versions)")
+        print("(existence only; --check-hashes also compares input and atlas hashes and regime versions)")
     if args.units:
         Path(args.units).write_text("".join(unit_line(r) + "\n" for r in stale_runs))
         print(f"wrote {len(stale_runs)} units to {args.units}")
@@ -174,15 +175,17 @@ def cmd_run(args: argparse.Namespace) -> None:
     code_sha = dq.code_version(REPO_ROOT)
     dq.ensure_dataset_description(paths.tree_root, fmriprep_version, code_sha)
 
+    atlases_sha = dq.atlases_sha256(paths.atlases_dir)
     for run in runs:
         t0 = time.time()
         sha = dq.file_sha256(run.bold)
-        todo = [r for r in regimes if args.force or not dq.is_current(paths.tree_root, run, r, sha)]
+        todo = [r for r in regimes
+                if args.force or not dq.is_current(paths.tree_root, run, r, sha, atlases_sha=atlases_sha)]
         if not todo:
             print(f"{run.entity_prefix}: all {len(regimes)} regimes current, skipping")
             continue
         inputs = dq.load_run_inputs(run, paths.atlases_dir)
-        assert inputs.input_bold_sha256 == sha
+        assert inputs.input_bold_sha256 == sha and inputs.input_atlases_sha256 == atlases_sha
         for regime in todo:
             try:
                 rec = dq.write_run_regime(
