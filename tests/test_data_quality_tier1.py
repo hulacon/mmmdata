@@ -151,9 +151,9 @@ def test_registry_has_the_charter_regimes_with_their_statuses():
     regimes = load_regimes()
     assert set(regimes) >= {"reference", "none", "drift", "base", "basecsfwm", "baseacc6", "baseacc20", "gsr"}
     assert regimes["reference"].status == "frozen"
-    assert {regimes[n].status for n in ("none", "drift")} == {"defined"}
-    assert {regimes[n].status for n in ("base", "basecsfwm", "baseacc6", "baseacc20", "gsr")} == {"provisional"}
-    assert set(confirmed_regimes()) == {"reference", "none", "drift"}
+    assert {regimes[n].status for n in ("none", "drift", "base", "gsr")} == {"defined"}
+    assert {regimes[n].status for n in ("basecsfwm", "baseacc6", "baseacc20")} == {"provisional"}
+    assert set(confirmed_regimes()) == {"reference", "none", "drift", "base", "gsr"}
     assert len({r.version for r in regimes.values()}) == len(regimes)
     assert set(describe_regimes()["regime"]) == set(regimes)
 
@@ -293,9 +293,9 @@ def test_run_writes_every_output_with_provenance_and_is_idempotent(tree, capsys)
     assert (root / "dataset_description.json").exists()
     run = tree["run"]
     names = sorted(p.name for p in (root / "sub-01" / "ses-01" / "func").iterdir())
-    assert names[0] == "sub-01_ses-01_task-rest_run-01_space-MNI152NLin2009cAsym_res-2_desc-drift_tsnr.json"
+    assert names[0] == "sub-01_ses-01_task-rest_run-01_space-MNI152NLin2009cAsym_res-2_desc-base_tsnr.json"
     assert not any("__" in n for n in names)
-    assert len(names) == 3 * (2 + 2 * len(dq.PARCELLATIONS))
+    assert len(names) == len(confirmed_regimes()) * (2 + 2 * len(dq.PARCELLATIONS))
     for regime in confirmed_regimes():
         nii, js = dq.tsnr_paths(root, run, regime)
         assert nii.exists() and js.exists()
@@ -313,7 +313,7 @@ def test_run_writes_every_output_with_provenance_and_is_idempotent(tree, capsys)
             side = json.loads(sj.read_text())
             assert side["SamplingFrequency"] == pytest.approx(1 / TR) and side["atlas"] == seg
     # No provisional regime was built without the flag.
-    assert not dq.tsnr_paths(root, run, "base")[0].exists()
+    assert not dq.tsnr_paths(root, run, "basecsfwm")[0].exists()
     # The second call skips everything.
     capsys.readouterr()
     tier1.main(_argv(tree, "run", "--sub", "01", "--ses", "01", "--task", "rest", "--run", "01"))
@@ -330,12 +330,12 @@ def test_provisional_regimes_need_the_flag(tree):
     tier1 = _tier1()
     with pytest.raises(SystemExit, match="provisional"):
         tier1.main(_argv(tree, "run", "--sub", "01", "--ses", "01", "--task", "rest", "--run", "01",
-                         "--regimes", "base"))
+                         "--regimes", "basecsfwm"))
     tier1.main(_argv(tree, "run", "--sub", "01", "--ses", "01", "--task", "rest", "--run", "01",
-                     "--regimes", "base,gsr", "--include-provisional"))
+                     "--regimes", "basecsfwm,baseacc6", "--include-provisional"))
     root = tree["bids"] / "derivatives" / "data_quality"
-    assert dq.tsnr_paths(root, tree["run"], "base")[0].exists()
-    assert dq.tsnr_paths(root, tree["run"], "gsr")[0].exists()
+    assert dq.tsnr_paths(root, tree["run"], "basecsfwm")[0].exists()
+    assert dq.tsnr_paths(root, tree["run"], "baseacc6")[0].exists()
 
 
 def test_plan_units_and_collect(tree, tmp_path, capsys):
@@ -350,9 +350,10 @@ def test_plan_units_and_collect(tree, tmp_path, capsys):
     root = tree["bids"] / "derivatives" / "data_quality"
     runs = pd.read_csv(root / "tier1_runs.tsv", sep="\t")
     parcels = pd.read_csv(root / "tier1_parcels.tsv", sep="\t", na_values=["n/a"])
-    assert len(runs) == 3 and set(runs["regime"]) == {"reference", "none", "drift"}
+    confirmed = confirmed_regimes()
+    assert len(runs) == len(confirmed) and set(runs["regime"]) == set(confirmed)
     assert set(runs.columns) >= {"sub", "ses", "task", "run", "regime", "dof_resid", "tsnr_median_mask", "fmriprep_version"}
-    assert len(parcels) == 3 * (3 + 1)
+    assert len(parcels) == len(confirmed) * (3 + 1)
     assert set(parcels["atlas"]) == set(dq.PARCELLATIONS)
 
 
