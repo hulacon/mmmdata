@@ -13,6 +13,10 @@ Verbs (all idempotent; state is on disk, never in this process):
             the remaining regimes still run
   collect   flatten every sidecar into tier1_runs.tsv and tier1_parcels.tsv
             at the tree root
+  motion    registry T1.7: one row per run (no regime) with raw and
+            respiration-filtered FD, to tier1_motion.tsv (+ .json) at the
+            tree root. Reads confounds TSVs and respiratory recordings, never
+            BOLD; a full rebuild replaces the table
 
 Provisional regimes (not yet confirmed by whoever defined them) are excluded
 from every verb unless --include-provisional is given.
@@ -23,6 +27,7 @@ Usage:
     python tier1.py run --sub 03 --ses 19 --task NATencoding --run 01
     python tier1.py run --units units.txt --index 7          # sbatch array
     python tier1.py collect
+    python tier1.py motion
 
 Library: src/python/neuroimaging/{confounds,data_quality}.py. Design record:
 mmmdata-agents docs/workbench/data-quality/.
@@ -60,9 +65,9 @@ class Paths:
     def __init__(self, args: argparse.Namespace):
         cfg = load_config()["paths"]
         self.bids_root = Path(args.bids_root or cfg["bids_project_dir"])
-        output_dir = Path(cfg["output_dir"])
-        self.tree_root = Path(args.tree_root or output_dir / dq.TREE_NAME)
-        self.atlases_dir = Path(args.atlases_dir or output_dir / "atlases")
+        self.output_dir = Path(cfg["output_dir"])
+        self.tree_root = Path(args.tree_root or self.output_dir / dq.TREE_NAME)
+        self.atlases_dir = Path(args.atlases_dir or self.output_dir / "atlases")
         self.variant = args.variant
         self.fmriprep_tree = self.bids_root / "derivatives" / self.variant
 
@@ -207,6 +212,87 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"{run.entity_prefix}: {len(todo)} regime(s) in {time.time() - t0:.0f} s")
 
 
+def cmd_motion(args: argparse.Namespace) -> None:
+    """T1.7: one FD row per run (no regime), raw and respiration-filtered, to tier1_motion.tsv."""
+    import json
+
+    import nibabel as nib
+    import numpy as np
+    import pandas as pd
+
+    from neuroimaging import data_quality_motion as dqm
+    from neuroimaging.io import load_confounds
+
+    t0 = time.time()
+    paths = Paths(args)
+    physio_tsv = Path(args.physio_reality or paths.output_dir / "duckbrain" / "physio" / "physio_reality.tsv")
+    runs = runs_for(args, paths)
+    if not runs:
+        sys.exit(f"No completed fMRIPrep run matches under {paths.fmriprep_tree}")
+    trs = {}
+    for run in runs:
+        zooms = nib.load(str(run.bold)).header.get_zooms()
+        trs[dqm.run_key(run.subject, run.session, run.task, run.run)] = float(zooms[3])
+
+    # Pass 1: a breathing peak for every run with a usable respiratory recording.
+    physio = dqm.physio_index(physio_tsv)
+    status = {dqm.run_key(r.sub, r.ses, r.task, r.run): "unusable" for r in physio.itertuples(index=False)}
+    usable = physio[physio["verdict"] == "usable"]
+    run_peaks, physio_sha, peak_rows = {}, {}, []
+    for rec in usable.itertuples(index=False):
+        key = dqm.run_key(rec.sub, rec.ses, rec.task, rec.run)
+        if key not in trs:
+            continue  # a recording for a run with no completed fMRIPrep output
+        run = next(r for r in runs if dqm.run_key(r.subject, r.session, r.task, r.run) == key)
+        n_vol = len(load_confounds(run, columns=["framewise_displacement"]))
+        trace, fs = dqm.in_scan_trace(paths.bids_root / rec.relpath, n_vol, trs[key])
+        run_peaks[key] = dqm.breathing_peak(trace, fs)
+        status[key] = "peak" if np.isfinite(run_peaks[key]) else "edge"
+        physio_sha[key] = dq.file_sha256(paths.bids_root / rec.relpath)
+        peak_rows.append({"sub": rec.sub, "peak_hz": run_peaks[key]})
+    per_sub, sample = dqm.fallback_bands(pd.DataFrame(peak_rows))
+    print(f"breathing peaks: {sum(v == 'peak' for v in status.values())} runs "
+          f"({sum(v == 'edge' for v in status.values())} usable recordings with an edge maximum); " + ", ".join(
+        f"sub-{s} [{b.lo:.3f}, {b.hi:.3f}] Hz" for s, b in sorted(per_sub.items()))
+        + f"; sample [{sample.lo:.3f}, {sample.hi:.3f}] Hz")
+
+    # Pass 2: every run.
+    fmriprep_version = dq.pipeline_version(paths.fmriprep_tree)
+    code_sha = dq.code_version(REPO_ROOT)
+    rows = []
+    for run in runs:
+        key = dqm.run_key(run.subject, run.session, run.task, run.run)
+        band = dqm.band_for(key, run_peaks, per_sub, sample)
+        try:
+            row = dqm.motion_row(load_confounds(run), trs[key], band)
+        except (ValueError, KeyError) as exc:
+            raise type(exc)(f"{run.entity_prefix}: {exc}") from exc
+        rows.append({
+            "schema_version": dqm.SCHEMA_VERSION, "sub": run.subject, "ses": run.session,
+            "task": run.task, "run": run.run, "repetition_time": trs[key],
+            "resp_status": status.get(key, "none"), **row,
+            "fmriprep_version": fmriprep_version,
+            "input_confounds_sha256": dq.file_sha256(run.confounds),
+            "input_physio_sha256": physio_sha.get(key), "code_version": code_sha,
+        })
+    table = pd.DataFrame(rows).sort_values(["sub", "ses", "task", "run"], na_position="first")
+    out = paths.tree_root / f"{dqm.TABLE_NAME}.tsv"
+    table.to_csv(out, sep="\t", index=False, na_rep="n/a", float_format="%.6f")
+    prov = {
+        "schema_version": dqm.SCHEMA_VERSION, "code_version": code_sha, "fmriprep_version": fmriprep_version,
+        "physio_reality": str(physio_tsv), "physio_reality_sha256": dq.file_sha256(physio_tsv),
+        "parameters": {"radius_mm": dqm.RADIUS_MM, "fd_thresholds": list(dqm.FD_THRESHOLDS),
+                       "resp_search_hz": list(dqm.RESP_SEARCH_HZ), "half_width_hz": dqm.HALF_WIDTH_HZ,
+                       "welch_segment_s": dqm.WELCH_SEGMENT_S, "min_trace_s": dqm.MIN_TRACE_S, "filter_order": dqm.FILTER_ORDER},
+        "fallback_bands": {**{f"sub-{s}": [b.lo, b.hi] for s, b in sorted(per_sub.items())},
+                           "sample": [sample.lo, sample.hi]},
+    }
+    (paths.tree_root / f"{dqm.TABLE_NAME}.json").write_text(json.dumps(prov, indent=2) + "\n")
+    print(f"{out}: {len(table)} runs in {time.time() - t0:.0f} s; band source "
+          f"{table['band_source'].value_counts().to_dict()}; resp_status {table['resp_status'].value_counts().to_dict()}; filter {table['filter_kind'].value_counts().to_dict()}; "
+          f"max |FD - fMRIPrep| {table['fd_check_max_abs_diff'].max():.2g} mm")
+
+
 def cmd_collect(args: argparse.Namespace) -> None:
     paths = Paths(args)
     runs, parcels = dq.collect(paths.tree_root)
@@ -264,6 +350,11 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--index", type=int, help="1-based line in --units")
     p.add_argument("--force", action="store_true", help="rebuild cells that are current")
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("motion", help="T1.7: FD per run, raw and respiration-filtered, to tier1_motion.tsv")
+    _common(p); _entities(p)
+    p.add_argument("--physio-reality", help="override <output_dir>/duckbrain/physio/physio_reality.tsv")
+    p.set_defaults(func=cmd_motion)
 
     p = sub.add_parser("collect", help="flatten sidecars into the tier-1 tables")
     _common(p)
