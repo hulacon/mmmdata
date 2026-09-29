@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tier 2 of the data-quality collection, rebuilt from tier-1 caches.
 
-Two parts, each in its own directory under <tree>/tier2/:
+Three parts, each in its own directory under <tree>/tier2/:
 
   naturalistic   LOO-ISFC and the audio-envelope lag scan for every film's
                  first viewing (registry T2.2, T2.4); repeat reliability of
@@ -10,6 +10,9 @@ Two parts, each in its own directory under <tree>/tier2/:
   connectivity   rest-run FC, within-subject QC-FC, fingerprinting and the
                  hippocampal FC profile (T2.5-T2.7); also reads
                  tier1_motion.tsv (`tier1.py motion`)
+  snr            tSNR and temporal DOF per subject x task x regime, and the
+                 per-session longitudinal view of tSNR, FD and coverage
+                 (T2.8); reads tier1_runs/_motion/_parcels.tsv only
 
 Verbs (idempotent; state is on disk, never in this process):
 
@@ -25,7 +28,7 @@ Usage:
     python tier2.py build --parts naturalistic --regimes base12fd,gsr --films bench --out-dir /tmp/t2
     python tier2.py diff A B
 
-Library: src/python/neuroimaging/data_quality_{tier2,connectivity}.py. Design
+Library: src/python/neuroimaging/data_quality_{tier2,connectivity,snr}.py. Design
 record: mmmdata-agents docs/workbench/data-quality/.
 """
 
@@ -45,6 +48,7 @@ if str(REPO_ROOT / "src" / "python") not in sys.path:
 from core.config import load_config  # noqa: E402
 from neuroimaging import data_quality as dq  # noqa: E402
 from neuroimaging import data_quality_connectivity as dqc  # noqa: E402
+from neuroimaging import data_quality_snr as dqs  # noqa: E402
 from neuroimaging import data_quality_tier2 as t2  # noqa: E402
 from neuroimaging.io import find_events_file  # noqa: E402
 
@@ -60,7 +64,7 @@ class Paths:
         self.atlases_dir = Path(args.atlases_dir or output_dir / "atlases")
 
 
-PARTS = ("naturalistic", "connectivity")
+PARTS = ("naturalistic", "connectivity", "snr")
 
 
 def _csv(value: Optional[str]) -> list[str]:
@@ -77,6 +81,8 @@ def cmd_build(args: argparse.Namespace) -> None:
         build_naturalistic(args, root / "naturalistic" if root else None)
     if "connectivity" in parts:
         build_connectivity(args, root / "connectivity" if root else None)
+    if "snr" in parts:
+        build_snr(args, root / "snr" if root else None)
 
 
 def build_connectivity(args: argparse.Namespace, dest: Optional[Path]) -> None:
@@ -117,6 +123,34 @@ def build_connectivity(args: argparse.Namespace, dest: Optional[Path]) -> None:
           f"{len(result.skipped)} skipped in {time.time() - t0:.0f} s")
     for s in result.skipped:
         print(f"  skipped: {s}")
+
+
+def build_snr(args: argparse.Namespace, dest: Optional[Path]) -> None:
+    t0 = time.time()
+    paths = Paths(args)
+    tier1 = t2.load_tier1_runs(paths.tree_root)
+    regimes = _csv(args.regimes)
+    if regimes:
+        unknown = sorted(set(regimes) - set(tier1["regime"]))
+        if unknown:
+            sys.exit(f"Regime(s) {unknown} are not in tier1_runs.tsv; available: {sorted(tier1['regime'].unique())}")
+        tier1 = tier1[tier1["regime"].isin(regimes)]
+    provisional = [s.removeprefix("sub-") for s in _csv(args.provisional_subjects)]
+    runs = dqs.run_table(tier1, dqc.load_motion(paths.tree_root), dqs.load_coverage(paths.tree_root), provisional)
+    result = dqs.compute(runs)
+    dest = dest or dqs.out_dir(paths.tree_root)
+    provenance = {
+        "created": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "code_version": dq.code_version(REPO_ROOT),
+        "inputs": {name: {"path": str(paths.tree_root / name), "sha256": t2.file_sha256(paths.tree_root / name)}
+                   for name in ("tier1_runs.tsv", "tier1_motion.tsv", "tier1_parcels.tsv")},
+        "regimes": sorted(runs["regime"].unique()),
+        "provisional_subjects": provisional,
+    }
+    written = dqs.write(result, dest, provenance)
+    print(f"snr {dest}: {len(written)} files; {runs[dqs.KEYS].drop_duplicates().shape[0]} runs x "
+          f"{runs['regime'].nunique()} regimes ({int(runs['absent'].sum())} absent cells); "
+          f"task_summary {len(result.task_summary)} rows, sessions {len(result.sessions)} in {time.time() - t0:.0f} s")
 
 
 def build_naturalistic(args: argparse.Namespace, dest: Optional[Path]) -> None:
@@ -172,7 +206,7 @@ def build_naturalistic(args: argparse.Namespace, dest: Optional[Path]) -> None:
 
 def cmd_diff(args: argparse.Namespace) -> None:
     a, b = Path(args.a), Path(args.b)
-    modules = {"naturalistic": t2, "connectivity": dqc}
+    modules = {"naturalistic": t2, "connectivity": dqc, "snr": dqs}
     problems = []
     for part, module in modules.items():
         pa, pb = a / part, b / part
