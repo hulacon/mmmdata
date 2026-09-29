@@ -39,10 +39,17 @@ def shrunk_procrustes(x: np.ndarray, y: np.ndarray, lam: float = 0.0) -> np.ndar
         raise ValueError(f"source {x.shape} and target {y.shape} differ in shape")
     if lam < 0:
         raise ValueError(f"lam must be >= 0, got {lam}")
-    p = x.shape[1]
+    return procrustes_from_cross(x.T @ y, lam)
+
+
+def procrustes_from_cross(m: np.ndarray, lam: float = 0.0) -> np.ndarray:
+    """``R`` from the cross-product ``m = x'y`` alone; storing ``m`` gives ``R`` for any ``lam`` later."""
+    if lam < 0:
+        raise ValueError(f"lam must be >= 0, got {lam}")
+    m = np.asarray(m, dtype=np.float64)
+    p = m.shape[0]
     if np.isinf(lam):
         return np.eye(p)
-    m = x.T @ y
     if lam > 0:
         sv = np.linalg.svd(m, compute_uv=False)
         m = m + lam * sv.mean() * np.eye(p)
@@ -81,11 +88,11 @@ def _valid_columns(*arrays: np.ndarray) -> np.ndarray:
     return ok
 
 
-def fit_piecewise(x: np.ndarray, y: np.ndarray, labels: np.ndarray, lam=0.0) -> PiecewiseTransform:
-    """Fit one ``R`` per piece label.
+def cross_products(x: np.ndarray, y: np.ndarray, labels: np.ndarray) -> dict[object, tuple[np.ndarray, np.ndarray]]:
+    """Per piece label, ``(cols, x[:, cols]' y[:, cols])`` over the columns valid in both.
 
-    ``labels`` gives each column's piece; a label < 0 or NaN marks a column that
-    belongs to no piece. ``lam`` is a scalar or a ``{label: lam}`` mapping.
+    ``labels`` gives each column's piece; a label < 0, NaN or ``""`` marks a
+    column that belongs to no piece.
     """
     x = np.asarray(x)
     y = np.asarray(y)
@@ -93,15 +100,28 @@ def fit_piecewise(x: np.ndarray, y: np.ndarray, labels: np.ndarray, lam=0.0) -> 
     if x.shape != y.shape or labels.shape != (x.shape[1],):
         raise ValueError(f"shapes differ: x {x.shape}, y {y.shape}, labels {labels.shape}")
     valid = _valid_columns(x, y)
-    tf = PiecewiseTransform(x.shape[1])
+    out = {}
     for lab in _piece_labels(labels):
         cols = np.flatnonzero((labels == lab) & valid)
-        if cols.size == 0:
-            continue
+        if cols.size:
+            out[lab] = (cols, x[:, cols].astype(np.float64).T @ y[:, cols].astype(np.float64))
+    return out
+
+
+def transform_from_cross(cross: dict[object, tuple[np.ndarray, np.ndarray]], n_columns: int, lam=0.0
+                         ) -> PiecewiseTransform:
+    """The piecewise transform for ``lam`` (a scalar or ``{label: lam}``) from stored cross-products."""
+    tf = PiecewiseTransform(n_columns)
+    for lab, (cols, m) in cross.items():
         piece_lam = lam[lab] if isinstance(lam, dict) else lam
-        tf.pieces[lab] = (cols, shrunk_procrustes(x[:, cols], y[:, cols], piece_lam))
+        tf.pieces[lab] = (cols, procrustes_from_cross(m, piece_lam))
         tf.lam[lab] = float(piece_lam)
     return tf
+
+
+def fit_piecewise(x: np.ndarray, y: np.ndarray, labels: np.ndarray, lam=0.0) -> PiecewiseTransform:
+    """Fit one ``R`` per piece label (see ``cross_products`` for ``labels``)."""
+    return transform_from_cross(cross_products(x, y, labels), np.asarray(x).shape[1], lam)
 
 
 def _piece_labels(labels: np.ndarray) -> list:

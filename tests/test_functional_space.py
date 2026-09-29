@@ -214,3 +214,158 @@ class TestPartitions:
                   & (bad["use"] != "tuning")]
         bad.loc[row, "stimulus_id"] = own["stimulus_id"].iat[0]
         assert any("tuning film" in f for f in parts.check_partitions(bad, POOL, SUBS))
+
+
+# ---------------------------------------------------------------------------
+# pieces and CHA targets
+# ---------------------------------------------------------------------------
+
+pcs = _load("pieces")
+
+
+def _toy_grayordinates(n_cortex=6, n_sub=2, n_hipp=6):
+    rows = []
+    for hemi in ("L", "R"):
+        rows += [{"piece": "cortex", "structure": f"CORTEX_{hemi}", "hemi": hemi, "vertex": v} for v in range(n_cortex)]
+    for hemi in ("L", "R"):
+        rows += [{"piece": "hippocampus", "structure": f"HIPPOCAMPUS_{hemi}", "hemi": hemi, "vertex": v}
+                 for v in range(n_hipp)]
+    rows += [{"piece": "subcortex", "structure": s, "hemi": s[-1], "vertex": -1}
+             for s in ("THALAMUS_L", "THALAMUS_L", "PUTAMEN_R")[: n_sub + 1]]
+    return pd.DataFrame(rows)
+
+
+class TestPieces:
+    def test_piece_labels(self):
+        g = _toy_grayordinates()
+        parcels = {"L": np.array([0, 1, 1, 2, 2, 2]), "R": np.array([3, 3, 0, 4, 4, 4])}
+        names = {1: "p1", 2: "p2", 3: "p3", 4: "p4"}
+        x = np.arange(6, dtype=float)  # unfold long axis
+        lab = pcs.piece_labels(g, parcels, names, x)
+        assert list(lab[:6]) == ["", "p1", "p1", "p2", "p2", "p2"]
+        assert list(lab[6:12]) == ["p3", "p3", "", "p4", "p4", "p4"]
+        assert list(lab[12:18]) == [f"HIPPOCAMPUS_L_ax{t}" for t in (1, 1, 2, 2, 3, 3)]
+        assert list(lab[-3:]) == ["THALAMUS_L", "THALAMUS_L", "PUTAMEN_R"]
+
+    def test_cortex_tiles_are_nearest_centre_and_skip_the_wall(self):
+        rng = np.random.default_rng(0)
+        xyz = rng.standard_normal((50, 3))
+        xyz /= np.linalg.norm(xyz, axis=1, keepdims=True)
+        wall = np.zeros(50, bool)
+        wall[[1, 30]] = True
+        tiles = pcs.cortex_tiles({"L": xyz, "R": xyz}, {"L": wall, "R": wall}, n_centres=5)
+        centres, tile = tiles["L"]
+        assert list(centres) == [0, 2, 3, 4]  # vertex 1 is a wall centre, dropped
+        assert (tile[wall] == -1).all()
+        d = np.linalg.norm(xyz[:, None] - xyz[centres][None], axis=2)
+        assert np.array_equal(tile[~wall], d.argmin(axis=1)[~wall])
+
+    def test_target_assignment_covers_every_non_wall_grayordinate(self):
+        g = _toy_grayordinates()
+        tile = np.array([0, 0, 1, 1, -1, 1])
+        assign, names = pcs.target_assignment(g, {"L": (np.array([0, 2]), tile), "R": (np.array([0, 2]), tile)})
+        assert names[:4] == ["cortex_L_v0", "cortex_L_v2", "cortex_R_v0", "cortex_R_v2"]
+        assert list(assign[:12]) == [0, 0, 1, 1, -1, 1, 2, 2, 3, 3, -1, 3]
+        assert set(names[4:]) == {"HIPPOCAMPUS_L", "HIPPOCAMPUS_R", "THALAMUS_L", "PUTAMEN_R"}
+        assert (assign[12:] >= 4).all()
+
+
+cha = _load("cha")
+
+
+class _ToyGeometry:
+    """Nested target levels over pieces of 4 columns: 1 target per piece, per pair, per column."""
+
+    def __init__(self, n_pieces: int = 30):
+        n = 4 * n_pieces
+        self.labels = np.repeat(np.arange(n_pieces), 4)
+        self.levels = {
+            "ico3": (np.arange(n) // 4, [f"t{i}" for i in range(n // 4)]),
+            "ico4": (np.arange(n) // 2, [f"t{i}" for i in range(n // 2)]),
+            "ico5": (np.arange(n), [f"t{i}" for i in range(n)]),
+        }
+        self.n = n
+
+
+def _toy_subjects(geo, rotation, seed=0, t=2000, noise=0.3):
+    """Shared sparse (non-global) connectivity, independent rest time courses, a
+    per-piece orthogonal map per subject, and a shared stimulus response in the
+    same per-subject frame."""
+    rng = np.random.default_rng(seed)
+    mix = np.zeros((2 * geo.n, geo.n))
+    for i in range(mix.shape[0]):
+        mix[i, rng.choice(geo.n, 5, replace=False)] = rng.standard_normal(5)
+    stim = rng.standard_normal((300, mix.shape[0])) @ mix
+    q, rest, resp = {}, {}, {}
+    for s in ("A", "B", "T"):
+        q[s] = np.zeros((geo.n, geo.n))
+        for j in range(geo.n // 4):
+            q[s][4 * j: 4 * j + 4, 4 * j: 4 * j + 4] = rotation(rng)
+        lat = rng.standard_normal((t, mix.shape[0])) @ mix
+        rest[s] = (lat @ q[s] + noise * rng.standard_normal((t, geo.n))).astype(np.float32)
+        resp[s] = stim @ q[s] + noise * rng.standard_normal(stim.shape)
+    return q, rest, resp
+
+
+def _small_rotation(angle):
+    from scipy.linalg import expm
+
+    def draw(rng):
+        a = rng.standard_normal((4, 4))
+        a = (a - a.T) / 2
+        return expm(angle * a / np.linalg.norm(a, 2))
+    return draw
+
+
+def _r(a, b):
+    a = (a - a.mean(0)) / a.std(0)
+    b = (b - b.mean(0)) / b.std(0)
+    return float((a * b).mean())
+
+
+class TestCha:
+    def test_target_signals_are_member_means(self):
+        rng = np.random.default_rng(1)
+        x = rng.standard_normal((30, 6)).astype(np.float32)
+        x[:, 5] = np.nan
+        s = cha.target_signals(x, np.array([0, 0, 1, 1, 1, 1]), 2)
+        assert np.allclose(s[:, 0], x[:, :2].mean(1), atol=1e-6)
+        assert np.allclose(s[:, 1], x[:, 2:5].mean(1), atol=1e-6)  # the NaN member is left out
+
+    def test_target_without_members_is_an_error(self):
+        with pytest.raises(ValueError):
+            cha.target_signals(np.ones((5, 3), np.float32), np.array([0, 0, 0]), 2)
+
+    def test_profiles_are_correlations(self):
+        rng = np.random.default_rng(2)
+        x = rng.standard_normal((200, 5)).astype(np.float32)
+        s = rng.standard_normal((200, 3)).astype(np.float32)
+        p = cha.connectivity_profiles(x, s)
+        r = np.corrcoef(np.hstack([s, x]).T)[:3, 3:]
+        z = (r - r.mean(0)) / r.std(0)
+        assert np.allclose(p, z, atol=1e-4)
+
+    def test_core_recovers_any_rotation_from_common_frame_targets(self):
+        """Oracle targets (each subject's data in the true common frame): profile +
+        Procrustes map one subject's stimulus response onto another's almost exactly."""
+        geo = _ToyGeometry()
+        q, rest, resp = _toy_subjects(geo, lambda rng: _rotation(4, int(rng.integers(1 << 30))))
+        assign, names = geo.levels["ico5"]
+        prof = {s: cha.connectivity_profiles(
+            rest[s], cha.target_signals((rest[s] @ q[s].T).astype(np.float32), assign, len(names))) for s in rest}
+        tf = {s: pr.fit_piecewise(prof[s], prof["A"], geo.labels) for s in rest}
+        mapped = tf["T"].inverse().apply(tf["B"].apply(resp["B"]))
+        assert _r(mapped, resp["T"]) > 0.95 > 0.5 > _r(resp["B"], resp["T"])
+
+    def test_bootstraps_from_anatomy_and_beats_it(self):
+        """Anatomy roughly right (small in-piece rotations): the full densifying fit
+        maps the template subjects' responses onto the target better than identity."""
+        geo = _ToyGeometry()
+        q, rest, resp = _toy_subjects(geo, _small_rotation(0.6), seed=1)
+        cross, diag, _ = cha.fit_target(geo, rest, "T", log=lambda *a: None)
+        tf = {s: pr.transform_from_cross(cross[s], geo.n, 0.0) for s in rest}
+        for s in ("A", "B"):
+            anat = _r(resp[s], resp["T"])
+            aligned = _r(tf["T"].inverse().apply(tf[s].apply(resp[s])), resp["T"])
+            assert aligned > anat + 0.08
+        assert diag["ico5"]["sub-T"]["aligned"] > diag["ico5"]["sub-T"]["anatomical"]
