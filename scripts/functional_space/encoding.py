@@ -32,11 +32,15 @@ Verbs:
   cache  convert the selected feature columns of every film and probe clip to
          <derivatives>/functional_space/features/<space>/<stimulus_id>.npz
   plan   report cached inputs and sizes
+  fit    sizing run: fit one subject's encoder for one partition job on its
+         own alignment films and time a full probe-set prediction; writes
+         only timings and fit diagnostics (alignment data; no score)
 
 Usage:
     python encoding.py cache --space ebind
     python encoding.py cache --space vgg19
     python encoding.py plan
+    python encoding.py fit --space ebind --sub 04 --pct 0 --draw 0 --target 03
 """
 
 from __future__ import annotations
@@ -274,6 +278,97 @@ class Encoder:
 # verbs
 # ---------------------------------------------------------------------------
 
+def film_design(windows_rows, cache_root: Path, space: str, cleaned_root: Path, delays=DELAYS_TR
+                ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, slice]]:
+    """Stack the FIR design, the measured window series and film groups over showings."""
+    import films as fm
+
+    xs, ys, groups, bands, runs = [], [], [], None, {}
+    for r in windows_rows.itertuples(index=False):
+        f = load_features(cache_path(cache_root, space, r.stimulus_id))
+        x, bands = delayed(f, film_volume_starts(r.onset, r.start, r.n, r.repetition_time), r.repetition_time,
+                           delays, end=r.play_s)
+        xs.append(x)
+        ys.append(fm.film_series(r, cleaned_root, runs))
+        groups += [r.stimulus_id] * r.n
+    return np.concatenate(xs), np.concatenate(ys), np.array(groups), bands
+
+
+def probe_design(cache_root: Path, space: str, tr: float, stimulus_ids: list[str], delays=DELAYS_TR
+                 ) -> tuple[np.ndarray, list[tuple[str, int]]]:
+    """FIR design over the probe clips' virtual volumes, and (clip, n_volumes) per clip."""
+    xs, sizes = [], []
+    for sid in stimulus_ids:
+        f = load_features(cache_path(cache_root, space, sid))
+        x, _ = delayed(f, probe_volume_starts(f, tr, delays), tr, delays)
+        xs.append(x)
+        sizes.append((sid, x.shape[0]))
+    return np.concatenate(xs), sizes
+
+
+def probe_ids(cache_root: Path, space: str) -> list[str]:
+    ids = sorted(p.stem for p in (Path(cache_root) / space).glob("ext-*.npz"))
+    if not ids:
+        raise FileNotFoundError(f"no cached probe clips (ext-*) under {cache_root}/{space}; run `encoding.py cache`")
+    return ids
+
+
+def _zscore_film_windows(y: np.ndarray, groups: np.ndarray) -> np.ndarray:
+    """Z-score each film window per column (the cleaned series are raw-unit residuals)."""
+    out = np.empty_like(y)
+    for g in dict.fromkeys(groups.tolist()):
+        sel = groups == g
+        blk = y[sel]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out[sel] = (blk - blk.mean(0)) / blk.std(0)
+    return out
+
+
+def cmd_fit(args: argparse.Namespace) -> None:
+    import time
+
+    import films as fm
+    import grayordinates as go
+    import partitions as pt
+
+    paths = Paths()
+    t0 = time.time()
+    windows = fm.load_windows(paths.derivatives)
+    parts = pt.load_partitions(paths.derivatives)
+    job = parts[(parts["scenario"] == args.scenario) & (parts["pct"] == args.pct) & (parts["draw"] == args.draw)
+                & (parts["target"] == args.target) & (parts["subject"] == args.sub) & (parts["use"] != "tuning")]
+    if len(job) != pt.N_FILMS:
+        sys.exit(f"partition job resolves to {len(job)} alignment films, expected {pt.N_FILMS}")
+    rows = windows[(windows["sub"] == args.sub) & (windows["role"] == "alignment")
+                   & windows["stimulus_id"].isin(job["stimulus_id"])]
+    x, y, groups, bands = film_design(rows, paths.cache, args.space, go.tree_root(paths.derivatives))
+    y = _zscore_film_windows(y, groups)
+    t_load = time.time() - t0
+    e = Encoder(bands, backend=args.backend).fit(x, y, groups)
+    t_fit = time.time() - t0 - t_load
+    tr = float(rows["repetition_time"].iat[0])
+    xp, sizes = probe_design(paths.cache, args.space, tr, probe_ids(paths.cache, args.space))
+    t1 = time.time()
+    n_pred = 0
+    for lo in range(0, xp.shape[0], args.chunk):
+        n_pred += e.predict(xp[lo: lo + args.chunk]).shape[0]
+    t_pred = time.time() - t1
+    rec = {
+        "space": args.space, "sub": args.sub, "job": {"scenario": args.scenario, "pct": args.pct, "draw": args.draw,
+                                                        "target": args.target},
+        "train": {"films": int(len(rows)), "volumes": int(x.shape[0]), "features": int(x.shape[1]),
+                  "bands": {b: s.stop - s.start for b, s in bands.items()}},
+        "probe": {"clips": len(sizes), "volumes": int(xp.shape[0])},
+        "diagnostics": e.diagnostics_,
+        "seconds": {"load": round(t_load, 1), "fit": round(t_fit, 1), "predict_probe": round(t_pred, 1)},
+        "backend": args.backend,
+    }
+    dest = paths.derivatives / "functional_space" / "dryrun" / f"encoder_{args.space}_sub-{args.sub}.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(rec, indent=2) + "\n")
+    print(json.dumps(rec, indent=2))
+
+
 def cmd_cache(args: argparse.Namespace) -> None:
     import films as fm
 
@@ -318,8 +413,17 @@ def main() -> None:
     c.add_argument("--space", choices=list(FEATURE_SPACES), required=True)
     c.add_argument("--force", action="store_true")
     sub.add_parser("plan")
+    f = sub.add_parser("fit")
+    f.add_argument("--space", choices=list(FEATURE_SPACES), required=True)
+    f.add_argument("--sub", required=True)
+    f.add_argument("--scenario", default="primary")
+    f.add_argument("--pct", type=int, default=0)
+    f.add_argument("--draw", type=int, default=0)
+    f.add_argument("--target", required=True)
+    f.add_argument("--backend", default="torch")
+    f.add_argument("--chunk", type=int, default=4000)
     args = ap.parse_args()
-    {"cache": cmd_cache, "plan": cmd_plan}[args.verb](args)
+    {"cache": cmd_cache, "plan": cmd_plan, "fit": cmd_fit}[args.verb](args)
 
 
 if __name__ == "__main__":

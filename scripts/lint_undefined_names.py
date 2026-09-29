@@ -30,6 +30,7 @@ from pathlib import Path
 def undefined_names(path: Path):
     spec = importlib.util.spec_from_file_location(f"_lint_{path.stem}", path)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod  # a @dataclass resolves its module through sys.modules
     saved_argv, sys.argv = sys.argv, [str(path)]
     try:
         spec.loader.exec_module(mod)
