@@ -6,7 +6,7 @@ the stimulus registry and the Contract B feature store -- never voxels -- so
 the whole of it rebuilds from tier 1 in minutes (Settles-when 4 of the design
 record, mmmdata-agents ``docs/workbench/data-quality/``).
 
-This module holds the first two tier-2 measures, both on the film task:
+This module holds the tier-2 measures on the film task:
 
 * **LOO-ISFC** (registry T2.2): for each film and regime, each subject's parcel
   series against the mean of every other subject's, as a parcel x parcel
@@ -17,12 +17,23 @@ This module holds the first two tier-2 measures, both on the film task:
   film's loudness envelope at lags ``-MAX_LAG .. +MAX_LAG`` TRs. A **negative
   lag means the audio leads the BOLD** (BOLD volume ``i + |lag|`` is paired with
   envelope volume ``i``), the physiologically expected direction.
+* **Repeat reliability** (T2.1, WSC): for every film a subject saw in more than
+  one session (the two that recur in every film session), the Pearson r of each
+  parcel between every pair of that subject's showings, all windows cut to the
+  subject's shortest showing of the film; pairs averaged in Fisher-z. Port of
+  ``scripts/isc_confounds/isc_confound_comparison.py``'s WSC.
+* **Discriminability** (T2.3): per session and parcel, the mean cross-subject r
+  for the same film (within) minus that for different films (between); each pair
+  is cut to its shorter window from the start. Plain means of r, as
+  ``scripts/nordic_benchmark/nat_eval.py`` defines it (its NORDIC arm dropped).
 
 Definitions:
 
-* **Which showing.** Each film is read from each subject's **first** showing
-  only, so every number is an exposure-matched first viewing. The two films that
-  recur across sessions are therefore read once.
+* **Which showing.** LOO-ISFC and the lag scan read each film from each
+  subject's **first** showing only, so every number is an exposure-matched first
+  viewing. Repeat reliability reads every showing of a recurring film.
+  Discriminability reads every showing of its session: within a session all
+  subjects are at the same exposure count for every film.
 * **Window.** A showing's window is the volumes that lie wholly inside the
   film, ``ceil(onset / TR) .. floor((onset + duration) / TR)``, with onset and
   duration from the events file. For ISFC every subject is cut to the shortest
@@ -54,6 +65,9 @@ Outputs, under ``<tree>/tier2/naturalistic/``::
     isfc/stim-<id>_seg-<atlas>_desc-<regime>_isfc.npy   group-mean ISFC (float32, P x P)
     envelope_lag.tsv                     auditory-ROI lag curve per showing x regime x envelope
     envelope_parcel.tsv                  per parcel: best r inside PLAUSIBLE_LAGS, and its lag
+    wsc.tsv                              subject x recurring film x regime x parcel: repeat reliability
+    wsc_pairs.tsv                        subject x recurring film x regime x session pair: median r over parcels
+    discriminability.tsv                 session x regime x parcel: within, between, their difference
     provenance.json                      inputs, parameters, code version
 
 The ``.npy`` holds the mean over subjects of the per-subject matrices, i.e.
@@ -331,6 +345,46 @@ def lag_curves(bold: np.ndarray, env: np.ndarray, max_lag: int = MAX_LAG) -> np.
     return out
 
 
+def column_r(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """``(N, P), (N, P) -> (P,)``: Pearson r of each column of ``a`` with the same column of ``b``."""
+    za, zb = _zscore_columns(a), _zscore_columns(b)
+    return (za * zb).sum(axis=0) / za.shape[0]
+
+
+def fisher_mean(r: np.ndarray, axis: int = 0) -> np.ndarray:
+    """Mean in Fisher-z space; any non-finite r makes that mean n/a."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.arctanh(np.asarray(r, dtype=float)).mean(axis=axis)
+
+
+def repeat_reliability(segments: list[np.ndarray]) -> tuple[np.ndarray, list[tuple[int, int]], int]:
+    """Showings of one film by one subject -> ``(r (pairs, P), pairs, n_vol)``, cut to the shortest showing."""
+    if len(segments) < 2:
+        raise ValueError(f"repeat reliability needs at least 2 showings, got {len(segments)}")
+    n = min(s.shape[0] for s in segments)
+    pairs = [(i, j) for i in range(len(segments)) for j in range(i + 1, len(segments))]
+    return np.stack([column_r(segments[i][:n], segments[j][:n]) for i, j in pairs]), pairs, n
+
+
+def discriminability(entities: list[tuple[str, str, np.ndarray]]) -> tuple[np.ndarray, np.ndarray, int, int]:
+    """``(subject, film, segment)`` of one session -> per-parcel ``(within, between, n_within, n_between)``.
+
+    Only pairs of different subjects count; each pair is cut to its shorter segment from the start.
+    """
+    within, between = [], []
+    for a in range(len(entities)):
+        for b in range(a + 1, len(entities)):
+            (sa, fa, xa), (sb, fb, xb) = entities[a], entities[b]
+            if sa == sb:
+                continue
+            n = min(len(xa), len(xb))
+            (within if fa == fb else between).append(column_r(xa[:n], xb[:n]))
+    p = entities[0][2].shape[1]
+    w = np.mean(within, axis=0) if within else np.full(p, np.nan)
+    b = np.mean(between, axis=0) if between else np.full(p, np.nan)
+    return w, b, len(within), len(between)
+
+
 def aud_columns(columns: Iterable[str]) -> list[str]:
     return [c for c in columns if AUD_SUBSTRING in c]
 
@@ -348,6 +402,9 @@ class Tier2Result:
     envelope_parcel: pd.DataFrame
     isfc_group: dict[tuple[str, str], np.ndarray]
     skipped: list[dict]
+    wsc: pd.DataFrame
+    wsc_pairs: pd.DataFrame
+    discriminability: pd.DataFrame
 
 
 def compute(
@@ -358,13 +415,16 @@ def compute(
     tier1_runs: pd.DataFrame,
     rename: Optional[dict[str, str]] = None,
 ) -> Tier2Result:
-    """Both measures for every first viewing x regime. Reads each run's series once per regime."""
+    """Every measure for every regime. Reads each run's series once per regime."""
     first = viewings[viewings["first_viewing"]]
     absent = set(tier1_runs.loc[tier1_runs["absent"], ["sub", "ses", "task", "run", "regime"]]
                  .itertuples(index=False, name=None))
     lags = np.arange(-MAX_LAG, MAX_LAG + 1)
     in_window = (lags >= PLAUSIBLE_LAGS[0]) & (lags <= PLAUSIBLE_LAGS[1])
     isc_rows, summ_rows, lag_rows, parcel_rows, skipped = [], [], [], [], []
+    wsc_rows, pair_rows, disc_rows = [], [], []
+    shown = viewings.groupby(["sub", "stimulus_id"])["ses"].nunique()
+    recurring = viewings.set_index(["sub", "stimulus_id"]).index.isin(shown[shown > 1].index)
     group: dict[tuple[str, str], np.ndarray] = {}
 
     for regime in regimes:
@@ -439,6 +499,53 @@ def compute(
                     "isfc_offdiag_sd": np.nanstd(offd),
                 })
 
+        def segment(v) -> Optional[tuple[list[str], np.ndarray]]:
+            ts = series(v)
+            if ts is None:
+                return None
+            return list(ts.columns), ts.to_numpy(float)[v.start:v.start + v.n]
+
+        # T2.1: every showing of a recurring film, per subject
+        for (sub, sid), g in viewings[recurring].groupby(["sub", "stimulus_id"], sort=True):
+            g = g.sort_values(["ses", "run", "onset"])
+            got = [(v, segment(v)) for v in g.itertuples(index=False)]
+            missing = [v for v, seg in got if seg is None]
+            if missing:
+                skipped.append({"stimulus_id": sid, "regime": regime, "sub": sub,
+                                "reason": f"repeat reliability: {len(missing)} showing(s) declared absent"})
+            got = [(v, seg) for v, seg in got if seg is not None]
+            if len(got) < 2:
+                continue
+            names = got[0][1][0]
+            r, pairs, n = repeat_reliability([seg[1] for _, seg in got])
+            z = fisher_mean(r)
+            for p, zz in zip(names, z):
+                wsc_rows.append({"stimulus_id": sid, "regime": regime, "sub": sub, "parcel": p,
+                                 "n_showings": len(got), "n_pairs": len(pairs), "n_vol": n,
+                                 "z_mean": zz, "r": np.tanh(zz)})
+            for (i, j), rr in zip(pairs, r):
+                pair_rows.append({"stimulus_id": sid, "regime": regime, "sub": sub,
+                                  "ses_a": got[i][0].ses, "ses_b": got[j][0].ses, "n_vol": n,
+                                  "r_median": np.nanmedian(rr) if np.isfinite(rr).any() else np.nan})
+
+        # T2.3: every showing in a session, across subjects
+        for ses, g in viewings.groupby("ses", sort=True):
+            entities = []
+            for v in g.sort_values(["sub", "stimulus_id"]).itertuples(index=False):
+                seg = segment(v)
+                if seg is None:
+                    skipped.append({"stimulus_id": v.stimulus_id, "regime": regime, "sub": v.sub,
+                                    "reason": f"discriminability ses-{ses}: tier-1 cell declared absent"})
+                    continue
+                entities.append((v.sub, v.stimulus_id, seg[1]))
+                names = seg[0]
+            if len({e[0] for e in entities}) < 2:
+                continue
+            w, b, n_w, n_b = discriminability(entities)
+            for p, ww, bb in zip(names, w, b):
+                disc_rows.append({"ses": ses, "regime": regime, "parcel": p, "within_r": ww, "between_r": bb,
+                                  "discriminability": ww - bb, "n_within": n_w, "n_between": n_b})
+
     return Tier2Result(
         viewings=viewings,
         loo_isc=pd.DataFrame(isc_rows),
@@ -447,6 +554,9 @@ def compute(
         envelope_parcel=pd.DataFrame(parcel_rows),
         isfc_group=group,
         skipped=skipped,
+        wsc=pd.DataFrame(wsc_rows),
+        wsc_pairs=pd.DataFrame(pair_rows),
+        discriminability=pd.DataFrame(disc_rows),
     )
 
 
@@ -454,7 +564,8 @@ def out_dir(tree_root: Path) -> Path:
     return Path(tree_root) / TIER2_DIR / "naturalistic"
 
 
-TABLES = ("film_viewings", "loo_isc", "loo_isfc_summary", "envelope_lag", "envelope_parcel")
+TABLES = ("film_viewings", "loo_isc", "loo_isfc_summary", "envelope_lag", "envelope_parcel",
+          "wsc", "wsc_pairs", "discriminability")
 
 
 def write(result: Tier2Result, dest: Path, provenance: dict) -> list[Path]:
@@ -467,6 +578,9 @@ def write(result: Tier2Result, dest: Path, provenance: dict) -> list[Path]:
         "loo_isfc_summary": result.isfc_summary,
         "envelope_lag": result.envelope_lag,
         "envelope_parcel": result.envelope_parcel,
+        "wsc": result.wsc,
+        "wsc_pairs": result.wsc_pairs,
+        "discriminability": result.discriminability,
     }
     written = []
     for name, df in frames.items():

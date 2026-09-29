@@ -4,7 +4,9 @@
 Two parts, each in its own directory under <tree>/tier2/:
 
   naturalistic   LOO-ISFC and the audio-envelope lag scan for every film's
-                 first viewing (registry T2.2, T2.4)
+                 first viewing (registry T2.2, T2.4); repeat reliability of
+                 the recurring films (T2.1) and within- vs between-film
+                 discriminability per session (T2.3)
   connectivity   rest-run FC, within-subject QC-FC, fingerprinting and the
                  hippocampal FC profile (T2.5-T2.7); also reads
                  tier1_motion.tsv (`tier1.py motion`)
@@ -161,6 +163,7 @@ def build_naturalistic(args: argparse.Namespace, dest: Optional[Path]) -> None:
     written = t2.write(result, dest, provenance)
     print(f"naturalistic {dest}: {len(written)} files; loo_isc {len(result.loo_isc)} rows, "
           f"envelope_lag {len(result.envelope_lag)}, envelope_parcel {len(result.envelope_parcel)}, "
+          f"wsc {len(result.wsc)}, wsc_pairs {len(result.wsc_pairs)}, discriminability {len(result.discriminability)}, "
           f"{len(result.isfc_group)} group ISFC matrices; {len(result.skipped)} skipped "
           f"in {time.time() - t0:.0f} s")
     for s in result.skipped:

@@ -272,3 +272,41 @@ def test_truncated_stimulus_scans_the_covered_stretch_and_records_it(synthetic, 
     assert (b["n_vol"] < b["n_window"]).all() and (b["n_vol"] == 20).all()   # 90 s onset = volume 60 exactly: 30 s = 20 volumes
     a = result.envelope_lag[result.envelope_lag["stimulus_id"] == "film-a"]
     assert (a["n_vol"] == a["n_window"]).all()
+
+
+# ---------------------------------------------------------------------------
+# T2.1 repeat reliability and T2.3 discriminability
+# ---------------------------------------------------------------------------
+
+def test_repeat_reliability_cuts_every_showing_to_the_shortest():
+    rng = np.random.default_rng(20)
+    signal = rng.normal(size=(60, 3))
+    segs = [signal[:60] + 0.1 * rng.normal(size=(60, 3)), signal[:55] + 0.1 * rng.normal(size=(55, 3)),
+            signal[:58] + 0.1 * rng.normal(size=(58, 3))]
+    r, pairs, n = t2.repeat_reliability(segs)
+    assert n == 55 and pairs == [(0, 1), (0, 2), (1, 2)] and r.shape == (3, 3)
+    assert (r > 0.95).all()
+
+
+def test_discriminability_counts_only_cross_subject_pairs():
+    rng = np.random.default_rng(21)
+    film = {"a": rng.normal(size=(40, 2)), "b": rng.normal(size=(40, 2))}
+    ents = [(s, f, film[f] + 0.2 * rng.normal(size=(40, 2))) for s in ("03", "04", "05") for f in ("a", "b")]
+    w, b, n_w, n_b = t2.discriminability(ents)
+    assert (n_w, n_b) == (2 * 3, 3 * 2)           # films x subject pairs; subject pairs x ordered film pairs
+    assert (w > 0.9).all() and (np.abs(b) < 0.4).all()
+
+
+def test_build_reads_every_showing_for_wsc_and_discriminability(synthetic, tmp_path):
+    result = _build(synthetic, tmp_path / "out")
+    wsc = result.wsc
+    assert set(wsc["stimulus_id"]) == {"film-a"}                  # the only film seen in two sessions
+    assert (wsc["n_pairs"] == 1).all() and (wsc["n_vol"] == 39).all()   # 60 s at TR 1.5, wholly-inside volumes
+    assert set(wsc.loc[wsc["regime"] == "base", "sub"]) == {"03", "04"}   # sub-05 ses-19 is absent under base
+    assert len(result.wsc_pairs) == 3 + 2
+    d = result.discriminability.set_index(["ses", "regime"]).sort_index()
+    s19 = d.loc[("19", "none")]
+    assert (s19["n_within"] == 6).all() and (s19["n_between"] == 6).all()
+    assert (s19["within_r"] > s19["between_r"]).all()           # same film = same stretch of the shared signal
+    s20 = d.loc[("20", "none")]
+    assert s20["between_r"].isna().all() and (s20["n_between"] == 0).all()
