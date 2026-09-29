@@ -6,7 +6,9 @@
 # (searchlights, polar decomposition), Connectome Workbench (wb_command, for
 # surface sampling), plus the mmmdata scientific stack at the versions the
 # mmmdata .venv runs. fmralign pulls torch, which is kept out of the mmmdata
-# .venv on purpose; this env takes the CPU build.
+# .venv on purpose. This env takes the CUDA 13.0 build (cu130): the encoders'
+# himalaya kernel ridge runs on the gpu partition's A100s (12-27x faster than
+# CPU in the 2026-09-29 sizing fits) and the build still runs on CPU nodes.
 #
 # Follows psytwill/scripts/setup_env.sh (the stimfeat builder):
 #   - `conda create --override-channels -c conda-forge`: the FSL installer's
@@ -39,7 +41,10 @@ PREFIX=$SHARED_PREFIX
 CACHE=$ENVS/cache
 CONDA_MODULE=miniconda3/20260319
 LOCK_DIR="$SCRIPT_DIR/env"
-TORCH_INDEX=https://download.pytorch.org/whl/cpu
+TORCH_INDEX=https://download.pytorch.org/whl/cu130
+# The gpu partition's driver (580.x) supports CUDA 13.0. Pin the local version:
+# pip otherwise treats an installed +cpu build as satisfying a bare pin.
+TORCH_PIN='torch==2.14.0+cu130'
 
 # fmralign: git main, pinned. PyPI 0.0.5 forces numpy 1.26 and conflicts
 # with the pins below; this commit installs cleanly against them.
@@ -71,7 +76,7 @@ mkdir -p "$CACHE/pip"
 
 echo "prefix : $PREFIX"
 echo "conda  : python=3.12 pip connectome-workbench (conda-forge, --override-channels)"
-echo "pip    : torch (CPU) + fmralign @ pinned git + neuroboros + mmmdata pins"
+echo "pip    : torch (cu130) + fmralign @ pinned git + neuroboros + mmmdata pins"
 echo
 
 if [[ -d "$PREFIX" && -n "$(ls -A "$PREFIX" 2>/dev/null)" ]]; then
@@ -84,11 +89,11 @@ fi
 
 PY="$PREFIX/bin/python"
 
-# torch first, from the CPU index only, so the resolve below cannot pick the
-# PyPI build and its multi-GB CUDA dependencies.
+# torch first, from the PyTorch cu130 index only, so the resolve below cannot
+# pick a different PyPI build.
 echo
-echo "==> pip install torch (CPU)"
-"$PY" -m pip install --index-url "$TORCH_INDEX" torch
+echo "==> pip install torch (CUDA 13.0)"
+"$PY" -m pip install --index-url "$TORCH_INDEX" "$TORCH_PIN"
 
 echo
 echo "==> pip install (one resolve)"
@@ -160,7 +165,7 @@ echo "==> writing $CONDA_LOCK"
 echo "==> writing $PIP_LOCK"
 {
   echo "# functional-space pip layer, one resolve by setup_env.sh."
-  echo "# torch comes from $TORCH_INDEX (CPU build); fmralign is the pinned git commit."
+  echo "# torch comes from $TORCH_INDEX ($TORCH_PIN); fmralign is the pinned git commit."
   "$PY" -m pip list --format=freeze
 } > "$PIP_LOCK"
 echo "    $(grep -cv '^#' "$PIP_LOCK") pip packages pinned"
