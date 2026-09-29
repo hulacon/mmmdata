@@ -7,8 +7,10 @@ their sidecars. Design record: mmmdata-agents ``docs/workbench/data-quality/``
 (D1–D4 DECIDED 2026-09-29).
 
 * **Task R²** (``task_r2.tsv``): per scope x task x regime, the median and IQR
-  over runs of each run's in-mask median and p99 **adjusted** partial R² (the
-  T1.5 headline; the raw form ranks regimes by regressor count), the median
+  over runs of the **fraction of in-mask voxels with task-F p < .001** (the T1.5
+  headline: its null level is .001 at any dof, though iid-noise-based), of each
+  run's in-mask median and p99 adjusted partial R² (an effect size), and the raw
+  median (for reference only: it ranks regimes by regressor count), the median
   residual DOF, and T1.8's motion–task |r| (median and max over runs; regime-free,
   repeated on every regime's row). Scopes as in the SNR part.
 * **Split-half** (``split_half.tsv``, T2.13): per subject x localizer task x
@@ -62,7 +64,7 @@ def load_glm(tree_root: Path) -> pd.DataFrame:
     df = pd.read_csv(path, sep="\t", dtype={"sub": str, "ses": str, "run": str}, keep_default_na=False)
     df["run"] = df["run"].replace("n/a", "")
     df["absent"] = df["absent"].astype(str).str.lower() == "true"
-    for c in ("task_r2adj_median", "task_r2adj_p99", "task_r2_median", "dof_resid", "n_regressors"):
+    for c in ("task_frac_p001", "task_r2adj_median", "task_r2adj_p99", "task_r2_median", "dof_resid", "n_regressors"):
         df[c] = pd.to_numeric(df[c].replace("n/a", np.nan))
     return df
 
@@ -74,7 +76,7 @@ def run_table(glm: pd.DataFrame, motion: pd.DataFrame, provisional: Iterable[str
         raise KeyError("tier1_motion.tsv has no motion_task_r_max column; rebuild it (`tier1.py motion`)")
     m = motion[KEYS + need].copy()
     m["motion_task_r_max"] = pd.to_numeric(m["motion_task_r_max"].replace("n/a", np.nan))
-    out = glm[KEYS + ["regime", "absent", "task_r2adj_median", "task_r2adj_p99", "task_r2_median", "dof_resid",
+    out = glm[KEYS + ["regime", "absent", "task_frac_p001", "task_r2adj_median", "task_r2adj_p99", "task_r2_median", "dof_resid",
                       "n_regressors"]].merge(m, on=KEYS, how="left", validate="many_to_one")
     missing = out[out["motion_task_r_max"].isna()].drop_duplicates(KEYS)
     if len(missing):
@@ -98,10 +100,13 @@ def _scopes(runs: pd.DataFrame) -> list[tuple[str, pd.Series]]:
 
 def _r2_row(g: pd.DataFrame) -> dict:
     ok = g[~g["absent"]]
-    med, p99 = ok["task_r2adj_median"], ok["task_r2adj_p99"]
+    med, p99, frac = ok["task_r2adj_median"], ok["task_r2adj_p99"], ok["task_frac_p001"]
     return {
         "n_runs": len(g),
         "n_absent": int(g["absent"].sum()),
+        "frac_p001_median": frac.median(),
+        "frac_p001_q25": frac.quantile(0.25),
+        "frac_p001_q75": frac.quantile(0.75),
         "r2adj_median": med.median(),
         "r2adj_median_q25": med.quantile(0.25),
         "r2adj_median_q75": med.quantile(0.75),

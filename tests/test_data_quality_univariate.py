@@ -93,6 +93,7 @@ def _runs():
             for i, task in enumerate(("floc", "TBmath")):
                 absent = regime == "reference" and task == "TBmath" and sub == "03"
                 rows.append({"sub": sub, "ses": "01", "task": task, "run": "01", "regime": regime, "absent": absent,
+                             "task_frac_p001": np.nan if absent else 0.1 * (i + 1),
                              "task_r2adj_median": np.nan if absent else 0.01 * (i + 1),
                              "task_r2adj_p99": np.nan if absent else 0.2, "task_r2_median": 0.05,
                              "dof_resid": 100, "n_regressors": 10})
@@ -110,6 +111,7 @@ def test_task_r2_scopes_absent_and_motion():
     assert row["n_runs"] == 1 and row["n_absent"] == 1 and pd.isna(row["r2adj_median"])
     allrow = t[(t.scope == "pooled_confirmed") & (t.task == "all") & (t.regime == "none")].iloc[0]
     assert allrow["n_runs"] == 2 and allrow["r2adj_median"] == pytest.approx(0.015)
+    assert allrow["frac_p001_median"] == pytest.approx(0.15)
     assert allrow["motion_task_r_max"] == pytest.approx(0.3) and not allrow["provisional"]
 
 

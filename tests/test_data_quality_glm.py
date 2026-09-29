@@ -158,6 +158,29 @@ def test_adjusted_r2_is_near_zero_under_the_null_whatever_the_nuisance_count():
     assert abs(adj["none"]) < 0.02 and abs(adj["base12fdacc20"]) < 0.05
 
 
+def test_task_f_fraction_sits_at_alpha_under_the_null_whatever_the_dof():
+    # The T1.5 headline: iid noise, so the fraction of voxels with task-F p < .001 is ~.001 under
+    # `none` and `acc20` alike, where the raw R² median differs by the regressor count.
+    from scipy.stats import f as f_dist
+
+    rng = np.random.default_rng(12)
+    conf = _confounds(N_VOL, rng)
+    conds = load_model("motor").conditions
+    Y = rng.normal(size=(N_VOL, 20000)) + 500.0
+    for regime in ("none", "base12fdacc20"):
+        dm = build_design_matrix(_motor_events(), conf, TR, N_VOL, load_model("motor"), reference_config(regime))
+        res = dqg.fit(Y, dm, conds)
+        assert res.df_task == 6
+        frac = dqg._frac_sig(res.task_p)
+        assert frac < 0.004, regime
+        # p agrees with the partial F built from the R² it stores
+        fstat = (res.r2_task / res.df_task) / ((1 - res.r2_task) / res.dof)
+        assert np.allclose(res.task_p, f_dist.sf(fstat, res.df_task, res.dof), atol=1e-10)
+    dm, data = _synthetic()
+    res = dqg.fit(data, dm, conds)
+    assert (res.task_p[:10] < dqg.F_ALPHA).all()
+
+
 def test_betas_are_masked_where_percent_signal_change_is_undefined():
     dm, data = _synthetic()
     data = data.copy()
@@ -218,6 +241,7 @@ def test_glm_writes_every_cell_with_betas_and_is_idempotent(motor_tree, capsys):
         # The hand response was planted in parcel 2 only; parcel 3 is outside the mask.
         assert sch.loc[2, "effect_handVsRest"] > 2 * abs(sch.loc[1, "effect_handVsRest"]), regime
         assert sch.loc[2, "task_r2adj_mean"] > sch.loc[1, "task_r2adj_mean"], regime
+        assert sch.loc[2, "task_frac_p001"] > sch.loc[1, "task_frac_p001"], regime
         assert pd.isna(sch.loc[3, "task_r2adj_mean"])
     capsys.readouterr()
     _glm(motor_tree)
@@ -245,7 +269,7 @@ def test_glm_plan_units_and_collect(motor_tree, tmp_path):
     parcels = pd.read_csv(root / "tier1_glm_parcels.tsv", sep="\t", na_values=["n/a"])
     confirmed = confirmed_regimes()
     assert len(glm) == len(confirmed) and set(glm["regime"]) == set(confirmed) and not glm["absent"].any()
-    assert (glm["n_conditions"] == 6).all() and {"task_r2adj_median", "task_r2adj_p99", "task_r2_median", "dof_resid", "dof_nuisance"} <= set(glm.columns)
+    assert (glm["n_conditions"] == 6).all() and {"task_frac_p001", "task_r2adj_median", "task_r2adj_p99", "task_r2_median", "dof_resid", "dof_nuisance"} <= set(glm.columns)
     assert len(parcels) == len(confirmed) * (3 + 1)
     assert "effect_speakVsRest" in parcels.columns
 

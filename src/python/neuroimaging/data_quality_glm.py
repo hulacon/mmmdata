@@ -19,9 +19,14 @@ D1–D4 DECIDED 2026-09-29 (data-quality log).
   ``1 - RSS_full / RSS_nuisance``, has null expectation ~``k / dof_nuisance``
   (k task columns), so it rises with every nuisance column a regime adds and
   would rank regimes by their regressor count (pilot 2026-09-29: floc's median
-  raw R² sat at that chance level, 0.053 → 0.061 from ``none`` to ``acc20``); it
-  is kept beside the adjusted form only for reference. Summarised over the brain
-  mask and per parcel; no map is written.
+  raw R² sat at that chance level, 0.053 → 0.061 from ``none`` to ``acc20``).
+  Even the adjusted form's median and p99 skew with dof on short runs (the median
+  of an F ratio lies below its mean), so the **headline is the fraction of
+  voxels whose task-block partial F has p < :data:`F_ALPHA`**, whose null level is
+  ``F_ALPHA`` at any dof (DECIDED Ben 2026-09-29: keep all three, F fraction
+  first). It assumes iid noise: regimes that leave slow drift (``none``, ``gsr``)
+  leave more autocorrelated residuals and so more false positives. Summarised
+  over the brain mask and per parcel; no map is written.
 * **T1.6, localizer betas** (localizer runs only): every condition's beta as a
   4D NIfTI (volume order in the sidecar), the residual variance ``sigma²`` as a
   3D NIfTI, and the unscaled covariance of the condition betas in the sidecar,
@@ -69,7 +74,7 @@ from .glm.models import StatsModel, load_model
 from .glm.reference import reference_config
 from .io import FmriprepRun
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"  # 1.1: task-F fraction (2026-09-29)
 TABLE_NAME = "tier1_glm"
 PARCELS_TABLE_NAME = "tier1_glm_parcels"
 
@@ -86,6 +91,9 @@ EXCLUDED_TASKS: dict[str, str] = {
                 "model, not the regime",
     "fixation": "a single `calibration` event spanning the run: no task to model",
 }
+
+#: T1.5's headline threshold: a voxel counts when its task-block partial F has p below this.
+F_ALPHA = 0.001
 
 #: A voxel whose temporal mean is below this fraction of the run's median in-mask mean
 #: gets no beta: its percent signal change is undefined or explosive (see module doc).
@@ -177,6 +185,8 @@ class GlmFit:
     cov_unscaled: np.ndarray  # (n_conditions, n_conditions): [(X'X)^+] on the condition block
     r2_task: np.ndarray  # (n_voxels,) partial R² of the task block (raw)
     r2_task_adj: np.ndarray  # (n_voxels,) the same, adjusted for both models' residual dof
+    task_p: np.ndarray  # (n_voxels,) p of the task-block partial F, (df_task, dof)
+    df_task: int
     psc_defined: np.ndarray  # (n_voxels,) bool: mean above the PSC floor; betas/sigma2 NaN elsewhere
     psc_floor: float
     dof: int
@@ -197,9 +207,14 @@ def fit(data: np.ndarray, design: pd.DataFrame, conditions: tuple[str, ...], chu
         raise ValueError(f"design has {n} rows but the data has {len(data)} volumes")
     cond_idx = [design.columns.get_loc(c) for c in conditions]
     Xn = np.delete(X, cond_idx, axis=1)
+    from scipy.stats import f as f_dist
+
     rank = int(np.linalg.matrix_rank(X))
     dof = n - rank
     dof_n = n - int(np.linalg.matrix_rank(Xn))
+    df_task = dof_n - dof
+    if df_task < 1:
+        raise ValueError("the task columns add no rank to the nuisance design")
     if dof < 1:
         raise ValueError(f"the design leaves {dof} residual degrees of freedom on a {n}-volume run")
     pinv = np.linalg.pinv(X)
@@ -214,6 +229,7 @@ def fit(data: np.ndarray, design: pd.DataFrame, conditions: tuple[str, ...], chu
     sigma2 = np.empty(n_vox)
     r2 = np.empty(n_vox)
     r2_adj = np.empty(n_vox)
+    task_p = np.empty(n_vox)
     for start in range(0, n_vox, chunk):
         sl = slice(start, min(start + chunk, n_vox))
         Y = percent_signal_change(data[:, sl].astype(np.float64))
@@ -227,12 +243,15 @@ def fit(data: np.ndarray, design: pd.DataFrame, conditions: tuple[str, ...], chu
         with np.errstate(divide="ignore", invalid="ignore"):
             r2[sl] = 1.0 - rss / rss_n
             r2_adj[sl] = 1.0 - (rss / dof) / (rss_n / dof_n)
+            fstat = ((rss_n - rss) / df_task) / (rss / dof)
+        task_p[sl] = f_dist.sf(fstat, df_task, dof)
     r2[~np.isfinite(r2)] = np.nan
     r2_adj[~np.isfinite(r2_adj)] = np.nan
+    task_p[~np.isfinite(task_p)] = np.nan
     betas[:, ~defined] = np.nan
     sigma2[~defined] = np.nan
     return GlmFit(conditions=tuple(conditions), betas=betas, sigma2=sigma2, cov_unscaled=cov,
-                  r2_task=r2, r2_task_adj=r2_adj, psc_defined=defined, psc_floor=floor,
+                  r2_task=r2, r2_task_adj=r2_adj, task_p=task_p, df_task=df_task, psc_defined=defined, psc_floor=floor,
                   dof=dof, dof_nuisance=dof_n, rank=rank, n_regressors=p)
 
 
@@ -355,6 +374,11 @@ def _summary(x: np.ndarray, name: str) -> dict[str, float]:
     return {f"{name}_{k}": (float(f(finite)) if finite.size else float("nan")) for k, f in stats.items()}
 
 
+def _frac_sig(p: np.ndarray) -> float:
+    finite = p[np.isfinite(p)]
+    return float((finite < F_ALPHA).mean()) if finite.size else float("nan")
+
+
 def parcel_table(inputs: dq.RunInputs, fitres: GlmFit, effects: dict[str, np.ndarray]) -> pd.DataFrame:
     """One row per parcel of every tier-1 parcellation: mean task R², and each contrast's mean effect."""
     rows = []
@@ -364,11 +388,13 @@ def parcel_table(inputs: dq.RunInputs, fitres: GlmFit, effects: dict[str, np.nda
             sel = labels == int(idx)
             row: dict[str, Any] = {"atlas": seg, "parcel": str(name), "index": int(idx), "n_voxels_mask": int(n_mask)}
             if sel.any():
+                row["task_frac_p001"] = _frac_sig(fitres.task_p[sel])
                 row["task_r2adj_mean"] = float(np.nanmean(fitres.r2_task_adj[sel]))
                 row["task_r2_mean"] = float(np.nanmean(fitres.r2_task[sel]))
                 for cname, eff in effects.items():
                     row[f"effect_{cname}"] = float(np.nanmean(eff[sel]))
             else:
+                row["task_frac_p001"] = float("nan")
                 row["task_r2adj_mean"] = float("nan")
                 row["task_r2_mean"] = float("nan")
                 for cname in effects:
@@ -427,6 +453,8 @@ def write_run_glm(tree_root: Path, inputs: dq.RunInputs, events: pd.DataFrame, m
         "n_regressors": fitres.n_regressors, "rank": fitres.rank, "dof_resid": fitres.dof,
         "dof_nuisance": fitres.dof_nuisance, "n_task_columns": len(model.conditions),
         "mask_n_voxels": int(inputs.mask_bool.sum()),
+        "task_f_df": [fitres.df_task, fitres.dof], "f_alpha": F_ALPHA,
+        "task_frac_p001": _frac_sig(fitres.task_p),
         "psc_floor": fitres.psc_floor, "n_voxels_below_psc_floor": int((~fitres.psc_defined).sum()),
         **_summary(fitres.r2_task_adj, "task_r2adj"),
         **_summary(fitres.r2_task, "task_r2"),

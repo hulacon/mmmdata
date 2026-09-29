@@ -402,7 +402,7 @@ def cmd_glm(args: argparse.Namespace) -> None:
                       f"{exc.n_required} aCompCor components)")
                 continue
             print(f"{run.entity_prefix} {regime.name:14s} p={rec['n_regressors']} dof={rec['dof_resid']} "
-                  f"r2adj_med={rec['task_r2adj_median']:.4f} r2adj_p99={rec['task_r2adj_p99']:.3f} "
+                  f"frac_p001={rec['task_frac_p001']:.4f} r2adj_med={rec['task_r2adj_median']:.4f} r2adj_p99={rec['task_r2adj_p99']:.3f} "
                   f"(raw med {rec['task_r2_median']:.4f})")
         print(f"{run.entity_prefix}: {len(todo)} GLM regime(s) in {time.time() - t0:.0f} s")
 
