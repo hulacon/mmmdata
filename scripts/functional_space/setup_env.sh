@@ -49,7 +49,7 @@ PINS=(
   nilearn==0.13.1 nibabel==5.3.3 joblib==1.5.3 matplotlib==3.10.8
   h5py==3.16.0 nitransforms==25.1.0 pybids==0.21.0 duckdb==1.5.5
 )
-EXTRAS=(neuroboros==0.1.9 pot pyarrow pytest)
+EXTRAS=(neuroboros==0.1.9 himalaya==0.4.11 pot pyarrow pytest)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -114,14 +114,14 @@ import sys
 prefix, mmmdata_src = sys.argv[1], sys.argv[2]
 assert sys.executable.startswith(prefix), sys.executable
 import numpy, scipy, pandas, sklearn, nilearn, nibabel, torch, ot
-import fmralign, neuroboros
+import fmralign, neuroboros, himalaya
 from fmralign import PairwiseAlignment, GroupAlignment  # noqa: F401
 from neuroboros import searchlights  # noqa: F401
 from neuroboros.linalg import safe_polar  # noqa: F401
 print('python        ', sys.version.split()[0])
 bad = []
 for m in (numpy, scipy, pandas, sklearn, nilearn, nibabel, torch, ot,
-          fmralign, neuroboros):
+          fmralign, neuroboros, himalaya):
     where = getattr(m, '__file__', '') or ''
     print(f'{m.__name__:<14}', getattr(m, '__version__', 'unknown'))
     if not where.startswith(prefix):

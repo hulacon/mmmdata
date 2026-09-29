@@ -27,8 +27,10 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-#: λ grid (§8, proposed): {0} ∪ logspace(-2, 2, 6) ∪ {∞}, in units of the piece's mean singular value.
-LAMBDA_GRID = (0.0, *np.logspace(-2, 2, 6).tolist(), float("inf"))
+#: λ grid (§8; DECIDED 2026-09-29): {0} ∪ logspace(-4, 1, 6) ∪ {∞}, in units of the piece's mean
+#: singular value. Recentred from logspace(-2, 2, 6) after the CHA sizing fit, where the target's
+#: mean tr(R)/p ran 0.10 -> 0.99 across 1e-4..10 and was already ~1 above 2.5.
+LAMBDA_GRID = (0.0, *np.logspace(-4, 1, 6).tolist(), float("inf"))
 
 
 def shrunk_procrustes(x: np.ndarray, y: np.ndarray, lam: float = 0.0) -> np.ndarray:

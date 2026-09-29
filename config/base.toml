@@ -31,6 +31,11 @@ venv_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/.venv"
 # mmmview shells out to the three *2psy dashboard CLIs from its bin/.
 stimfeat_env = "/gpfs/projects/hulacon/shared/envs/stimfeat"
 
+# psytwill's durable feature store for external corpora (movie10, Friends, ...),
+# owned by psytwill (its scripts take it as --durable-root). The functional-space
+# encoders read the virtual probe set's features from it.
+fit_corpora_dir = "/gpfs/projects/hulacon/shared/psytwill/fit-corpora"
+
 # MATLAB toolboxes for the pRF fit (analyzePRF + its knkutils dependency),
 # pinned clones outside the BIDS tree; commits are recorded in every fit
 # sidecar. fit_prf_analyzeprf.sbatch exports them for prf_analyzeprf_fit.m.

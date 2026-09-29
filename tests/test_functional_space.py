@@ -369,3 +369,92 @@ class TestCha:
             aligned = _r(tf["T"].inverse().apply(tf[s].apply(resp[s])), resp["T"])
             assert aligned > anat + 0.08
         assert diag["ico5"]["sub-T"]["aligned"] > diag["ico5"]["sub-T"]["anatomical"]
+
+
+# ---------------------------------------------------------------------------
+# encoders
+# ---------------------------------------------------------------------------
+
+enc = _load("encoding")
+
+
+def _frames(length_s, n_feat=3, seed=0, bands=None):
+    t = np.arange(0, length_s, enc.FRAME_S)
+    x = np.random.default_rng(seed).standard_normal((t.size, n_feat)).astype(np.float32)
+    return enc.Features("toy", t, x, bands or {"b": slice(0, n_feat)})
+
+
+class TestEncoderDesign:
+    def test_binned_is_the_mean_of_frames_in_span(self):
+        f = _frames(30.0)
+        out = enc.binned(f, np.array([0.0, 1.5, 3.0]), 1.5)
+        assert np.allclose(out[1], f.x[3:6].mean(0))
+
+    def test_span_outside_the_stimulus_is_an_error(self):
+        f = _frames(30.0)
+        with pytest.raises(ValueError):
+            enc.binned(f, np.array([-1.5]), 1.5)
+        with pytest.raises(ValueError):
+            enc.binned(f, np.array([27.0]), 1.5, end=28.0)
+
+    @pytest.mark.parametrize("onset,play", [(12.7, 366.0), (390.9, 171.08), (15.48, 238.0), (3.3, 30.2)])
+    def test_every_delay_of_every_window_volume_lands_on_the_film(self, onset, play):
+        """The decided window (shift 4.5 s, buffer 6 s) supports delays of 3-7 TRs with nothing invented."""
+        tr = 1.5
+        start, n = films.film_window(onset, play, tr, 10_000)
+        f = _frames(play + 2.0)  # a file a little longer than what was shown
+        x, bands = enc.delayed(f, enc.film_volume_starts(onset, start, n, tr), tr, end=play)
+        assert x.shape == (n, 3 * len(enc.DELAYS_TR)) and np.isfinite(x).all()
+
+    def test_a_shorter_delay_would_leave_the_film(self):
+        tr, onset, play = 1.5, 12.7, 60.0
+        start, n = films.film_window(onset, play, tr, 10_000)
+        with pytest.raises(ValueError):
+            enc.delayed(_frames(play), enc.film_volume_starts(onset, start, n, tr), tr, delays=(2, 3), end=play)
+
+    def test_band_layout(self):
+        f = _frames(40.0, n_feat=5, bands={"a": slice(0, 2), "b": slice(2, 5)})
+        x, bands = enc.delayed(f, enc.probe_volume_starts(f, 1.5), 1.5, delays=(3, 4))
+        assert bands == {"a": slice(0, 4), "b": slice(4, 10)}
+        assert np.allclose(x[:, 2:4], enc.binned(f, enc.probe_volume_starts(f, 1.5) - 6.0, 1.5)[:, :2])
+
+    def test_probe_grid_keeps_only_fully_covered_volumes(self):
+        f = _frames(60.0)
+        starts = enc.probe_volume_starts(f, 1.5)
+        enc.delayed(f, starts, 1.5)  # no error
+        assert starts[0] == pytest.approx(7 * 1.5)
+
+    def test_grouped_splits_keep_films_whole(self):
+        groups = np.repeat([f"film{i}" for i in range(7)], 4)
+        splits = enc.grouped_splits(groups, 5)
+        tested = np.concatenate([te for _, te in splits])
+        assert sorted(tested) == list(range(28))
+        for tr_idx, te_idx in splits:
+            assert not set(groups[tr_idx]) & set(groups[te_idx])
+
+
+class TestEncoderFit:
+    @pytest.fixture(autouse=True)
+    def _need_himalaya(self):
+        pytest.importorskip("himalaya")
+
+    def _data(self, bands, n=600, seed=0):
+        rng = np.random.default_rng(seed)
+        p = max(s.stop for s in bands.values())
+        x = rng.standard_normal((n, p)).astype(np.float32)
+        w = rng.standard_normal((p, 40))
+        y = (x @ w + 0.5 * rng.standard_normal((n, 40))).astype(np.float32)
+        y[:, 3] = np.nan
+        groups = np.repeat(np.arange(10), n // 10)
+        return x, y, groups
+
+    @pytest.mark.parametrize("bands", [{"a": slice(0, 20)}, {"a": slice(0, 8), "b": slice(8, 20)}])
+    def test_recovers_a_planted_linear_map(self, bands):
+        x, y, groups = self._data(bands)
+        e = enc.Encoder(bands, n_iter=5, backend="numpy").fit(x[:500], y[:500], groups[:500])
+        pred = e.predict(x[500:])
+        assert np.isnan(pred[:, 3]).all()
+        ok = np.isfinite(y[500:]).all(0)
+        r = [np.corrcoef(pred[:, j], y[500:, j])[0, 1] for j in np.flatnonzero(ok)]
+        assert np.median(r) > 0.9
+        assert 0.0 <= e.diagnostics_["alpha_at_grid_edge"] <= 1.0
