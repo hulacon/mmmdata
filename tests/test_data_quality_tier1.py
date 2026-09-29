@@ -181,12 +181,13 @@ def test_colleague_revised_base_is_motion6_and_polynomial_drift():
     assert (acc6.drift, ref.drift) == ("polynomial", "cosine")
 
 
-def test_reference_config_refuses_regimes_glmconfig_cannot_express():
+def test_reference_config_expresses_the_non_cosine_drifts():
+    # Refused until GlmConfig gained drift_order (2026-09-29); the GLM-vs-cleaner residual
+    # equivalence lives in test_glm_reference.
     assert reference_config("reference").acompcor_n == 6
-    with pytest.raises(ValueError, match="drift"):
-        reference_config("drift")
-    with pytest.raises(ValueError, match="drift"):
-        reference_config("none")
+    drift, none = reference_config("drift"), reference_config("none")
+    assert (drift.drift_model, drift.drift_order, drift.include_cosine) == ("polynomial", 2, False)
+    assert (none.drift_model, none.include_cosine) == (None, False)
 
 
 def test_polynomial_drift_is_orthogonal_and_has_no_constant():

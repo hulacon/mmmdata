@@ -28,6 +28,8 @@
 # 2. Submit one array task per line:
 #      sbatch --array=1-$(wc -l < units.txt)%40 --export=ALL,UNITS=units.txt tier1.sbatch
 # 3. Optional: EXTRA="--include-provisional" or EXTRA="--regimes none,drift"
+# 4. GLM cells (T1.5/T1.6): units from `tier1.py glm-plan --units ...`, and
+#    --export=ALL,UNITS=glm_units.txt,VERB=glm
 #
 # Do not `module load` anything after the venv is activated: it replaces
 # `python` with the module's interpreter.
@@ -37,13 +39,15 @@ set -euo pipefail
 
 : "${UNITS:?set UNITS (path to the units file from `tier1.py plan --units`) via --export}"
 EXTRA="${EXTRA:-}"
+VERB="${VERB:-run}"
+case "${VERB}" in run|glm) ;; *) echo "VERB must be run or glm, got ${VERB}" >&2; exit 2 ;; esac
 
 echo "=========================================="
 echo "data-quality tier 1 — SLURM Job Info"
 echo "=========================================="
 echo "Job ID: ${SLURM_JOB_ID}  Array task: ${SLURM_ARRAY_TASK_ID:-<none>}"
 echo "Node: ${SLURMD_NODENAME}"
-echo "Units: ${UNITS}"
+echo "Units: ${UNITS}  Verb: ${VERB}"
 echo "Start Time: $(date)"
 echo "=========================================="
 echo ""
@@ -53,7 +57,7 @@ source "${REPO_ROOT}/scripts/load_config.sh"
 source "${REPO_ROOT}/.venv/bin/activate"
 
 # shellcheck disable=SC2086
-python "${REPO_ROOT}/scripts/data_quality/tier1.py" run \
+python "${REPO_ROOT}/scripts/data_quality/tier1.py" "${VERB}" \
     --units "${UNITS}" \
     --index "${SLURM_ARRAY_TASK_ID}" \
     ${EXTRA}

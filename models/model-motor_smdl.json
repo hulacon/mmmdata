@@ -1,7 +1,7 @@
 {
   "Name": "motor",
   "BIDSModelVersion": "1.0.0",
-  "Description": "Motor localizer: each effector block against the explicit `rest` blocks (20 s block design; converter: src/python/raw2bids_converters/localizer_events.py). Every motor run presents the same seeded 30-block order (localizer-events, 2026-09-08), so a two-run split-half is 'same design, different noise'. The earlier claim that `task-motor` covers two protocols split by session group (task-instructions-provenance.md, 2026-08-26) was WITHDRAWN 2026-09-08 — no run-level evidence; what was said aloud is OPEN-QUESTIONS Q19. The runner's session-group guard (neuroimaging.io.find_fmriprep_runs) is kept as a caution and is opt-out via --allow-mixed-designs.",
+  "Description": "Motor localizer: each effector block against the explicit `rest` blocks (20 s block design; converter: src/python/raw2bids_converters/localizer_events.py). `speak` is modelled (added 2026-09-29, data-quality T1.6): it is a real condition (localizer-events, CORRECTED 2026-09-08), and left out it sat in the implicit baseline beside the intercept; derivatives/nilearn_glm motor maps and the frozen bake-off motor cells were fitted before this and do not model it. Every motor run presents the same seeded 30-block order (localizer-events, 2026-09-08), so a two-run split-half is 'same design, different noise'. The earlier claim that `task-motor` covers two protocols split by session group (task-instructions-provenance.md, 2026-08-26) was WITHDRAWN 2026-09-08 — no run-level evidence; what was said aloud is OPEN-QUESTIONS Q19. The runner's session-group guard (neuroimaging.io.find_fmriprep_runs) is kept as a caution and is opt-out via --allow-mixed-designs.",
   "Input": {
     "task": ["motor"]
   },
@@ -17,19 +17,20 @@
           {
             "Name": "Convolve",
             "Model": "spm",
-            "Input": ["trial_type.hand", "trial_type.foot", "trial_type.mouth", "trial_type.saccade", "trial_type.rest"]
+            "Input": ["trial_type.hand", "trial_type.foot", "trial_type.mouth", "trial_type.saccade", "trial_type.speak", "trial_type.rest"]
           }
         ]
       },
       "Model": {
         "Type": "glm",
-        "X": ["trial_type.hand", "trial_type.foot", "trial_type.mouth", "trial_type.saccade", "trial_type.rest", 1]
+        "X": ["trial_type.hand", "trial_type.foot", "trial_type.mouth", "trial_type.saccade", "trial_type.speak", "trial_type.rest", 1]
       },
       "Contrasts": [
         {"Name": "handVsRest", "ConditionList": ["trial_type.hand", "trial_type.rest"], "Weights": [1, -1], "Test": "t"},
         {"Name": "footVsRest", "ConditionList": ["trial_type.foot", "trial_type.rest"], "Weights": [1, -1], "Test": "t"},
         {"Name": "mouthVsRest", "ConditionList": ["trial_type.mouth", "trial_type.rest"], "Weights": [1, -1], "Test": "t"},
-        {"Name": "saccadeVsRest", "ConditionList": ["trial_type.saccade", "trial_type.rest"], "Weights": [1, -1], "Test": "t"}
+        {"Name": "saccadeVsRest", "ConditionList": ["trial_type.saccade", "trial_type.rest"], "Weights": [1, -1], "Test": "t"},
+        {"Name": "speakVsRest", "ConditionList": ["trial_type.speak", "trial_type.rest"], "Weights": [1, -1], "Test": "t"}
       ]
     },
     {

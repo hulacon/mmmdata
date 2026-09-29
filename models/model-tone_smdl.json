@@ -1,0 +1,39 @@
+{
+  "Name": "tone",
+  "BIDSModelVersion": "1.0.0",
+  "Description": "Tonotopy localizer as an on/off design: each swept `tone` (~25.75 s) against the silent `fixation` remainder of its 32 s cycle (converter: src/python/raw2bids_converters/localizer_events.py; design: mmmdata-docs tasks-localizer.md, task-tone). The task is phase-encoded; its proper analysis is the response phase at 1/32 Hz, which this model does not estimate. toneVsFixation rests on a ~6 s silent gap per cycle, so it is a weak, coarse auditory-responsiveness contrast, written for the data-quality regime comparison (T1.6, 2026-09-29), where every regime sees the same weak design. The 32 s period is far above the drift terms, so drift does not absorb it (unlike task-auditory's single block). The sweep direction (`direction`) is not modelled.",
+  "Input": {
+    "task": ["tone"]
+  },
+  "Nodes": [
+    {
+      "Level": "Run",
+      "Name": "run",
+      "GroupBy": ["run", "session", "subject"],
+      "Transformations": {
+        "Transformer": "pybids-transforms-v1",
+        "Instructions": [
+          {"Name": "Factor", "Input": ["trial_type"]},
+          {"Name": "Convolve", "Model": "spm", "Input": ["trial_type.tone", "trial_type.fixation"]}
+        ]
+      },
+      "Model": {
+        "Type": "glm",
+        "X": ["trial_type.tone", "trial_type.fixation", 1]
+      },
+      "Contrasts": [
+        {"Name": "toneVsFixation", "ConditionList": ["trial_type.tone", "trial_type.fixation"], "Weights": [1, -1], "Test": "t"}
+      ]
+    },
+    {
+      "Level": "Subject",
+      "Name": "subject",
+      "GroupBy": ["subject", "contrast"],
+      "Model": {"Type": "meta", "X": [1]},
+      "DummyContrasts": {"Test": "t"}
+    }
+  ],
+  "Edges": [
+    {"Source": "run", "Destination": "subject"}
+  ]
+}

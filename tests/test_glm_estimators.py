@@ -26,7 +26,7 @@ ACTIVE = (slice(0, 2), slice(0, 2), slice(0, 2))
 def _events():
     rows, t = [], 0.0
     for _ in range(3):
-        for c in ("hand", "foot", "mouth", "saccade", "rest"):
+        for c in ("hand", "foot", "mouth", "saccade", "speak", "rest"):
             rows.append({"onset": t, "duration": 20.0, "trial_type": c})
             t += 20.0
     return pd.DataFrame(rows)
@@ -50,7 +50,7 @@ def _synthetic_run(seed, effect=2.0):
 def test_nilearn_estimator_recovers_the_planted_effect():
     img, mask, dm, vecs, cfg = _synthetic_run(0)
     est = NilearnEstimator().fit_run(img, dm, vecs, t_r=TR, mask=mask, cfg=cfg)
-    assert set(est) == {"handVsRest", "footVsRest", "mouthVsRest", "saccadeVsRest"}
+    assert set(est) == {"handVsRest", "footVsRest", "mouthVsRest", "saccadeVsRest", "speakVsRest"}
     hand = est["handVsRest"]
     eff = hand.effect.get_fdata()
     z = hand.z.get_fdata()

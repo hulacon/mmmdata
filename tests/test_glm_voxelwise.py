@@ -21,7 +21,7 @@ TR, N, SHAPE = 1.5, 200, (6, 6, 6)
 def _events():
     rows, t = [], 0.0
     for _ in range(3):
-        for c in ("hand", "foot", "mouth", "saccade", "rest"):
+        for c in ("hand", "foot", "mouth", "saccade", "speak", "rest"):
             rows.append({"onset": t, "duration": 20.0, "trial_type": c})
             t += 20.0
     return pd.DataFrame(rows)

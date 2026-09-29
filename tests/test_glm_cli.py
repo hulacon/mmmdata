@@ -29,7 +29,7 @@ SHAPE = (5, 5, 5)
 def _events():
     rows, t = [], 0.0
     for _ in range(3):
-        for c in ("hand", "foot", "mouth", "saccade", "rest"):
+        for c in ("hand", "foot", "mouth", "saccade", "speak", "rest"):
             rows.append({"onset": t, "duration": 20.0, "trial_type": c, "run_idx": 1})
             t += 20.0
     return pd.DataFrame(rows)
@@ -48,7 +48,7 @@ def _seed_run(root: Path, sub: str, ses: str, run: str, seed: int, events=True, 
     rng = np.random.default_rng(seed)
     data = rng.normal(loc=100.0, scale=1.0, size=SHAPE + (N_SCANS,)).astype(np.float32)
     block = np.zeros(N_SCANS)
-    for start in (0.0, 100.0, 200.0):  # hand blocks at 20 s each
+    for start in (0.0, 120.0, 240.0):  # hand blocks: 20 s each, one per six-block cycle
         block[int(start / TR) : int((start + 20) / TR)] = 1.0
     data[0:2, 0:2, 0:2, :] += 3.0 * block[None, None, None, :]
     nib.Nifti1Image(data, np.eye(4)).to_filename(str(fp / f"{prefix}_space-{SPACE}_desc-preproc_bold.nii.gz"))
@@ -143,7 +143,7 @@ def _seed_surface(root: Path, sub: str, ses: str, runs=("01", "02")):
         nib.save(nib.gifti.GiftiImage(darrays=[coords, faces]),
                  str(anat / f"sub-{sub}_acq-X_hemi-{hemi}_midthickness.surf.gii"))
     block = np.zeros(N_SCANS)
-    for start in (0.0, 100.0, 200.0):
+    for start in (0.0, 120.0, 240.0):
         block[int(start / TR) : int((start + 20) / TR)] = 1.0
     fp = root / "derivatives" / "fmriprep" / f"sub-{sub}" / f"ses-{ses}" / "func"
     for run in runs:
@@ -204,7 +204,7 @@ def test_both_engines_share_one_tree_and_the_index_lists_every_map(tree):
     assert descs.set_index("desc_id").loc["referenceAR1", "description"].count("AR(1)") == 1
     maps = pd.read_csv(base / "maps.tsv", sep="\t", dtype=str, keep_default_na=False)
     on_disk = sorted(str(p.relative_to(base)) for p in base.glob("sub-*/**/*_statmap.nii.gz"))
-    assert sorted(maps.path) == on_disk and len(on_disk) == 2 * 4 * 4  # engines x contrasts x stats
+    assert sorted(maps.path) == on_disk and len(on_disk) == 2 * 5 * 4  # engines x contrasts x stats
     row = maps[(maps.contrast == "handVsRest") & (maps.stat == "z") & (maps.desc == "referenceAR1")].iloc[0]
     assert (row.subject, row.session, row.task) == ("aa", "30", "motor")
     assert (row.space, row.res) == ("MNI152NLin2009cAsym", "2")  # the project's space label spans two entities

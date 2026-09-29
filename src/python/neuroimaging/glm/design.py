@@ -98,6 +98,7 @@ def build_design_matrix(
         hrf_model=hrf,
         drift_model=cfg.drift_model,
         high_pass=cfg.high_pass,
+        drift_order=cfg.drift_order,
         add_regs=add_regs,
         add_reg_names=add_reg_names,
     )

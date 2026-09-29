@@ -47,6 +47,11 @@ class GlmConfig:
     high_pass
         Only used when ``drift_model`` is set. Default is to rely on fMRIPrep's
         cosine regressors instead, which is why ``drift_model`` is ``None``.
+    drift_order
+        Polynomial degree when ``drift_model`` is ``"polynomial"`` (nilearn's
+        ``drift_order``; 1 is nilearn's default). Ignored otherwise. The
+        data-quality regimes with polynomial drift set it through
+        :func:`.reference.reference_config`.
     confounds
         Confound columns taken from fMRIPrep, plus every ``cosine*`` column
         when ``include_cosine`` is set. Six motion parameters is the
@@ -75,6 +80,7 @@ class GlmConfig:
     smoothing_fwhm: Optional[float] = 5.0
     drift_model: Optional[str] = None
     high_pass: float = 0.01
+    drift_order: int = 1
     confounds: tuple[str, ...] = tuple(MOTION_6)
     include_cosine: bool = True
     acompcor_n: int = 0

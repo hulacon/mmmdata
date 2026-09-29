@@ -20,7 +20,7 @@ from neuroimaging.glm.models import load_model
 def _motor_events(with_rest=True, n_blocks=2):
     rows = []
     t = 0.0
-    conds = ["hand", "foot", "mouth", "saccade"] + (["rest"] if with_rest else [])
+    conds = ["hand", "foot", "mouth", "saccade", "speak"] + (["rest"] if with_rest else [])
     for _ in range(n_blocks):
         for c in conds:
             rows.append({"onset": t, "duration": 20.0, "trial_type": c, "run_idx": 1})
@@ -114,7 +114,7 @@ def test_build_design_matrix_has_conditions_confounds_and_intercept():
     n_scans = 140
     conf = pd.DataFrame(np.random.default_rng(0).normal(size=(n_scans, 7)), columns=MOTION_6 + ["cosine00"])
     dm = build_design_matrix(ev, conf, t_r=1.5, n_scans=n_scans, model=m, cfg=GlmConfig())
-    assert dm.shape == (n_scans, 5 + 7 + 1)
+    assert dm.shape == (n_scans, 6 + 7 + 1)
     for c in m.conditions:
         assert c in dm.columns
     assert "constant" in dm.columns

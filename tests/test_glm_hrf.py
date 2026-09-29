@@ -48,7 +48,7 @@ def test_resolve_passes_nilearn_names_and_refuses_typos():
 def _motor_events():
     rows, t = [], 0.0
     for _ in range(2):
-        for c in ("hand", "foot", "mouth", "saccade", "rest"):
+        for c in ("hand", "foot", "mouth", "saccade", "speak", "rest"):
             rows.append({"onset": t, "duration": 20.0, "trial_type": c})
             t += 20.0
     return pd.DataFrame(rows)

@@ -13,6 +13,9 @@ Three parts, each in its own directory under <tree>/tier2/:
   snr            tSNR and temporal DOF per subject x task x regime, and the
                  per-session longitudinal view of tSNR, FD and coverage
                  (T2.8); reads tier1_runs/_motion/_parcels.tsv only
+  univariate     adjusted task R² and motion–task r per task x regime
+                 (T1.5/T1.8 summaries), and the localizer split-half map
+                 correlation (T2.13) from the tier-1 GLM cells
 
 Verbs (idempotent; state is on disk, never in this process):
 
@@ -28,7 +31,7 @@ Usage:
     python tier2.py build --parts naturalistic --regimes base12fd,gsr --films bench --out-dir /tmp/t2
     python tier2.py diff A B
 
-Library: src/python/neuroimaging/data_quality_{tier2,connectivity,snr}.py. Design
+Library: src/python/neuroimaging/data_quality_{tier2,connectivity,snr,univariate}.py. Design
 record: mmmdata-agents docs/workbench/data-quality/.
 """
 
@@ -50,6 +53,7 @@ from neuroimaging import data_quality as dq  # noqa: E402
 from neuroimaging import data_quality_connectivity as dqc  # noqa: E402
 from neuroimaging import data_quality_snr as dqs  # noqa: E402
 from neuroimaging import data_quality_tier2 as t2  # noqa: E402
+from neuroimaging import data_quality_univariate as dqu  # noqa: E402
 from neuroimaging.io import find_events_file  # noqa: E402
 
 
@@ -64,7 +68,7 @@ class Paths:
         self.atlases_dir = Path(args.atlases_dir or output_dir / "atlases")
 
 
-PARTS = ("naturalistic", "connectivity", "snr")
+PARTS = ("naturalistic", "connectivity", "snr", "univariate")
 
 
 def _csv(value: Optional[str]) -> list[str]:
@@ -83,6 +87,8 @@ def cmd_build(args: argparse.Namespace) -> None:
         build_connectivity(args, root / "connectivity" if root else None)
     if "snr" in parts:
         build_snr(args, root / "snr" if root else None)
+    if "univariate" in parts:
+        build_univariate(args, root / "univariate" if root else None)
 
 
 def build_connectivity(args: argparse.Namespace, dest: Optional[Path]) -> None:
@@ -153,6 +159,34 @@ def build_snr(args: argparse.Namespace, dest: Optional[Path]) -> None:
           f"task_summary {len(result.task_summary)} rows, sessions {len(result.sessions)} in {time.time() - t0:.0f} s")
 
 
+def build_univariate(args: argparse.Namespace, dest: Optional[Path]) -> None:
+    t0 = time.time()
+    paths = Paths(args)
+    glm = dqu.load_glm(paths.tree_root)
+    regimes = _csv(args.regimes)
+    if regimes:
+        unknown = sorted(set(regimes) - set(glm["regime"]))
+        if unknown:
+            sys.exit(f"Regime(s) {unknown} are not in tier1_glm.tsv; available: {sorted(glm['regime'].unique())}")
+        glm = glm[glm["regime"].isin(regimes)]
+    provisional = [s.removeprefix("sub-") for s in _csv(args.provisional_subjects)]
+    runs = dqu.run_table(glm, dqc.load_motion(paths.tree_root), provisional)
+    result = dqu.compute(paths.tree_root, runs, glm)
+    dest = dest or dqu.out_dir(paths.tree_root)
+    provenance = {
+        "created": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "code_version": dq.code_version(REPO_ROOT),
+        "inputs": {name: {"path": str(paths.tree_root / name), "sha256": t2.file_sha256(paths.tree_root / name)}
+                   for name in ("tier1_glm.tsv", "tier1_motion.tsv")},
+        "regimes": sorted(runs["regime"].unique()),
+        "provisional_subjects": provisional,
+    }
+    written = dqu.write(result, dest, provenance)
+    print(f"univariate {dest}: {len(written)} files; {runs[dqu.KEYS].drop_duplicates().shape[0]} task runs x "
+          f"{runs['regime'].nunique()} regimes ({int(runs['absent'].sum())} absent cells); task_r2 "
+          f"{len(result.task_r2)} rows, split_half {len(result.split_half)} in {time.time() - t0:.0f} s")
+
+
 def build_naturalistic(args: argparse.Namespace, dest: Optional[Path]) -> None:
     t0 = time.time()
     paths = Paths(args)
@@ -206,7 +240,7 @@ def build_naturalistic(args: argparse.Namespace, dest: Optional[Path]) -> None:
 
 def cmd_diff(args: argparse.Namespace) -> None:
     a, b = Path(args.a), Path(args.b)
-    modules = {"naturalistic": t2, "connectivity": dqc, "snr": dqs}
+    modules = {"naturalistic": t2, "connectivity": dqc, "snr": dqs, "univariate": dqu}
     problems = []
     for part, module in modules.items():
         pa, pb = a / part, b / part

@@ -15,8 +15,13 @@ Verbs (all idempotent; state is on disk, never in this process):
             at the tree root
   motion    registry T1.7: one row per run (no regime) with raw and
             respiration-filtered FD, to tier1_motion.tsv (+ .json) at the
-            tree root. Reads confounds TSVs and respiratory recordings, never
+            tree root; for task runs also T1.8, the largest motion–task |r|.
+            Reads confounds TSVs, events and respiratory recordings, never
             BOLD; a full rebuild replaces the table
+  glm-plan  as plan, for the GLM cells (T1.5/T1.6): task runs with events
+  glm       fit ONE task run's stand-in GLM under every requested regime
+            (T1.5 task R², and T1.6 condition betas for floc/motor/tone);
+            same skip / --force / declared-absent rules as run
 
 Provisional regimes (not yet confirmed by whoever defined them) are excluded
 from every verb unless --include-provisional is given.
@@ -28,8 +33,10 @@ Usage:
     python tier1.py run --units units.txt --index 7          # sbatch array
     python tier1.py collect
     python tier1.py motion
+    python tier1.py glm-plan --units glm_units.txt
+    python tier1.py glm --units glm_units.txt --index 7      # sbatch array, VERB=glm
 
-Library: src/python/neuroimaging/{confounds,data_quality}.py. Design record:
+Library: src/python/neuroimaging/{confounds,data_quality,data_quality_glm}.py. Design record:
 mmmdata-agents docs/workbench/data-quality/.
 """
 
@@ -47,6 +54,7 @@ if str(REPO_ROOT / "src" / "python") not in sys.path:  # idempotent: tests impor
 
 from core.config import load_config  # noqa: E402
 from neuroimaging import data_quality as dq  # noqa: E402
+from neuroimaging import data_quality_glm as dqg  # noqa: E402
 from neuroimaging.confounds import (  # noqa: E402
     RegimeNotApplicable,
     confirmed_regimes,
@@ -263,8 +271,10 @@ def cmd_motion(args: argparse.Namespace) -> None:
     for run in runs:
         key = dqm.run_key(run.subject, run.session, run.task, run.run)
         band = dqm.band_for(key, run_peaks, per_sub, sample)
+        confounds = load_confounds(run)
         try:
-            row = dqm.motion_row(load_confounds(run), trs[key], band)
+            row = dqm.motion_row(confounds, trs[key], band)
+            row.update(motion_task_row(run, confounds, trs[key]))
         except (ValueError, KeyError) as exc:
             raise type(exc)(f"{run.entity_prefix}: {exc}") from exc
         rows.append({
@@ -293,19 +303,132 @@ def cmd_motion(args: argparse.Namespace) -> None:
           f"max |FD - fMRIPrep| {table['fd_check_max_abs_diff'].max():.2g} mm")
 
 
+def motion_task_row(run: FmriprepRun, confounds, tr: float) -> dict:
+    """T1.8 for a GLM-eligible run (regime-free: the task columns are the same under every regime)."""
+    empty = {"motion_task_r_max": None, "motion_task_r_motion": None, "motion_task_r_condition": None}
+    if not dqg.eligible(run):
+        return empty
+    events = dqg.read_events(run)
+    model = dqg.model_for(run, events)
+    dm = dqg.design_for(run, events, confounds, tr, model, load_regimes()["none"])
+    return dqg.motion_task_correlation(dm, model.conditions, confounds)
+
+
+def glm_runs(args: argparse.Namespace, paths: Paths) -> list[FmriprepRun]:
+    return [r for r in runs_for(args, paths) if dqg.eligible(r)]
+
+
+def glm_keys(run: FmriprepRun, model, atlases_sha: str, bold_sha: Optional[str] = None) -> "dqg.GlmKeys":
+    return dqg.GlmKeys(
+        bold_sha256=bold_sha or dq.file_sha256(run.bold),
+        events_sha256=dq.file_sha256(run.events),
+        model_sha256=dqg.model_sha256(model),
+        atlases_sha256=atlases_sha,
+    )
+
+
+def cmd_glm_plan(args: argparse.Namespace) -> None:
+    paths = Paths(args)
+    regimes = selected_regimes(args)
+    runs = glm_runs(args, paths)
+    atlases_sha = dq.atlases_sha256(paths.atlases_dir) if args.check_hashes else None
+    stale_runs, n_cells, n_missing = [], 0, 0
+    for run in runs:
+        keys = None
+        if args.check_hashes:
+            keys = glm_keys(run, dqg.model_for(run, dqg.read_events(run)), atlases_sha)
+        missing_here = 0
+        for regime in regimes:
+            n_cells += 1
+            current = (dqg.glm_is_current(paths.tree_root, run, regime, keys) if keys
+                       else dqg.glm_cell_exists(paths.tree_root, run, regime.name))
+            missing_here += not current
+        if missing_here:
+            n_missing += missing_here
+            stale_runs.append(run)
+    print(f"task runs with events (excluding {sorted(dqg.EXCLUDED_TASKS)}): {len(runs)}  "
+          f"regimes: {len(regimes)}  cells: {n_cells}  missing/stale cells: {n_missing}  "
+          f"runs to (re)build: {len(stale_runs)}")
+    if args.units:
+        Path(args.units).write_text("".join(unit_line(r) + "\n" for r in stale_runs))
+        print(f"wrote {len(stale_runs)} units to {args.units}")
+
+
+def cmd_glm(args: argparse.Namespace) -> None:
+    from neuroimaging.glm.config import repetition_time
+
+    paths = Paths(args)
+    regimes = selected_regimes(args)
+    if args.units:
+        if args.index is None:
+            sys.exit("--units needs --index (1-based line number, e.g. $SLURM_ARRAY_TASK_ID)")
+        lines = [ln for ln in Path(args.units).read_text().splitlines() if ln.strip()]
+        if not 1 <= args.index <= len(lines):
+            sys.exit(f"--index {args.index} is outside 1..{len(lines)} for {args.units}")
+        runs = [run_from_unit(lines[args.index - 1], paths)]
+    else:
+        if not (args.sub and args.ses and args.task):
+            sys.exit("glm needs --sub, --ses and --task (and --run for multi-run tasks), or --units/--index")
+        runs = runs_for(args, paths)
+    runs = [r for r in runs if dqg.eligible(r)]
+    if not runs:
+        sys.exit("No GLM-eligible run (task run with events, task not excluded) matches")
+    fmriprep_version = dq.pipeline_version(paths.fmriprep_tree)
+    code_sha = dq.code_version(REPO_ROOT)
+    dq.ensure_dataset_description(paths.tree_root, paths.fmriprep_tree, fmriprep_version, code_sha)
+    atlases_sha = dq.atlases_sha256(paths.atlases_dir)
+    for run in runs:
+        t0 = time.time()
+        events = dqg.read_events(run)
+        model = dqg.model_for(run, events)
+        keys = glm_keys(run, model, atlases_sha)
+        todo = [r for r in regimes if args.force or not dqg.glm_is_current(paths.tree_root, run, r, keys)]
+        if not todo:
+            print(f"{run.entity_prefix}: all {len(regimes)} GLM regimes current, skipping")
+            continue
+        inputs = dq.load_run_inputs(run, paths.atlases_dir)
+        assert inputs.input_bold_sha256 == keys.bold_sha256 and inputs.input_atlases_sha256 == atlases_sha
+        tr = repetition_time(run, paths.bids_root)
+        if abs(tr - inputs.tr) > 1e-3:
+            sys.exit(f"{run.entity_prefix}: sidecar RepetitionTime {tr} disagrees with the NIfTI header {inputs.tr}")
+        for regime in todo:
+            try:
+                rec = dqg.write_run_glm(paths.tree_root, inputs, events, model, regime, tr, keys,
+                                        fmriprep_version=fmriprep_version, code_sha=code_sha)
+            except RegimeNotApplicable as exc:
+                dqg.write_absent_glm(paths.tree_root, inputs, model, regime, exc, tr, keys,
+                                     fmriprep_version=fmriprep_version, code_sha=code_sha)
+                print(f"{run.entity_prefix} {regime.name:14s} ABSENT ({exc.n_available} of "
+                      f"{exc.n_required} aCompCor components)")
+                continue
+            print(f"{run.entity_prefix} {regime.name:14s} p={rec['n_regressors']} dof={rec['dof_resid']} "
+                  f"r2adj_med={rec['task_r2adj_median']:.4f} r2adj_p99={rec['task_r2adj_p99']:.3f} "
+                  f"(raw med {rec['task_r2_median']:.4f})")
+        print(f"{run.entity_prefix}: {len(todo)} GLM regime(s) in {time.time() - t0:.0f} s")
+
+
 def cmd_collect(args: argparse.Namespace) -> None:
     paths = Paths(args)
     runs, parcels = dq.collect(paths.tree_root)
-    if runs.empty:
-        sys.exit(f"No tier-1 sidecars under {paths.tree_root}; run `tier1.py run` first")
-    runs_path = paths.tree_root / "tier1_runs.tsv"
-    parcels_path = paths.tree_root / "tier1_parcels.tsv"
-    runs.to_csv(runs_path, sep="\t", index=False, na_rep="n/a")
-    parcels.to_csv(parcels_path, sep="\t", index=False, na_rep="n/a")
-    print(f"{runs_path}: {len(runs)} run x regime rows")
-    print(f"{parcels_path}: {len(parcels)} parcel rows")
-    if "regime" in runs:
-        print(runs.groupby("regime").agg(rows=("absent", "size"), absent=("absent", "sum")).to_string())
+    glm, glm_parcels = dqg.collect(paths.tree_root)
+    if runs.empty and glm.empty:
+        sys.exit(f"No tier-1 sidecars under {paths.tree_root}; run `tier1.py run` or `tier1.py glm` first")
+    if not runs.empty:
+        runs_path = paths.tree_root / "tier1_runs.tsv"
+        parcels_path = paths.tree_root / "tier1_parcels.tsv"
+        runs.to_csv(runs_path, sep="\t", index=False, na_rep="n/a")
+        parcels.to_csv(parcels_path, sep="\t", index=False, na_rep="n/a")
+        print(f"{runs_path}: {len(runs)} run x regime rows")
+        print(f"{parcels_path}: {len(parcels)} parcel rows")
+        if "regime" in runs:
+            print(runs.groupby("regime").agg(rows=("absent", "size"), absent=("absent", "sum")).to_string())
+    if not glm.empty:
+        glm_path = paths.tree_root / f"{dqg.TABLE_NAME}.tsv"
+        glm_parcels_path = paths.tree_root / f"{dqg.PARCELS_TABLE_NAME}.tsv"
+        glm.to_csv(glm_path, sep="\t", index=False, na_rep="n/a")
+        glm_parcels.to_csv(glm_parcels_path, sep="\t", index=False, na_rep="n/a", float_format="%.6g")
+        print(f"{glm_path}: {len(glm)} task run x regime rows ({int(glm['absent'].sum())} absent)")
+        print(f"{glm_parcels_path}: {len(glm_parcels)} parcel rows")
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +478,20 @@ def main(argv: Optional[list[str]] = None) -> None:
     _common(p); _entities(p)
     p.add_argument("--physio-reality", help="override <output_dir>/duckbrain/physio/physio_reality.tsv")
     p.set_defaults(func=cmd_motion)
+
+    p = sub.add_parser("glm-plan", help="list missing/stale GLM cells (T1.5/T1.6); optionally write a units file")
+    _common(p); _entities(p)
+    p.add_argument("--units", help="write one line per task run to (re)build here")
+    p.add_argument("--check-hashes", action="store_true",
+                   help="compare input, events, model and atlas hashes, not just existence")
+    p.set_defaults(func=cmd_glm_plan)
+
+    p = sub.add_parser("glm", help="fit one task run's stand-in GLM under every requested regime")
+    _common(p); _entities(p)
+    p.add_argument("--units", help="units file written by glm-plan")
+    p.add_argument("--index", type=int, help="1-based line in --units")
+    p.add_argument("--force", action="store_true", help="rebuild cells that are current")
+    p.set_defaults(func=cmd_glm)
 
     p = sub.add_parser("collect", help="flatten sidecars into the tier-1 tables")
     _common(p)

@@ -33,7 +33,10 @@ SPEC_PATH = Path(__file__).with_name("reference_spec.json")
 UNHASHED_KEYS: tuple[str, ...] = ("sha256", "confound_regimes")
 
 #: GlmConfig fields a regime supplies; every other field comes from ``config``.
-REGIME_FIELDS: tuple[str, ...] = ("confounds", "acompcor_n")
+#: The drift fields are the regime's only when it declares a non-cosine drift;
+#: a cosine regime (``reference``, and any entry without ``drift``) keeps the
+#: frozen ``config``'s fMRIPrep cosines.
+REGIME_FIELDS: tuple[str, ...] = ("confounds", "acompcor_n", "drift_model", "drift_order", "include_cosine")
 
 #: GlmConfig fields that are a consumer's choice, not a modelling decision.
 CONSUMER_FIELDS: tuple[str, ...] = ("output_tree",)
@@ -55,6 +58,30 @@ def load_reference_spec(path: Path = SPEC_PATH) -> dict[str, Any]:
     return spec
 
 
+def _drift_fields(regime: str, entry: dict[str, Any]) -> dict[str, Any]:
+    """The GlmConfig drift fields a regime's ``drift`` declaration means.
+
+    ``cosine`` (the default) is the frozen config's own: fMRIPrep's cosine
+    columns, no nilearn drift. ``polynomial`` is nilearn's polynomial drift of
+    the regime's ``drift_order`` and no cosines; with the design's intercept it
+    spans the same space as the data-quality cleaner's Legendre columns
+    (:func:`neuroimaging.confounds.polynomial_drift`), so the residuals agree.
+    ``none`` is the intercept alone. Anything else is refused rather than
+    fitted under a drift the regime did not ask for.
+    """
+    drift = entry.get("drift", "cosine")
+    if drift == "cosine":
+        return {}
+    if drift == "polynomial":
+        order = int(entry.get("drift_order", 0))
+        if order < 1:
+            raise ValueError(f"Confound regime {regime!r} declares polynomial drift without a drift_order >= 1")
+        return {"drift_model": "polynomial", "drift_order": order, "include_cosine": False}
+    if drift == "none":
+        return {"drift_model": None, "include_cosine": False}
+    raise ValueError(f"Confound regime {regime!r} declares drift={drift!r}; expected cosine, polynomial or none")
+
+
 def reference_config(regime: str = "reference", *, calibrated: bool = False, **overrides: Any) -> GlmConfig:
     """The reference :class:`GlmConfig`, under one named confound regime.
 
@@ -69,15 +96,10 @@ def reference_config(regime: str = "reference", *, calibrated: bool = False, **o
     if regime not in regimes:
         raise KeyError(f"Unknown confound regime {regime!r}; the reference spec has {sorted(regimes)}")
     entry = regimes[regime]
-    if entry.get("drift", "cosine") != "cosine":
-        raise ValueError(
-            f"Confound regime {regime!r} declares drift={entry.get('drift')!r}, which GlmConfig "
-            "cannot express (it relies on fMRIPrep's cosine columns). Such regimes are for the "
-            "data-quality cleaner (neuroimaging.confounds.regime_design), not the reference GLM."
-        )
     fields = dict(spec["config"])
     fields["confounds"] = tuple(entry["confounds"])
     fields["acompcor_n"] = int(entry["acompcor_n"])
+    fields.update(_drift_fields(regime, entry))
     if calibrated:
         fields["noise_model"] = spec["estimation"]["calibrated_noise_model"]
     return dataclasses.replace(GlmConfig(**fields), **overrides)

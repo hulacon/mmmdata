@@ -137,3 +137,144 @@ def test_template_space_pools_across_sessions_without_the_native_check(tmp_path)
     a, b = (dataclasses.replace(r, space="T1w") for r in (a, b))
     _, inter = mask_intersection([a, b])
     assert inter.all()
+
+
+# --- regime drift through the GLM (data-quality T1.5/T1.6, 2026-09-29) ------------------------
+
+def test_every_regime_resolves_to_its_declared_drift():
+    for name, entry in load_reference_spec()["confound_regimes"].items():
+        cfg = reference_config(name)
+        drift = entry.get("drift", "cosine")
+        assert cfg.confounds == tuple(entry["confounds"]) and cfg.acompcor_n == entry["acompcor_n"]
+        if drift == "cosine":
+            assert cfg.drift_model is None and cfg.include_cosine
+        elif drift == "polynomial":
+            assert (cfg.drift_model, cfg.drift_order, cfg.include_cosine) == ("polynomial", entry["drift_order"], False)
+        else:
+            assert drift == "none" and cfg.drift_model is None and not cfg.include_cosine
+
+
+def test_unknown_drift_is_refused(tmp_path, monkeypatch):
+    path = _copy(tmp_path, lambda s: s["confound_regimes"].update(
+        odd={"status": "provisional", "confounds": [], "acompcor_n": 0, "drift": "spline"}))
+    monkeypatch.setattr(reference, "load_reference_spec", lambda: load_reference_spec(path))
+    with pytest.raises(ValueError, match="spline"):
+        reference_config("odd")
+
+
+N_SCANS = 140
+_ACC = [f"a_comp_cor_{i:02d}" for i in range(20)]
+_DERIV = [f"{c}_derivative1" for c in MOTION_6]
+
+
+def _confounds(rng, n_nss=0):
+    import pandas as pd
+
+    cols = list(MOTION_6) + _DERIV + ["framewise_displacement", "csf", "white_matter", "global_signal"] + _ACC
+    conf = pd.DataFrame(rng.normal(size=(N_SCANS, len(cols))), columns=cols)
+    conf.loc[0, _DERIV + ["framewise_displacement"]] = np.nan  # fMRIPrep's n/a first row
+    t = np.arange(N_SCANS)
+    for k in range(3):
+        conf[f"cosine{k:02d}"] = np.cos(np.pi * (k + 1) * (t + 0.5) / N_SCANS)
+    for v in range(n_nss):
+        conf[f"non_steady_state_outlier{v:02d}"] = (t == v).astype(float)
+    return conf
+
+
+def _motor_events():
+    import pandas as pd
+
+    rows, t = [], 0.0
+    for _ in range(2):
+        for c in ["hand", "foot", "mouth", "saccade", "speak", "rest"]:
+            rows.append({"onset": t, "duration": 20.0, "trial_type": c})
+            t += 20.0
+    return pd.DataFrame(rows)
+
+
+def _residuals(X, Y):
+    beta, *_ = np.linalg.lstsq(X, Y, rcond=None)
+    return Y - X @ beta, beta
+
+
+def _glm_design(regime, conf):
+    pytest.importorskip("nilearn")
+    from neuroimaging.glm.design import build_design_matrix
+    from neuroimaging.glm.models import load_model
+
+    model = load_model("motor")
+    dm = build_design_matrix(_motor_events(), conf, 1.5, N_SCANS, model, reference_config(regime))
+    return dm, list(model.conditions)
+
+
+def test_polynomial_regime_design_has_nilearn_drift_and_no_cosines():
+    dm, _ = _glm_design("base", _confounds(np.random.default_rng(0)))
+    assert not any(c.startswith("cosine") for c in dm.columns)
+    assert {"drift_1", "drift_2", "constant"} <= set(dm.columns)
+    dm, _ = _glm_design("gsr", _confounds(np.random.default_rng(0)))
+    assert not any(c.startswith(("cosine", "drift")) for c in dm.columns) and "constant" in dm.columns
+
+
+def test_glm_confound_residuals_equal_the_cleaners_on_every_confirmed_regime():
+    # The GLM's nuisance space (regime columns + nilearn drift + intercept + one spike per lead-in
+    # volume) must leave the same residuals, on the steady-state volumes, as the data-quality cleaner
+    # (regime_design + intercept, lead-in rows dropped). Different drift bases, same span.
+    from neuroimaging.confounds import confirmed_regimes, get_regime, regime_design
+
+    rng = np.random.default_rng(1)
+    conf = _confounds(rng, n_nss=2)
+    Y = rng.normal(size=(N_SCANS, 5)) + np.linspace(0, 3, N_SCANS)[:, None] ** 2
+    for name in confirmed_regimes():
+        dm, conds = _glm_design(name, conf)
+        nuis = dm.drop(columns=conds).to_numpy()
+        r_glm, _ = _residuals(nuis, Y)
+        rd = regime_design(get_regime(name), conf)
+        keep = ~rd.nss
+        Xc = np.column_stack([rd.columns.to_numpy()[keep], np.ones(keep.sum())])
+        r_clean, _ = _residuals(Xc, Y[keep])
+        assert np.allclose(r_glm[keep], r_clean, atol=1e-8), name
+        assert np.allclose(r_glm[~keep], 0.0, atol=1e-8), name  # spikes absorb the lead-in volumes
+
+
+#: The colleague's regimes as their code builds them (github.com/ntpouba/mmm @ ff11baa,
+#: volume/regress_out_confounds_volume.py `CONFOUND_VARIANTS` + `build_covariates`), keyed by
+#: our registry names: their base / basecsfwm / baseacc6 / baseacc20 are our base12fd* (renamed
+#: 2026-09-28). Transcribed rather than imported: their repo is not a dependency.
+_COLLEAGUE = {
+    "base12fd": ([], True),
+    "base12fdcsfwm": (["csf", "white_matter"], True),
+    "base12fdacc6": (_ACC[:6], True),
+    "base12fdacc20": (_ACC, True),
+    "gsr": (None, False),
+}
+_THEIR_MOTION = [c for m in MOTION_6 for c in (m, f"{m}_derivative1")] + ["framewise_displacement"]
+
+
+def _colleague_covariates(conf, name):
+    extra, drift = _COLLEAGUE[name]
+    cols = ["global_signal"] if extra is None else _THEIR_MOTION + extra
+    cov = conf[cols].copy().fillna(0)
+    if drift:
+        cov["linear"] = np.linspace(0, 1, len(cov))
+        cov["quadratic"] = cov["linear"] ** 2
+    return cov.to_numpy()
+
+
+def test_glm_matches_the_colleagues_regressors_on_their_five_regimes():
+    # Their runs carry no lead-in columns, and they fit every volume; so does this check.
+    # Nuisance residuals match theirs (nilearn.signal.clean projects on the z-scored covariates,
+    # and their z-scoring removes the mean: the same as an intercept), and the task betas of a
+    # GLM carrying their covariates equal ours: raw t, t^2 vs nilearn's orthogonal polynomials
+    # is a change of basis, not of model.
+    rng = np.random.default_rng(2)
+    conf = _confounds(rng)
+    Y = rng.normal(size=(N_SCANS, 5)) + np.linspace(0, 3, N_SCANS)[:, None] ** 2
+    for name in _COLLEAGUE:
+        dm, conds = _glm_design(name, conf)
+        theirs = np.column_stack([_colleague_covariates(conf, name), np.ones(N_SCANS)])
+        r_ours, _ = _residuals(dm.drop(columns=conds).to_numpy(), Y)
+        r_theirs, _ = _residuals(theirs, Y)
+        assert np.allclose(r_ours, r_theirs, atol=1e-8), name
+        _, b_ours = _residuals(np.column_stack([dm[conds], dm.drop(columns=conds)]), Y)
+        _, b_theirs = _residuals(np.column_stack([dm[conds].to_numpy(), theirs]), Y)
+        assert np.allclose(b_ours[: len(conds)], b_theirs[: len(conds)], atol=1e-8), name
