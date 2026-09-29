@@ -257,10 +257,18 @@ class Encoder:
         model = self.pipeline_[-1]
         be = get_backend()
         alphas = np.asarray(be.to_numpy(model.best_alphas_))
+        low, high = np.isclose(alphas, self.alphas[0]), np.isclose(alphas, self.alphas[-1])
+        cv = np.asarray(be.to_numpy(model.cv_scores_))  # (targets,) one band; (search samples, targets) several
+        cv = cv.max(axis=0) if cv.ndim > 1 else cv
         self.diagnostics_ = {
             "n_samples": int(x.shape[0]), "n_features": int(x.shape[1]), "n_targets": int(self.valid_.sum()),
-            "alpha_at_grid_edge": float(np.mean(np.isclose(alphas, self.alphas[0]) | np.isclose(alphas, self.alphas[-1]))),
+            "alpha_at_grid_edge": float(np.mean(low | high)),
+            "alpha_at_low_edge": float(np.mean(low)), "alpha_at_high_edge": float(np.mean(high)),
             "alpha_median": float(np.median(alphas)),
+            # inner CV over the alignment films (a fit diagnostic, not a score). himalaya's default
+            # score is the negative MSE, so on per-window z-scored responses 1 + score ~ CV R^2.
+            "cv_neg_mse_median": float(np.median(cv)),
+            "cv_1_plus_score_q50_q95_q99": [round(float(v), 4) for v in np.quantile(1.0 + cv, [0.5, 0.95, 0.99])],
         }
         return self
 

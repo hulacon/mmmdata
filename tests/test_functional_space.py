@@ -458,3 +458,116 @@ class TestEncoderFit:
         r = [np.corrcoef(pred[:, j], y[500:, j])[0, 1] for j in np.flatnonzero(ok)]
         assert np.median(r) > 0.9
         assert 0.0 <= e.diagnostics_["alpha_at_grid_edge"] <= 1.0
+        assert e.diagnostics_["alpha_at_grid_edge"] == pytest.approx(
+            e.diagnostics_["alpha_at_low_edge"] + e.diagnostics_["alpha_at_high_edge"])
+
+
+# ---------------------------------------------------------------------------
+# stimulus route (Gram-space template and entry)
+# ---------------------------------------------------------------------------
+
+sr = _load("stimulus_route")
+
+
+def _accumulate(pcols, pairs, target, data, n_chunks=3):
+    acc = sr.GramAccumulator(pcols, pairs, target)
+    for idx in np.array_split(np.arange(next(iter(data.values())).shape[0]), n_chunks):
+        acc.add({s: x[idx] for s, x in data.items()})
+    return acc
+
+
+class TestStimulusRoute:
+    def _subjects(self, rows=400, n_pieces=3, p=5, seed=0):
+        rng = np.random.default_rng(seed)
+        labels = np.repeat(np.arange(n_pieces), p)
+        shared = rng.standard_normal((rows, labels.size))
+        data = {}
+        for k, s in enumerate(("A", "B")):
+            d = shared.copy()
+            for j in range(n_pieces):
+                c = labels == j
+                d[:, c] = d[:, c] @ _rotation(p, 100 * k + j)
+            data[s] = d + 0.2 * rng.standard_normal(d.shape)
+        return labels, data
+
+    def test_gram_template_reproduces_template_average(self):
+        labels, data = self._subjects()
+        valid = {s: np.ones(labels.size, bool) for s in ("A", "B", "T")}
+        pcols = sr.piece_columns(labels, valid, ["A", "B"], "T")
+        acc = _accumulate(pcols, [("A", "A"), ("A", "B"), ("B", "B")], "T", data)
+        rot, cross = sr.gram_template(acc.g, ["A", "B"], list(pcols.template))
+        tpl, tfs = pr.template_average([data["A"], data["B"]], labels, lam=0.0, n_iter=sr.TEMPLATE_ITERATIONS)
+        for s, tf in zip(("A", "B"), tfs):
+            for lab, (cols, r) in tf.pieces.items():
+                assert np.allclose(rot[s][lab], r, atol=1e-8)
+                assert np.allclose(cross[s][lab], data[s][:, cols].T @ tpl[:, cols], atol=1e-6)
+
+    def test_chunking_does_not_change_the_grams(self):
+        labels, data = self._subjects(seed=1)
+        valid = {s: np.ones(labels.size, bool) for s in ("A", "B", "T")}
+        pcols = sr.piece_columns(labels, valid, ["A", "B"], "T")
+        one = _accumulate(pcols, [("A", "B")], "T", data, n_chunks=1).g
+        many = _accumulate(pcols, [("A", "B")], "T", data, n_chunks=7).g
+        for lab in one[("A", "B")]:
+            assert np.allclose(one[("A", "B")][lab], many[("A", "B")][lab], atol=1e-8)
+
+    def test_target_cross_over_its_own_columns(self):
+        labels, data = self._subjects(seed=2)
+        rng = np.random.default_rng(3)
+        valid = {"A": np.ones(labels.size, bool), "B": np.ones(labels.size, bool),
+                 "T": rng.random(labels.size) > 0.3}
+        valid["B"][0] = False  # a column the template leaves out
+        pcols = sr.piece_columns(labels, valid, ["A", "B"], "T")
+        assert 0 not in pcols.template[0]
+        tpl_acc = _accumulate(pcols, [("A", "A"), ("A", "B"), ("B", "B")], "T", data)
+        rot, _ = sr.gram_template(tpl_acc.g, ["A", "B"], list(pcols.template))
+        t_rows = {s: rng.standard_normal((120, labels.size)) for s in ("A", "B", "T")}
+        tgt_acc = _accumulate(pcols, [("T", "A"), ("T", "B")], "T", t_rows)
+        got = sr.target_cross(tgt_acc.g, "T", ["A", "B"], rot, pcols)
+        for lab, pos in pcols.target.items():
+            cols = pcols.template[lab]
+            template = sum(t_rows[s][:, cols] @ rot[s][lab] for s in ("A", "B")) / 2
+            want = t_rows["T"][:, cols[pos]].T @ template[:, pos]
+            assert np.allclose(got[lab], want, atol=1e-8)
+
+    def test_a_target_on_disjoint_rows_enters_the_template(self):
+        """Template on rows A and B share; the target brings rows of its own. Held-out
+        responses of a template subject map onto the target's far better than identity."""
+        rng = np.random.default_rng(4)
+        labels = np.repeat(np.arange(4), 6)
+        g = labels.size
+        q = {s: np.zeros((g, g)) for s in ("A", "B", "T")}
+        for k, s in enumerate(q):
+            for j in range(4):
+                c = np.flatnonzero(labels == j)
+                q[s][np.ix_(c, c)] = _rotation(6, 1000 * k + j)
+        signal = lambda n: rng.standard_normal((n, g))  # noqa: E731
+        tpl_rows, tgt_rows, test = signal(500), signal(300), signal(200)
+        valid = {s: np.ones(g, bool) for s in q}
+        pcols = sr.piece_columns(labels, valid, ["A", "B"], "T")
+        noisy = lambda x, s: x @ q[s] + 0.3 * rng.standard_normal(x.shape)  # noqa: E731
+        tpl_acc = _accumulate(pcols, [("A", "A"), ("A", "B"), ("B", "B")], "T",
+                              {s: noisy(tpl_rows, s) for s in ("A", "B")})
+        rot, cross = sr.gram_template(tpl_acc.g, ["A", "B"], list(pcols.template))
+        tgt_acc = _accumulate(pcols, [("T", "A"), ("T", "B")], "T", {s: noisy(tgt_rows, s) for s in q})
+        cross["T"] = sr.target_cross(tgt_acc.g, "T", ["A", "B"], rot, pcols)
+        tf = {s: pr.transform_from_cross(sr.as_cross(cross[s], pcols.template), g, 0.0) for s in q}
+        mapped = tf["T"].inverse().apply(tf["A"].apply(test @ q["A"]))
+        assert _r(mapped, test @ q["T"]) > 0.9 > 0.3 > _r(test @ q["A"], test @ q["T"])
+        diag = sr.alignment_diagnostics(cross["T"])
+        assert diag["captured"] > 1.0 and diag["tr_over_p"][str(float("inf"))] == 1.0
+
+    def test_probe_batches_keep_clips_whole(self):
+        sizes = {"c1": 3, "c2": 5, "c3": 2, "c4": 4}
+        design = lambda sid: np.full((sizes[sid], 2), float(sid[1:]))  # noqa: E731
+        batches = list(sr.probe_batches(design, list(sizes), chunk=6))
+        assert [b[0].shape[0] for b in batches] == [8, 6]
+        for x, groups in batches:
+            for sid in set(groups):
+                assert (x[groups == sid] == float(sid[1:])).all()
+
+    def test_center_blocks(self):
+        x = np.arange(12, dtype=float).reshape(6, 2)
+        out = sr.center_blocks(x, np.array(["a"] * 3 + ["b"] * 3))
+        assert np.allclose(out[:3].mean(0), 0) and np.allclose(out[3:].mean(0), 0)
+        assert np.allclose(out.std(0), x[:3].std(0))  # centred, not rescaled
