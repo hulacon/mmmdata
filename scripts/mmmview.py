@@ -77,7 +77,9 @@ What it places:
     *_events.tsv, *_beh.tsv              not here; the MCP plot tools cover them
 
 Display profiles live in DISPLAY_PROFILES below, keyed on the entity that
-names the quantity (desc- for pRF parameters, stat- for GLM maps). They are
+names the quantity (desc- for pRF parameters, stat- for GLM maps; the _tsnr
+suffix for the data-quality tSNR maps, one fixed 0-100 scale so a run's
+regime layers compare by eye). They are
 recreated in the viewer per family and never written to disk (decided
 2026-09-11). A z/t/effect map's negative tail is a second toggle layer
 (the template has no two-tailed colormap); the pRF profile extends the
@@ -227,6 +229,8 @@ def family_of(entities, suffix):
     """Display family from the entity that names the quantity."""
     if suffix == "dseg":
         return "dseg"
+    if suffix == "tsnr":
+        return "tsnr"
     if entities.get("desc") in PRF_DESCS and suffix and suffix.endswith("prf"):
         return "prf"
     stat = entities.get("stat")
@@ -545,13 +549,19 @@ DISPLAY_PROFILES = {
               "pos": "warm", "neg": "winter"},
     "glm-effect": {"tails": True, "cal_min": 0.0, "threshold": None,
                    "pos": "warm", "neg": "winter"},
+    # one fixed scale for every tSNR map, so the layers of a run (one per
+    # confound regime in derivatives/data_quality) compare by eye; a per-layer
+    # p99 would rescale each regime to look alike. 100 clears the upper tail
+    # of a typical 2 mm tSNR map; the viewer's slider moves the floor
+    "tsnr": {"tails": False, "colormap": "viridis", "cal_min": 0.0,
+             "cal_max": 100.0, "quantity": "tSNR"},
     "unknown": {"tails": False, "colormap": "viridis", "cal_min": 0.0},
     # integer regions coloured and named from the sibling <stem>.tsv
     # (index/name/color); no threshold, no colorbar
     "dseg": {"tails": False, "labels": True, "opacity": 0.6},
 }
 _FAMILY_ORDER = {"prf": 0, "glm-z": 1, "glm-t": 2, "glm-effect": 3,
-                 "unknown": 4, "dseg": 5}
+                 "tsnr": 4, "unknown": 5, "dseg": 6}
 
 
 def display_for(map_path, entities, suffix, r2_floor):
@@ -1175,7 +1185,8 @@ def _volume_specs(entry, floor):
                  "cal_min": prof.get("cal_min", 0.0),
                  "cal_max": prof.get("cal_max") or _p99(out),
                  "angle_legend": prof.get("angle_legend", False),
-                 "readout": {"kind": "value", "quantity": None, "unit": "",
+                 "readout": {"kind": "value",
+                             "quantity": prof.get("quantity"), "unit": "",
                              "masked": "no data"}}]
     return _tail_specs(entry, data, lambda arr: _nifti_like(img, arr))
 

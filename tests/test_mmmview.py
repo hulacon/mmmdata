@@ -85,6 +85,7 @@ class TestGrammar:
         ({"stat": "effect"}, "statmap", "glm-effect"),
         ({"desc": "preproc"}, "bold", "unknown"),
         ({"desc": "R2"}, "bold", "unknown"),      # pRF desc, non-pRF suffix
+        ({"desc": "base12fdacc20"}, "tsnr", "tsnr"),
     ])
     def test_family_of(self, ents, suffix, family):
         assert family_of(ents, suffix) == family
@@ -461,6 +462,17 @@ class TestDisplay:
         (e,) = plan.display
         assert e["family"] == "unknown" and e["profile"]["colormap"] == "viridis"
         assert any("no display profile" in m for m in plan.messages)
+
+    def test_tsnr_regime_layers_share_one_fixed_scale(self, roots, tmp_path):
+        d = tmp_path / "x"
+        for regime in ("none", "gsr"):
+            touch(d / f"sub-07_ses-02_task-rest_space-T1w_desc-{regime}_tsnr.nii.gz")
+        (t,) = classify(d)
+        plan = resolve(t, roots)
+        assert [e["label"] for e in plan.display] == ["desc-gsr", "desc-none"]
+        assert {(e["family"], e["profile"]["cal_min"], e["profile"]["cal_max"])
+                for e in plan.display} == {("tsnr", 0.0, 100.0)}
+        assert not plan.messages
 
     def test_directory_layers_grouped_by_family(self, roots, tmp_path):
         d = tmp_path / "x"
@@ -1747,6 +1759,16 @@ class TestCrosshairReadout:
         [ov] = _overlays(out)
         assert ov["readout"] == {"kind": "value", "quantity": None,
                                  "unit": "", "masked": "no data"}
+
+    def test_tsnr_maps_read_out_tsnr_on_the_fixed_scale(self, roots, tmp_path):
+        p = tmp_path / "x" / "sub-07_space-T1w_desc-none_tsnr.nii.gz"
+        p.parent.mkdir()
+        nib.save(nib.Nifti1Image(np.full((3, 3, 2), 40, np.float32), np.eye(4)), p)
+        out, _ = render(resolve(classify(p)[0], roots,
+                                Opts(underlay=str(p))))
+        [ov] = _overlays(out)
+        assert ov["readout"]["quantity"] == "tSNR"
+        assert ov["cal_max"] == 100.0
 
     def test_label_maps_read_out_regions(self, roots, atlas_dir):
         out, _ = render(resolve(classify(atlas_dir)[0], roots))

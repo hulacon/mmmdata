@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tier 2 of the data-quality collection, rebuilt from tier-1 caches.
 
-Three parts, each in its own directory under <tree>/tier2/:
+Five parts, each in its own directory under <tree>/tier2/:
 
   naturalistic   LOO-ISFC and the audio-envelope lag scan for every film's
                  first viewing (registry T2.2, T2.4); repeat reliability of
@@ -29,13 +29,19 @@ Verbs (idempotent; state is on disk, never in this process):
   diff    compare two tier-2 roots part by part, table by table and array by
           array; exit 1 on any difference. Settles-when 4 is
           `build --out-dir <tmp>` then `diff <tree>/tier2 <tmp>`.
+  views   write the Vega-Lite specs (and the naturalistic network/lag summary
+          tables) that make each part an mmmview results page:
+          `mmmview <tree>/tier2/<part>`, or browse them under `mmmview serve`.
+          `build` runs it for every part it writes; run it alone after a
+          change to the views, not to the data.
 
 Usage:
     python tier2.py build --provisional-subjects 06,07
     python tier2.py build --parts naturalistic --regimes base12fd,gsr --films bench --out-dir /tmp/t2
     python tier2.py diff A B
+    python tier2.py views [--parts snr,connectivity]
 
-Library: src/python/neuroimaging/data_quality_{tier2,connectivity,snr,univariate,glmsingle}.py. Design
+Library: src/python/neuroimaging/data_quality_{tier2,connectivity,snr,univariate,glmsingle,views}.py. Design
 record: mmmdata-agents docs/archive/workbench/data-quality/.
 """
 
@@ -59,6 +65,7 @@ from neuroimaging import data_quality_glmsingle as dqgs  # noqa: E402
 from neuroimaging import data_quality_snr as dqs  # noqa: E402
 from neuroimaging import data_quality_tier2 as t2  # noqa: E402
 from neuroimaging import data_quality_univariate as dqu  # noqa: E402
+from neuroimaging import data_quality_views as dqv  # noqa: E402
 from neuroimaging.io import find_events_file  # noqa: E402
 
 
@@ -81,11 +88,29 @@ def _csv(value: Optional[str]) -> list[str]:
     return [v.strip() for v in value.split(",") if v.strip()] if value else []
 
 
-def cmd_build(args: argparse.Namespace) -> None:
+def _parts(args: argparse.Namespace) -> list[str]:
     parts = _csv(args.parts) or list(PARTS)
     unknown = sorted(set(parts) - set(PARTS))
     if unknown:
         sys.exit(f"Unknown part(s) {unknown}; choose from {PARTS}")
+    return parts
+
+
+def write_views(part: str, dest: Path) -> None:
+    specs = dqv.write_views(part, dest)
+    print(f"{part} views {dest}: {len(specs)} charts -> mmmview {dest}")
+
+
+def cmd_views(args: argparse.Namespace) -> None:
+    root = Path(args.out_dir) if args.out_dir else Path(Paths(args).tree_root) / "tier2"
+    for part in _parts(args):
+        if not (root / part).is_dir():
+            sys.exit(f"No tier-2 part at {root / part}; run `tier2.py build --parts {part}` first")
+        write_views(part, root / part)
+
+
+def cmd_build(args: argparse.Namespace) -> None:
+    parts = _parts(args)
     root = Path(args.out_dir) if args.out_dir else None
     if "naturalistic" in parts:
         build_naturalistic(args, root / "naturalistic" if root else None)
@@ -97,6 +122,9 @@ def cmd_build(args: argparse.Namespace) -> None:
         build_univariate(args, root / "univariate" if root else None)
     if "glmsingle" in parts:
         build_glmsingle(args, root / "glmsingle" if root else None)
+    tier2_root = root or Path(Paths(args).tree_root) / "tier2"
+    for part in parts:
+        write_views(part, tier2_root / part)
 
 
 def build_glmsingle(args: argparse.Namespace, dest: Optional[Path]) -> None:
@@ -309,6 +337,16 @@ def main(argv: Optional[list[str]] = None) -> None:
                    help="glmsingle: override <output_dir>/pattern_similarity/results/retrieval_modeling")
     p.add_argument("--out-dir", help="tier-2 root to write the parts under, instead of <tree>/tier2")
     p.set_defaults(func=cmd_build)
+
+    p = sub.add_parser("views", help="write the mmmview chart specs for built tier-2 parts")
+    p.add_argument("--parts", help=f"comma-separated parts (default: {','.join(PARTS)})")
+    p.add_argument("--bids-root", help="override config paths.bids_project_dir")
+    p.add_argument("--tree-root", help="override <output_dir>/data_quality")
+    p.add_argument("--registry", help=argparse.SUPPRESS)
+    p.add_argument("--feature-store", help=argparse.SUPPRESS)
+    p.add_argument("--atlases-dir", help=argparse.SUPPRESS)
+    p.add_argument("--out-dir", help="tier-2 root holding the parts, instead of <tree>/tier2")
+    p.set_defaults(func=cmd_views)
 
     p = sub.add_parser("diff", help="compare two tier-2 roots part by part; exit 1 on any difference")
     p.add_argument("a")
