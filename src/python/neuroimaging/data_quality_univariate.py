@@ -3,7 +3,7 @@
 Reads only tier-1 outputs: ``tier1_glm.tsv`` (T1.5, `tier1.py glm` then
 `collect`), ``tier1_motion.tsv`` (T1.8, `tier1.py motion`) and, for the
 split-half, the localizer cells' ``_betas.nii.gz`` / ``_sigmasquared.nii.gz`` and
-their sidecars. Design record: mmmdata-agents ``docs/workbench/data-quality/``
+their sidecars. Design record: mmmdata-agents ``docs/archive/workbench/data-quality/``
 (D1–D4 DECIDED 2026-09-29).
 
 * **Task R²** (``task_r2.tsv``): per scope x task x regime, the median and IQR

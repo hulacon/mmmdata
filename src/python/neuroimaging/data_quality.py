@@ -1,7 +1,7 @@
 """Tier 1 of the data-quality collection: clean one run under one regime, measure it.
 
 The collection (``derivatives/data_quality/``, mmmdata-agents
-``docs/workbench/data-quality/``) answers "what does each confound regime do
+``docs/archive/workbench/data-quality/``) answers "what does each confound regime do
 to this dataset" with one regenerable tree keyed like the catalog. Tier 1 is
 per run × regime and is rebuilt when that run's fMRIPrep input changes; tier 2
 pools tier-1 caches and never touches voxels. This module is tier 1's library:
@@ -344,7 +344,7 @@ def ensure_dataset_description(tree_root: Path, fmriprep_tree: Path, fmriprep_ve
             "CodeURL": "https://github.com/jhutchin/mmmdata",
             "Description": (
                 "Per-run x confound-regime cleaning, tSNR and parcel caches; "
-                "the measure registry lives in mmmdata-agents docs/workbench/data-quality/."
+                "the measure registry lives in mmmdata-agents docs/archive/workbench/data-quality/."
             ),
         }],
         "SourceDatasets": [{

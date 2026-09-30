@@ -4,7 +4,7 @@ The pRF fits (``derivatives/prf``, analyzePRF, one pooled fit per subject, two
 polarities ``prf`` and ``negprf``) do their own preprocessing, so their rows carry
 ``regime = prf`` and never enter the (runs x regimes) count. Nothing is refit and
 no pRF value is resampled: this module reads the fits' R² maps and summarises
-them. Design record: mmmdata-agents ``docs/workbench/data-quality/`` (T1.11
+them. Design record: mmmdata-agents ``docs/archive/workbench/data-quality/`` (T1.11
 DECIDED 2026-09-29).
 
 **Tier 1, one cell per subject** (``tier1.py prf``):

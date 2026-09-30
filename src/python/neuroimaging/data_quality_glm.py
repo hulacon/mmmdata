@@ -4,7 +4,7 @@ The stand-in GLM (nilearn OLS + SPM canonical, the frozen reference spec) fitted
 to one run under each confound regime: the regime supplies the confound and drift
 columns through :func:`neuroimaging.glm.reference.reference_config`, and nothing
 else about the model changes. Measure registry v0.2 (mmmdata-agents
-``docs/workbench/data-quality/out/measure-registry.md``); design choices
+``docs/archive/workbench/data-quality/out/measure-registry.md``); design choices
 D1–D4 DECIDED 2026-09-29 (data-quality log).
 
 * **Which runs.** Every run with an events file, except the tasks in

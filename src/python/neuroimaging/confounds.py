@@ -4,7 +4,7 @@ Before this module, four places each defined their own confound sets under
 overlapping names (``glm/config.py`` presets, ``fit_prf.py`` presets, an
 inline ``clean()`` in the pRF gate, Nastase's numbered models in
 ``isc_confounds/``), and two "acompcor" definitions disagreed on drift
-(mmmdata-agents ``docs/workbench/data-quality/log.md``, OBSERVED 2026-09-23).
+(mmmdata-agents ``docs/archive/workbench/data-quality/log.md``, OBSERVED 2026-09-23).
 Ben's rule (DECIDED 2026-09-23): one standardized set of definitions that
 every consumer imports; no script defines its own columns.
 

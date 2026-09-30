@@ -50,7 +50,7 @@ Usage:
 
 Library: src/python/neuroimaging/{confounds,data_quality,data_quality_glm,data_quality_glmsingle,
 data_quality_prf}.py. Design record:
-mmmdata-agents docs/workbench/data-quality/.
+mmmdata-agents docs/archive/workbench/data-quality/.
 """
 
 from __future__ import annotations

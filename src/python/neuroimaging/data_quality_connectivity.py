@@ -3,7 +3,7 @@
 Reads only the tier-1 parcel series of the rest-like runs, the tier-1 motion
 table (``tier1_motion.tsv``, registry T1.7) and the Schaefer atlas (for parcel
 centroids) -- never voxels. Design record: mmmdata-agents
-``docs/workbench/data-quality/`` (log 2026-09-29 for the three decisions below).
+``docs/archive/workbench/data-quality/`` (log 2026-09-29 for the three decisions below).
 
 Measures, per confound regime:
 

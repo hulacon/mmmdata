@@ -20,7 +20,7 @@
 #==============================================================================
 # data-quality tier 1 — one run per array task, every requested regime
 #==============================================================================
-# Design record: mmmdata-agents/docs/workbench/data-quality/. Driver:
+# Design record: mmmdata-agents/docs/archive/workbench/data-quality/. Driver:
 # scripts/data_quality/tier1.py.
 #
 # 1. Write the units file (one run per line) from the plan verb:

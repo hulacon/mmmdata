@@ -4,7 +4,7 @@ Tier 1 (``data_quality.py``) cleans every run under every confound regime and
 caches parcel time series. Tier 2 reads only those caches, the BIDS events,
 the stimulus registry and the Contract B feature store -- never voxels -- so
 the whole of it rebuilds from tier 1 in minutes (Settles-when 4 of the design
-record, mmmdata-agents ``docs/workbench/data-quality/``).
+record, mmmdata-agents ``docs/archive/workbench/data-quality/``).
 
 This module holds the tier-2 measures on the film task:
 

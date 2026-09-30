@@ -3,7 +3,7 @@
 A view, not a new measurement: it reads only the tier-1 tables
 (``tier1_runs.tsv`` for tSNR and temporal DOF, T1.1/T1.2; ``tier1_motion.tsv``
 for FD, T1.7; ``tier1_parcels.tsv`` for parcel coverage) and summarises them
-two ways. Design record: mmmdata-agents ``docs/workbench/data-quality/``.
+two ways. Design record: mmmdata-agents ``docs/archive/workbench/data-quality/``.
 
 * **Per task** (``task_summary.tsv``): per scope x task x regime, the median and
   IQR over runs of each run's in-mask median tSNR, and the run DOF (median and

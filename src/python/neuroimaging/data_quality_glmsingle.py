@@ -4,7 +4,7 @@ GLMsingle fits do their own denoising (FitHRF, GLMdenoise, fracridge), so their
 rows carry ``regime = glmsingle`` and never enter the (runs x regimes) count.
 The fits are the retrieval-modeling product, ``derivatives/glmsingle_tb/sub-##/<arm>``
 (siloed arms ``enc``, ``ret-image``, ``ret-word``; the retained ``-tbonly`` arms are
-not read). Design record: mmmdata-agents ``docs/workbench/data-quality/`` (D1–D3
+not read). Design record: mmmdata-agents ``docs/archive/workbench/data-quality/`` (D1–D3
 DECIDED 2026-09-29).
 
 **Tier 1, one cell per subject x arm** (``tier1.py glmsingle``). Each fit's three

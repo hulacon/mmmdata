@@ -3,7 +3,7 @@
 One row per run, with no regime (motion does not depend on what is regressed
 out). The driver is ``scripts/data_quality/tier1.py motion``; it writes
 ``tier1_motion.tsv`` at the tree root, which tier 2 reads for QC-FC. Design
-record: mmmdata-agents ``docs/workbench/data-quality/`` (log 2026-09-29).
+record: mmmdata-agents ``docs/archive/workbench/data-quality/`` (log 2026-09-29).
 
 Definitions:
 

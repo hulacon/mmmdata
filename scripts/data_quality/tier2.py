@@ -36,7 +36,7 @@ Usage:
     python tier2.py diff A B
 
 Library: src/python/neuroimaging/data_quality_{tier2,connectivity,snr,univariate,glmsingle}.py. Design
-record: mmmdata-agents docs/workbench/data-quality/.
+record: mmmdata-agents docs/archive/workbench/data-quality/.
 """
 
 from __future__ import annotations

@@ -18,7 +18,7 @@
 #==============================================================================
 # data-quality tier 1, GLMsingle-native cells (T2.11/T2.12): one fit per task
 #==============================================================================
-# Design record: mmmdata-agents/docs/workbench/data-quality/. Driver:
+# Design record: mmmdata-agents/docs/archive/workbench/data-quality/. Driver:
 # scripts/data_quality/tier1.py (verbs glmsingle-plan, glmsingle).
 #
 # 1. Units (one `sub<TAB>arm` line per missing/stale cell):
