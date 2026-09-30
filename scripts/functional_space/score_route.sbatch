@@ -23,6 +23,10 @@
 #   sbatch --array=0-479%20 score_route.sbatch
 #   (array index = `partitions.py job --index N`)
 #   sbatch --export=ALL,VERB=mni,TARGET=03 score_route.sbatch
+#   M4 (0% jobs only; needs the job's score.json) runs on a GPU, so the
+#   resources are given at submission and override the CPU defaults above:
+#   sbatch --partition=gpu --gres=gpu:nvidia_a100_80gb_pcie:1 --cpus-per-task=8 \
+#          --array=0-149,330-479%6 --export=ALL,VERB=m4 score_route.sbatch
 #
 # Outputs: <derivatives>/functional_space/scores/<scenario>/pct-<pct>/
 # draw-<draw>/target-<sub>/ (m2b.parquet, m2a.tsv, score.json), or
@@ -42,7 +46,14 @@ fi
 SCENARIO="${SCENARIO:-primary}"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 
-if [[ "${VERB}" == "mni" ]]; then
+if [[ "${VERB}" == "m4" ]]; then
+    : "${PCT:?set PCT}" "${DRAW:?set DRAW}"
+    echo "Job ${SLURM_JOB_ID} M4 ${SCENARIO} ${PCT}% draw ${DRAW} target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"
+    nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+    export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+    /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/score_route.py" m4 \
+        --scenario "${SCENARIO}" --pct "${PCT}" --draw "${DRAW}" --target "${TARGET}"
+elif [[ "${VERB}" == "mni" ]]; then
     echo "Job ${SLURM_JOB_ID} MNI baseline target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"
     /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/score_route.py" mni --target "${TARGET}"
 else

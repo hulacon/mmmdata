@@ -1167,3 +1167,17 @@ class TestScoreRoute:
         assert np.isclose(se["median"], want) and se["n_cells"] == 2
         mni = ref.assign(baseline="mni")
         assert np.isclose(scr.mc_error(level, "combined", mni)["median"], want)
+
+    def test_robustness_signs_per_rejected_cell(self):
+        m3 = pd.DataFrame([{"target": t, "draw": d, "model": m, "network": "Vis", "foils": "all",
+                            "rank_acc": v} for t in ("03", "04") for d in range(2)
+                           for m, v in (("combined", 0.7), ("anatomical", 0.6))])
+        m1 = pd.DataFrame([{"target": t, "draw": d, "model": m, "network": "Vis", "component": c,
+                            "contrast": "median" if c != "prf" else "angle", "read": True,
+                            "r": v - (0.2 if (c == "prf" and t == "04" and m == "combined") else 0)}
+                           for t in ("03", "04") for d in range(2) for c in ("floc", "prf")
+                           for m, v in (("combined", 0.5), ("anatomical", 0.4))])
+        res = {"reject": {"03": {"Vis": True}, "04": {"Vis": True}}}
+        out = scr.robustness(res, m3, m1, "combined")
+        agree = {c["target"]: c["agrees"] for c in out["cells"]}
+        assert agree == {"03": True, "04": False} and not out["robust"]

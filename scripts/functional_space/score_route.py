@@ -39,7 +39,7 @@ Metrics here: M2a (per film), M2b (per segment), M3 (TB items; the 294 images
 with three exposures in every subject, all-item and triplet-free foil pools,
 DECIDED 2026-09-30) and M1 (localizer maps: fLoc t, motor between-effector
 effect, pRF angle from projected Cartesian components). M4 is a GPU step of
-its own. Floors (TB meanvol/|beta|, pRF R^2 and radius) decide which columns
+its own (verb ``m4``). Floors (TB meanvol/|beta|, pRF R^2 and radius) decide which columns
 are SCORED; projection inputs are never blanked, since one NaN column would
 spoil its whole piece.
 
@@ -47,6 +47,9 @@ Verbs:
 
   score    one job -> <derivatives>/functional_space/scores/<scenario>/pct-<pct>/
            draw-<draw>/target-<sub>/ (m2b.parquet, m2a.tsv, m3.tsv, m1.tsv, score.json)
+  m4       one 0% job, on a GPU: each subject's encoders refitted, their predictions
+           removed from its own held-out series, M2a recomputed (raw and residual)
+           for anatomical and each stimulus route -> m4.tsv, m4.json beside the scores
   mni      the MNI voxel-identity baseline for one target (job-independent) ->
            scores/anatomical-mni/target-<sub>/
   decide   H1, then H2 only if H1 is a go, from the primary 0% scores ->
@@ -54,6 +57,7 @@ Verbs:
 
 Usage:
     python score_route.py score --pct 0 --draw 0 --target 03 --n-jobs 16
+    python score_route.py m4 --pct 0 --draw 0 --target 03
     python score_route.py mni --target 03
     python score_route.py decide
 """
@@ -646,6 +650,116 @@ def run_score(args: argparse.Namespace, log=print) -> Path:
     return dest
 
 
+M4_SPACES = ("ebind", "vgg19")
+M4_LEVEL = 0  # DECIDED 2026-09-30 #4: the stimulus routes at 0% only (primary and secondary)
+
+
+def m4_residuals(job: dict, subs: list[str], space: str, backend: str, log=print
+                 ) -> tuple[dict[str, dict[str, np.ndarray]], dict]:
+    """Each subject's held-out residual per film, on its own grid: z-scored window minus its own encoder's prediction.
+
+    The encoder is refitted exactly as the stimulus route fitted it (the job's
+    alignment films, per-window z-scored); predictions are centred per window,
+    as the route centred them.
+    """
+    import cha
+    import encoding as enc
+    import stimulus_route as sr
+
+    cleaned = cha.Paths().cleaned
+    cache = enc.Paths().cache
+    align = sr.job_films(job["parts"], job["windows"], job["scenario"], job["pct"], job["draw"], job["target"])
+    w = job["windows"]
+    out, diag = {}, {}
+    for s in subs:
+        x, y, groups, bands = enc.film_design(align[s], cache, space, cleaned)
+        model = enc.Encoder(bands, backend=backend).fit(x, enc._zscore_film_windows(y, groups), groups)
+        held = w[(w["sub"] == s) & (w["role"] == "heldout")]
+        xh, yh, gh, _ = enc.film_design(held, cache, space, cleaned)
+        res = enc._zscore_film_windows(yh, gh) - sr.center_blocks(model.predict(xh), gh)
+        out[s] = {sid: res[gh == sid] for sid in held["stimulus_id"]}
+        diag[f"sub-{s}"] = model.diagnostics_
+        log(f"{space} sub-{s}: encoder {model.diagnostics_['cv_1_plus_score_q50_q95_q99']}")
+    return out, diag
+
+
+def m4_route(job: dict, space: str, subs: list[str], n: int) -> tuple[dict, float]:
+    """The stimulus route at its tuned λ: EBind's from the combined table's one-block face, VGG19's from its scoring."""
+    import cha
+    import combined as cb
+    import stimulus_route as sr
+
+    target = job["target"]
+    if space == SPACE:
+        side = json.loads((cb.out_dir(job["derivatives"], SPACE, job["scenario"], job["pct"], job["draw"], target)
+                           / "combined.json").read_text())
+        lam = float(side["selection"]["stimulus"]["lam"])
+    else:
+        side = json.loads((out_dir(job["derivatives"], job["scenario"], job["pct"], job["draw"], target)
+                           / "score.json").read_text())
+        lam = float(side["models"][f"stimulus-{space}"]["lam"])
+    d = sr.out_dir(job["derivatives"], space, job["scenario"], job["pct"], job["draw"], target)
+    return {s: pr.transform_from_cross(cha.load_cross(d / f"cross_sub-{s}.npz"), n, lam) for s in subs}, lam
+
+
+def run_m4(args: argparse.Namespace, log=print) -> Path:
+    import cha
+    import encoding as enc
+    import films as fm
+    import grayordinates as go
+    import partitions as pt
+
+    if args.pct != M4_LEVEL:
+        raise ValueError(f"M4 is scored at {M4_LEVEL}% only (DECIDED 2026-09-30 #4)")
+    t0 = time.time()
+    paths = enc.Paths()
+    cleaned = cha.Paths().cleaned
+    parts = pt.load_partitions(paths.derivatives)
+    windows = fm.load_windows(paths.derivatives)
+    subs = sorted(parts.loc[(parts["scenario"] == args.scenario) & (parts["pct"] == args.pct)
+                            & (parts["draw"] == args.draw) & (parts["target"] == args.target), "subject"].unique())
+    if args.target not in subs or len(subs) != 3:
+        raise ValueError(f"job resolves to subjects {subs}; expected the target and two template subjects")
+    template_subs = [s for s in subs if s != args.target]
+    job = {"derivatives": paths.derivatives, "parts": parts, "windows": windows, "scenario": args.scenario,
+           "pct": args.pct, "draw": args.draw, "target": args.target}
+    table = pd.read_csv(go.grayordinates_path(cleaned), sep="\t")
+    n = len(table)
+    networks = network_labels(table, cha.Paths().atlases)
+    rows = film_rows(windows, subs, "heldout")
+    keys = sorted(rows[args.target].index)
+    slices = {k: fm.paired_slices({s: rows[s].loc[k] for s in subs}, args.target) for k in keys}
+    raw = load_films(rows, subs, args.target, lambda row, cache: fm.film_series(row, cleaned, cache))
+
+    frames, info = [], {}
+    for space in M4_SPACES:
+        res, diag = m4_residuals(job, subs, space, args.backend, log)
+        resid = {s: {k: sc.zscore_columns(res[s][k][slices[k][s]]).astype(np.float32) for k in keys} for s in subs}
+        tfs, lam = m4_route(job, space, subs, n)
+        models = {"anatomical": None, f"stimulus-{space}": tfs}
+        for kind, data in (("raw", raw), ("residual", resid)):
+            proj = project_all(models, data, template_subs, args.target)
+            _, a, cols = score_set(data[args.target], proj, networks)
+            frames.append(a.assign(space=space, kind=kind))
+        info[space] = {"lam": lam, "encoders": diag, "n_columns": cols}
+        del res, resid
+
+    dest = out_dir(paths.derivatives, args.scenario, args.pct, args.draw, args.target)
+    dest.mkdir(parents=True, exist_ok=True)
+    pd.concat(frames, ignore_index=True).to_csv(dest / "m4.tsv", sep="\t", index=False, float_format="%.6g")
+    side = {"description": "M4 raw-residual check (§9; scope DECIDED 2026-09-30 #4): M2a per held-out film for "
+                           "anatomical and each stimulus route, on the raw series and on the residual after each "
+                           "subject's own refitted encoder prediction is removed from its own series; one shared "
+                           "column set per (space, kind)",
+            "job": {"scenario": args.scenario, "pct": args.pct, "draw": args.draw, "target": args.target},
+            "template_subjects": template_subs, "spaces": info, "backend": args.backend,
+            "code_version": sc._code_version(), "seconds": round(time.time() - t0, 1),
+            "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")}
+    (dest / "m4.json").write_text(json.dumps(side, indent=2) + "\n")
+    log(f"wrote {dest / 'm4.tsv'} in {side['seconds']:.0f} s")
+    return dest
+
+
 def run_mni(args: argparse.Namespace, log=print) -> Path:
     """The MNI voxel-identity baseline for one target: job-independent (no alignment)."""
     import cha
@@ -741,6 +855,50 @@ def mc_error(level: pd.DataFrame, model: str, reference: pd.DataFrame, fs6_model
     return {"median": float(se.median()), "max": float(se.max()), "n_cells": int(se.size)}
 
 
+def load_level_table(derivatives: Path, parts: pd.DataFrame, scenario: str, pct: int, name: str) -> pd.DataFrame:
+    """One per-job TSV (``m3.tsv``, ``m1.tsv``) over every job at a level, with target and draw; none may be missing."""
+    import partitions as pt
+
+    jobs = pt.job_list(parts)
+    jobs = jobs[(jobs["scenario"] == scenario) & (jobs["pct"] == pct)]
+    frames = []
+    for j in jobs.itertuples(index=False):
+        path = out_dir(derivatives, scenario, pct, int(j.draw), j.target) / name
+        if not path.exists():
+            raise FileNotFoundError(f"{path} is missing")
+        frames.append(pd.read_csv(path, sep="\t").assign(target=j.target, draw=int(j.draw)))
+    return pd.concat(frames, ignore_index=True)
+
+
+def robustness(result: dict, m3: pd.DataFrame, m1: pd.DataFrame, route: str, reference: str = "anatomical") -> dict:
+    """§9: M1 and M3 must agree in sign with M2b. Per rejected (target, network) cell, the sign of the draw-averaged
+    M3 gain (all-item foils) and of every read M1 component's gain, route minus fsaverage6 anatomical (the maps and
+    TB betas are surface data, so the MNI baseline has none). ``robust`` = every checked sign is positive."""
+    def gain(df, keys):
+        piv = df.pivot_table(index=[*keys, "draw"], columns="model", values=df.attrs["value"])
+        return (piv[route] - piv[reference]).groupby(level=list(range(len(keys)))).mean()
+
+    m3 = m3[m3["foils"] == "all"]
+    m3.attrs["value"] = "rank_acc"
+    m1 = m1[m1["read"] & m1["contrast"].isin(["median", "angle"])]
+    m1.attrs["value"] = "r"
+    g3 = gain(m3, ["target", "network"])
+    g1 = gain(m1, ["target", "network", "component"])
+    cells, all_pos = [], True
+    for t, per in result["reject"].items():
+        for net, rej in per.items():
+            if not rej:
+                continue
+            comps = {c: float(v) for (tt, nn, c), v in g1.items() if tt == t and nn == net}
+            m3g = float(g3.get((t, net), np.nan))
+            ok = m3g > 0 and all(v > 0 for v in comps.values())
+            all_pos &= ok
+            cells.append({"target": t, "network": net, "m3_gain": m3g, "m1_gain": comps, "agrees": bool(ok)})
+    return {"cells": cells, "robust": bool(cells) and all_pos,
+            "rule": "M3 (all-item foils) and every read M1 component gain > 0 in every rejected cell; "
+                    "gains are route minus fsaverage6 anatomical, averaged over draws"}
+
+
 def run_decide(args: argparse.Namespace, log=print) -> Path:
     import encoding as enc
     import partitions as pt
@@ -762,6 +920,9 @@ def run_decide(args: argparse.Namespace, log=print) -> Path:
     h1["reference_choice"] = (reference.groupby(["target", "network"])["baseline"].first()
                               .unstack().to_dict(orient="index"))
     h1["mc_error"] = mc_error(level, "combined", reference)
+    m3 = load_level_table(paths.derivatives, parts, scenario, pct, "m3.tsv")
+    m1 = load_level_table(paths.derivatives, parts, scenario, pct, "m1.tsv")
+    h1["robustness"] = robustness(h1, m3, m1, "combined")
     out = {"description": "Functional-space H1 (combined vs the stronger anatomical baseline) and, if H1 is a go, "
                           "H2 (combined vs CHA): M2b rank accuracy, film means averaged over draws, exact one-sided "
                           "sign-flip per target x network, Holm across networks within target, go if a network "
@@ -771,6 +932,7 @@ def run_decide(args: argparse.Namespace, log=print) -> Path:
     cha = draw_average(level, "cha")
     if h1["go"]:
         out["H2"] = sc.decide(sc.film_gains(combined, cha))
+        out["H2"]["robustness"] = robustness(out["H2"], m3, m1, "combined", reference="cha")
     else:
         out["H2"] = "not tested: H1 is a no-go (fixed sequence, §1)"
         out["exploratory_cha_vs_anatomical"] = sc.decide(sc.film_gains(cha, reference))
@@ -791,11 +953,17 @@ def main() -> None:
     s.add_argument("--draw", type=int, required=True)
     s.add_argument("--target", required=True)
     s.add_argument("--n-jobs", type=int, default=1)
+    g = sub.add_parser("m4")
+    g.add_argument("--scenario", default="primary", choices=("primary", "secondary"))
+    g.add_argument("--pct", type=int, required=True)
+    g.add_argument("--draw", type=int, required=True)
+    g.add_argument("--target", required=True)
+    g.add_argument("--backend", default="torch_cuda")
     m = sub.add_parser("mni")
     m.add_argument("--target", required=True)
     sub.add_parser("decide")
     args = ap.parse_args()
-    {"score": run_score, "mni": run_mni, "decide": run_decide}[args.verb](args)
+    {"score": run_score, "m4": run_m4, "mni": run_mni, "decide": run_decide}[args.verb](args)
 
 
 if __name__ == "__main__":
