@@ -27,6 +27,10 @@ Verbs (all idempotent; state is on disk, never in this process):
   glmsingle ONE fit: load its three beta types in turn and write R², HRFindex,
             noise pool, FRACvalue and NSD ncsnr maps + parcel table; needs
             ~2x the largest beta pickle in RAM (tier1_glmsingle.sbatch)
+  prf       registry T1.11: every subject's pooled pRF fit (regime `prf`),
+            R² summarised on fsnative cortex, the T1w fit mask and warped
+            Schaefer/HOSPA parcels; needs antsApplyTransforms on PATH
+            (`module load ants/2.5.2` before the venv); skips current cells
 
 Provisional regimes (not yet confirmed by whoever defined them) are excluded
 from every verb unless --include-provisional is given.
@@ -42,8 +46,10 @@ Usage:
     python tier1.py glm --units glm_units.txt --index 7      # sbatch array, VERB=glm
     python tier1.py glmsingle-plan --units gs_units.txt
     python tier1.py glmsingle --units gs_units.txt --index 1  # tier1_glmsingle.sbatch
+    python tier1.py prf
 
-Library: src/python/neuroimaging/{confounds,data_quality,data_quality_glm}.py. Design record:
+Library: src/python/neuroimaging/{confounds,data_quality,data_quality_glm,data_quality_glmsingle,
+data_quality_prf}.py. Design record:
 mmmdata-agents docs/workbench/data-quality/.
 """
 
@@ -63,6 +69,7 @@ from core.config import load_config  # noqa: E402
 from neuroimaging import data_quality as dq  # noqa: E402
 from neuroimaging import data_quality_glm as dqg  # noqa: E402
 from neuroimaging import data_quality_glmsingle as dqgs  # noqa: E402
+from neuroimaging import data_quality_prf as dqp  # noqa: E402
 from neuroimaging.confounds import (  # noqa: E402
     RegimeNotApplicable,
     confirmed_regimes,
@@ -500,12 +507,31 @@ def cmd_glmsingle(args: argparse.Namespace) -> None:
     print(f"sub-{sub} {arm}: cell written ({side['n_voxels_floor']} floored voxels) in {time.time() - t0:.0f} s")
 
 
+def cmd_prf(args: argparse.Namespace) -> None:
+    paths = Paths(args)
+    root = Path(args.prf_root or paths.output_dir / dqp.FIT_TREE)
+    subjects = dqp.find_subjects(root, args.sub)
+    if not subjects:
+        sys.exit(f"No pRF fits under {root}" + (f" for sub-{args.sub}" if args.sub else ""))
+    fmriprep_version = dq.pipeline_version(paths.fmriprep_tree)
+    code_sha = dq.code_version(REPO_ROOT)
+    dq.ensure_dataset_description(paths.tree_root, paths.fmriprep_tree, fmriprep_version, code_sha)
+    provenance = {"fmriprep_version": fmriprep_version, "code_version": code_sha, "prf_root": str(root)}
+    for s in subjects:
+        t0 = time.time()
+        side = dqp.build_cell(paths.tree_root, root, paths.fmriprep_tree, paths.atlases_dir, s, provenance,
+                              force=args.force, log=lambda m: print(m, flush=True))
+        if side is not None:
+            print(f"sub-{s}: {time.time() - t0:.0f} s", flush=True)
+
+
 def cmd_collect(args: argparse.Namespace) -> None:
     paths = Paths(args)
     runs, parcels = dq.collect(paths.tree_root)
     glm, glm_parcels = dqg.collect(paths.tree_root)
     gs, gs_parcels = dqgs.collect(paths.tree_root)
-    if runs.empty and glm.empty and gs.empty:
+    prf, prf_parcels = dqp.collect(paths.tree_root)
+    if runs.empty and glm.empty and gs.empty and prf.empty:
         sys.exit(f"No tier-1 sidecars under {paths.tree_root}; run `tier1.py run` or `tier1.py glm` first")
     if not runs.empty:
         runs_path = paths.tree_root / "tier1_runs.tsv"
@@ -530,6 +556,13 @@ def cmd_collect(args: argparse.Namespace) -> None:
         gs_parcels.to_csv(gs_parcels_path, sep="\t", index=False, na_rep="n/a", float_format="%.6g")
         print(f"{gs_path}: {len(gs)} subject x arm x beta-type rows")
         print(f"{gs_parcels_path}: {len(gs_parcels)} parcel rows")
+    if not prf.empty:
+        prf_path = paths.tree_root / f"{dqp.TABLE_NAME}.tsv"
+        prf_parcels_path = paths.tree_root / f"{dqp.PARCELS_TABLE_NAME}.tsv"
+        prf.to_csv(prf_path, sep="\t", index=False, na_rep="n/a", float_format="%.6g")
+        prf_parcels.to_csv(prf_parcels_path, sep="\t", index=False, na_rep="n/a", float_format="%.6g")
+        print(f"{prf_path}: {len(prf)} subject x polarity x domain rows")
+        print(f"{prf_parcels_path}: {len(prf_parcels)} parcel rows")
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +644,13 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--index", type=int, help="1-based line in --units")
     p.add_argument("--force", action="store_true", help="rebuild a current cell")
     p.set_defaults(func=cmd_glmsingle)
+
+    p = sub.add_parser("prf", help="T1.11: summarise each subject's pooled pRF R² (surface, T1w mask, warped parcels)")
+    _common(p)
+    p.add_argument("--sub", help="bare label, e.g. 03 (default: every fit)")
+    p.add_argument("--prf-root", help="override <output_dir>/prf")
+    p.add_argument("--force", action="store_true", help="rebuild a current cell")
+    p.set_defaults(func=cmd_prf)
 
     p = sub.add_parser("collect", help="flatten sidecars into the tier-1 tables")
     _common(p)
