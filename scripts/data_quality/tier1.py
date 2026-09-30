@@ -22,6 +22,11 @@ Verbs (all idempotent; state is on disk, never in this process):
   glm       fit ONE task run's stand-in GLM under every requested regime
             (T1.5 task R², and T1.6 condition betas for floc/motor/tone);
             same skip / --force / declared-absent rules as run
+  glmsingle-plan  list the GLMsingle fits (subject x arm) whose regime-`glmsingle`
+            cell is missing or stale (T2.11/T2.12 inputs)
+  glmsingle ONE fit: load its three beta types in turn and write R², HRFindex,
+            noise pool, FRACvalue and NSD ncsnr maps + parcel table; needs
+            ~2x the largest beta pickle in RAM (tier1_glmsingle.sbatch)
 
 Provisional regimes (not yet confirmed by whoever defined them) are excluded
 from every verb unless --include-provisional is given.
@@ -35,6 +40,8 @@ Usage:
     python tier1.py motion
     python tier1.py glm-plan --units glm_units.txt
     python tier1.py glm --units glm_units.txt --index 7      # sbatch array, VERB=glm
+    python tier1.py glmsingle-plan --units gs_units.txt
+    python tier1.py glmsingle --units gs_units.txt --index 1  # tier1_glmsingle.sbatch
 
 Library: src/python/neuroimaging/{confounds,data_quality,data_quality_glm}.py. Design record:
 mmmdata-agents docs/workbench/data-quality/.
@@ -55,6 +62,7 @@ if str(REPO_ROOT / "src" / "python") not in sys.path:  # idempotent: tests impor
 from core.config import load_config  # noqa: E402
 from neuroimaging import data_quality as dq  # noqa: E402
 from neuroimaging import data_quality_glm as dqg  # noqa: E402
+from neuroimaging import data_quality_glmsingle as dqgs  # noqa: E402
 from neuroimaging.confounds import (  # noqa: E402
     RegimeNotApplicable,
     confirmed_regimes,
@@ -407,11 +415,97 @@ def cmd_glm(args: argparse.Namespace) -> None:
         print(f"{run.entity_prefix}: {len(todo)} GLM regime(s) in {time.time() - t0:.0f} s")
 
 
+def glmsingle_root(args: argparse.Namespace, paths: Paths) -> Path:
+    return Path(args.glmsingle_root or paths.output_dir / dqgs.FIT_TREE)
+
+
+def cmd_glmsingle_plan(args: argparse.Namespace) -> None:
+    paths = Paths(args)
+    root = glmsingle_root(args, paths)
+    fits = dqgs.find_fits(root, args.sub, args.arm)
+    atlases_sha = dq.atlases_sha256(paths.atlases_dir)
+    stale = [(s, a) for s, a in fits
+             if not dqgs.is_current(paths.tree_root, s, a, DEFAULT_SPACE,
+                                    dqgs.fit_keys(dqgs.fit_dir(root, s, a)), atlases_sha)]
+    print(f"GLMsingle fits under {root} (arms {list(dqgs.ARMS)}): {len(fits)}  missing/stale cells: {len(stale)}")
+    for s, a in stale:
+        print(f"  sub-{s} {a}")
+    if args.units:
+        Path(args.units).write_text("".join(f"{s}\t{a}\n" for s, a in stale))
+        print(f"wrote {len(stale)} units to {args.units}")
+
+
+def cmd_glmsingle(args: argparse.Namespace) -> None:
+    import hashlib
+
+    import nibabel as nib
+    import numpy as np
+    import pandas as pd
+
+    paths = Paths(args)
+    root = glmsingle_root(args, paths)
+    if args.units:
+        if args.index is None:
+            sys.exit("--units needs --index (1-based line number, e.g. $SLURM_ARRAY_TASK_ID)")
+        lines = [ln for ln in Path(args.units).read_text().splitlines() if ln.strip()]
+        if not 1 <= args.index <= len(lines):
+            sys.exit(f"--index {args.index} is outside 1..{len(lines)} for {args.units}")
+        sub, arm = lines[args.index - 1].split("\t")
+    else:
+        if not (args.sub and args.arm):
+            sys.exit("glmsingle needs --sub and --arm, or --units/--index")
+        sub, arm = args.sub, args.arm
+    fdir = dqgs.fit_dir(root, sub, arm)
+    if not (fdir / "trial_info.csv").exists():
+        sys.exit(f"No GLMsingle fit at {fdir} (trial_info.csv missing)")
+    t0 = time.time()
+    keys = dqgs.fit_keys(fdir)
+    atlases_sha = dq.atlases_sha256(paths.atlases_dir)
+    if not args.force and dqgs.is_current(paths.tree_root, sub, arm, DEFAULT_SPACE, keys, atlases_sha):
+        print(f"sub-{sub} {arm}: cell current, skipping")
+        return
+
+    # The mask: every fit run's fMRIPrep brain mask, intersected, on the fit grid.
+    ti = pd.read_csv(fdir / "trial_info.csv")
+    mask, affine, mask_shas = None, None, {}
+    for ses, task, run in dqgs.fit_runs(ti):
+        found = [r for r in find_fmriprep_runs(subject=sub, session=ses, task=task, run=run,
+                                               variant=paths.variant, space=DEFAULT_SPACE,
+                                               bids_root=paths.bids_root, allow_mixed_designs=True)
+                 if r.mask is not None and (r.run or "") == run]
+        if len(found) != 1:
+            sys.exit(f"sub-{sub} ses-{ses} task-{task} run-{run}: {len(found)} fMRIPrep masks under "
+                     f"{paths.fmriprep_tree}; expected 1")
+        img = nib.load(str(found[0].mask))
+        m = np.asarray(img.dataobj) > 0
+        if mask is None:
+            mask, affine = m, img.affine
+        elif m.shape != mask.shape or not np.allclose(img.affine, affine, atol=1e-3):
+            sys.exit(f"{found[0].mask} is not on the grid of the fit's other masks")
+        else:
+            mask &= m
+        mask_shas[found[0].entity_prefix] = dq.file_sha256(found[0].mask)
+    fmriprep_version = dq.pipeline_version(paths.fmriprep_tree)
+    code_sha = dq.code_version(REPO_ROOT)
+    dq.ensure_dataset_description(paths.tree_root, paths.fmriprep_tree, fmriprep_version, code_sha)
+    print(f"sub-{sub} {arm}: {len(mask_shas)} runs, mask {int(mask.sum())} voxels", flush=True)
+    provenance = {
+        "fmriprep_version": fmriprep_version, "code_version": code_sha,
+        "input_atlases_sha256": atlases_sha,
+        "input_masks_sha256": hashlib.sha256("\n".join(f"{k}:{v}" for k, v in sorted(mask_shas.items())).encode()).hexdigest(),
+        "n_mask_runs": len(mask_shas),
+    }
+    side = dqgs.write_cell(paths.tree_root, sub, arm, DEFAULT_SPACE, fdir, mask, affine, paths.atlases_dir,
+                           keys, provenance, log=lambda m: print(m, flush=True))
+    print(f"sub-{sub} {arm}: cell written ({side['n_voxels_floor']} floored voxels) in {time.time() - t0:.0f} s")
+
+
 def cmd_collect(args: argparse.Namespace) -> None:
     paths = Paths(args)
     runs, parcels = dq.collect(paths.tree_root)
     glm, glm_parcels = dqg.collect(paths.tree_root)
-    if runs.empty and glm.empty:
+    gs, gs_parcels = dqgs.collect(paths.tree_root)
+    if runs.empty and glm.empty and gs.empty:
         sys.exit(f"No tier-1 sidecars under {paths.tree_root}; run `tier1.py run` or `tier1.py glm` first")
     if not runs.empty:
         runs_path = paths.tree_root / "tier1_runs.tsv"
@@ -429,6 +523,13 @@ def cmd_collect(args: argparse.Namespace) -> None:
         glm_parcels.to_csv(glm_parcels_path, sep="\t", index=False, na_rep="n/a", float_format="%.6g")
         print(f"{glm_path}: {len(glm)} task run x regime rows ({int(glm['absent'].sum())} absent)")
         print(f"{glm_parcels_path}: {len(glm_parcels)} parcel rows")
+    if not gs.empty:
+        gs_path = paths.tree_root / f"{dqgs.TABLE_NAME}.tsv"
+        gs_parcels_path = paths.tree_root / f"{dqgs.PARCELS_TABLE_NAME}.tsv"
+        gs.to_csv(gs_path, sep="\t", index=False, na_rep="n/a", float_format="%.6g")
+        gs_parcels.to_csv(gs_parcels_path, sep="\t", index=False, na_rep="n/a", float_format="%.6g")
+        print(f"{gs_path}: {len(gs)} subject x arm x beta-type rows")
+        print(f"{gs_parcels_path}: {len(gs_parcels)} parcel rows")
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +593,24 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--index", type=int, help="1-based line in --units")
     p.add_argument("--force", action="store_true", help="rebuild cells that are current")
     p.set_defaults(func=cmd_glm)
+
+    p = sub.add_parser("glmsingle-plan", help="list GLMsingle fits whose data-quality cell is missing or stale")
+    _common(p)
+    p.add_argument("--sub", help="bare label, e.g. 03")
+    p.add_argument("--arm", choices=dqgs.ARMS)
+    p.add_argument("--glmsingle-root", help="override <output_dir>/glmsingle_tb")
+    p.add_argument("--units", help="write one `sub<TAB>arm` line per cell to (re)build here")
+    p.set_defaults(func=cmd_glmsingle_plan)
+
+    p = sub.add_parser("glmsingle", help="reduce one GLMsingle fit to its T2.11/T2.12 maps and parcel table")
+    _common(p)
+    p.add_argument("--sub", help="bare label, e.g. 03")
+    p.add_argument("--arm", choices=dqgs.ARMS)
+    p.add_argument("--glmsingle-root", help="override <output_dir>/glmsingle_tb")
+    p.add_argument("--units", help="units file written by glmsingle-plan")
+    p.add_argument("--index", type=int, help="1-based line in --units")
+    p.add_argument("--force", action="store_true", help="rebuild a current cell")
+    p.set_defaults(func=cmd_glmsingle)
 
     p = sub.add_parser("collect", help="flatten sidecars into the tier-1 tables")
     _common(p)

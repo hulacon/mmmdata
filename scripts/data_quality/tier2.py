@@ -16,6 +16,10 @@ Three parts, each in its own directory under <tree>/tier2/:
   univariate     adjusted task R² and motion–task r per task x regime
                  (T1.5/T1.8 summaries), and the localizer split-half map
                  correlation (T2.13) from the tier-1 GLM cells
+  glmsingle      GLMsingle-native rows (regime `glmsingle`): fit QC (T2.11)
+                 and NSD noise ceiling (T2.12) per subject x arm x beta type,
+                 by network, from tier1_glmsingle*.tsv; the retrieval-modeling
+                 6-cell benchmark joined verbatim (T2.10)
 
 Verbs (idempotent; state is on disk, never in this process):
 
@@ -31,7 +35,7 @@ Usage:
     python tier2.py build --parts naturalistic --regimes base12fd,gsr --films bench --out-dir /tmp/t2
     python tier2.py diff A B
 
-Library: src/python/neuroimaging/data_quality_{tier2,connectivity,snr,univariate}.py. Design
+Library: src/python/neuroimaging/data_quality_{tier2,connectivity,snr,univariate,glmsingle}.py. Design
 record: mmmdata-agents docs/workbench/data-quality/.
 """
 
@@ -51,6 +55,7 @@ if str(REPO_ROOT / "src" / "python") not in sys.path:
 from core.config import load_config  # noqa: E402
 from neuroimaging import data_quality as dq  # noqa: E402
 from neuroimaging import data_quality_connectivity as dqc  # noqa: E402
+from neuroimaging import data_quality_glmsingle as dqgs  # noqa: E402
 from neuroimaging import data_quality_snr as dqs  # noqa: E402
 from neuroimaging import data_quality_tier2 as t2  # noqa: E402
 from neuroimaging import data_quality_univariate as dqu  # noqa: E402
@@ -66,9 +71,10 @@ class Paths:
         self.registry = Path(args.registry or self.bids_root / "stimuli" / "stimulus_registry" / "movies.tsv")
         self.feature_store = Path(args.feature_store or output_dir / "stimuli_features" / "psytwill")
         self.atlases_dir = Path(args.atlases_dir or output_dir / "atlases")
+        self.benchmark_root = Path(getattr(args, "benchmark_root", None) or output_dir / dqgs.BENCHMARK_TREE)
 
 
-PARTS = ("naturalistic", "connectivity", "snr", "univariate")
+PARTS = ("naturalistic", "connectivity", "snr", "univariate", "glmsingle")
 
 
 def _csv(value: Optional[str]) -> list[str]:
@@ -89,6 +95,35 @@ def cmd_build(args: argparse.Namespace) -> None:
         build_snr(args, root / "snr" if root else None)
     if "univariate" in parts:
         build_univariate(args, root / "univariate" if root else None)
+    if "glmsingle" in parts:
+        build_glmsingle(args, root / "glmsingle" if root else None)
+
+
+def build_glmsingle(args: argparse.Namespace, dest: Optional[Path]) -> None:
+    t0 = time.time()
+    paths = Paths(args)
+    fits, parcels = dqgs.load_tables(paths.tree_root)
+    runs = t2.load_tier1_runs(paths.tree_root)
+    expected = sorted(runs.loc[runs["task"] == "TBencoding", "sub"].astype(str).unique())
+    provisional = [s.removeprefix("sub-") for s in _csv(args.provisional_subjects)]
+    bench, bench_shas = dqgs.benchmark_6cell(paths.benchmark_root, fits["sub"].unique())
+    tables = {"fit_summary": dqgs.fit_summary(fits, expected, provisional),
+              "networks": dqgs.networks(parcels),
+              "benchmark_6cell": bench}
+    dest = dest or dqgs.out_dir(paths.tree_root)
+    provenance = {
+        "created": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "code_version": dq.code_version(REPO_ROOT),
+        "inputs": {**{name: {"path": str(paths.tree_root / name), "sha256": t2.file_sha256(paths.tree_root / name)}
+                      for name in (f"{dqgs.TABLE_NAME}.tsv", f"{dqgs.PARCELS_TABLE_NAME}.tsv", "tier1_runs.tsv")},
+                   "benchmark_6cell": bench_shas},
+        "expected_subjects": expected,
+        "provisional_subjects": provisional,
+    }
+    written = dqgs.write(tables, dest, provenance)
+    fs = tables["fit_summary"]
+    print(f"glmsingle {dest}: {len(written)} files; fit_summary {len(fs)} rows ({int(fs['absent'].sum())} absent), "
+          f"networks {len(tables['networks'])}, benchmark_6cell {len(bench)} in {time.time() - t0:.0f} s")
 
 
 def build_connectivity(args: argparse.Namespace, dest: Optional[Path]) -> None:
@@ -240,7 +275,7 @@ def build_naturalistic(args: argparse.Namespace, dest: Optional[Path]) -> None:
 
 def cmd_diff(args: argparse.Namespace) -> None:
     a, b = Path(args.a), Path(args.b)
-    modules = {"naturalistic": t2, "connectivity": dqc, "snr": dqs, "univariate": dqu}
+    modules = {"naturalistic": t2, "connectivity": dqc, "snr": dqs, "univariate": dqu, "glmsingle": dqgs}
     problems = []
     for part, module in modules.items():
         pa, pb = a / part, b / part
@@ -270,6 +305,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--atlases-dir", help="override <output_dir>/atlases (Schaefer name tables)")
     p.add_argument("--regimes", help="comma-separated regimes (default: every regime in tier1_runs.tsv)")
     p.add_argument("--films", help="naturalistic: comma-separated stimulus_ids (default: every film)")
+    p.add_argument("--benchmark-root",
+                   help="glmsingle: override <output_dir>/pattern_similarity/results/retrieval_modeling")
     p.add_argument("--out-dir", help="tier-2 root to write the parts under, instead of <tree>/tier2")
     p.set_defaults(func=cmd_build)
 
