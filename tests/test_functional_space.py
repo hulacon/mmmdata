@@ -362,7 +362,7 @@ class TestCha:
         maps the template subjects' responses onto the target better than identity."""
         geo = _ToyGeometry()
         q, rest, resp = _toy_subjects(geo, _small_rotation(0.6), seed=1)
-        cross, diag, _ = cha.fit_target(geo, rest, "T", log=lambda *a: None)
+        cross, diag, _, _ = cha.fit_target(geo, rest, "T", log=lambda *a: None)
         tf = {s: pr.transform_from_cross(cross[s], geo.n, 0.0) for s in rest}
         for s in ("A", "B"):
             anat = _r(resp[s], resp["T"])
@@ -746,3 +746,248 @@ class TestSRMRoute:
         out = srm.fit_piece_all_k(xs[:2], xs[2][:, pos], np.arange(xs[2].shape[0]), pos, [3, 50])
         for k, (ws, w_t, v, v_t, ke) in out.items():
             assert ke == min(k, pos.size) and w_t.shape == (pos.size, ke) and np.array_equal(v_t, v[pos])
+
+
+# ---------------------------------------------------------------------------
+# combined model
+# ---------------------------------------------------------------------------
+
+cb = _load("combined")
+
+
+class TestCombined:
+    def _planted(self, n_pieces=3, p=5, rows=(300, 200), seed=0, noise=0.3):
+        """Two blocks of rows for subjects A, B, T sharing one per-piece rotation each."""
+        rng = np.random.default_rng(seed)
+        labels = np.repeat(np.array([f"p{j}" for j in range(n_pieces)]), p)
+        g = labels.size
+        q = {s: np.zeros((g, g)) for s in ("A", "B", "T")}
+        for k, s in enumerate(q):
+            for j in range(n_pieces):
+                c = np.flatnonzero(labels == f"p{j}")
+                q[s][np.ix_(c, c)] = _rotation(p, 100 * k + j)
+        blocks = []
+        for n in rows:
+            base = rng.standard_normal((n, g))
+            blocks.append({s: base @ q[s] + noise * rng.standard_normal((n, g)) for s in q})
+        return labels, q, blocks
+
+    def _block(self, name, labels, data, valid=None):
+        valid = valid or {s: np.ones(labels.size, bool) for s in ("A", "B", "T")}
+        pcols = sr.piece_columns(labels, valid, ["A", "B"], "T")
+        tpl = _accumulate(pcols, [("A", "A"), ("A", "B"), ("B", "B")], "T", {s: data[s] for s in ("A", "B")}).g
+        tgt = _accumulate(pcols, [("T", "A"), ("T", "B")], "T", data).g
+        return cb.Block(name, tpl, tgt, pcols)
+
+    def test_simplex_grid(self):
+        assert len(cb.simplex(2)) == 5 and len(cb.simplex(3)) == 15
+        assert all(np.isclose(sum(w), 1) for w in cb.simplex(3))
+        assert (1.0, 0.0, 0.0) in cb.simplex(3) and (0.5, 0.25, 0.25) in cb.simplex(3)
+
+    def test_energy_scale_of_a_zscored_block_is_one_over_rows(self):
+        labels, _, blocks = self._planted()
+        z = {s: (x - x.mean(0)) / x.std(0) for s, x in blocks[0].items()}
+        assert np.isclose(cb.energy_scale(self._block("b", labels, z), ["A", "B"]), 1 / 300)
+
+    def test_restricted_grams_equal_grams_on_the_common_columns(self):
+        labels, _, blocks = self._planted(seed=1)
+        rng = np.random.default_rng(2)
+        v1 = {s: rng.random(labels.size) > 0.15 for s in ("A", "B", "T")}
+        v2 = {s: rng.random(labels.size) > 0.15 for s in ("A", "B", "T")}
+        b1, b2 = self._block("one", labels, blocks[0], v1), self._block("two", labels, blocks[1], v2)
+        common = cb.common_columns([b1, b2])
+        both = {s: v1[s] & v2[s] for s in v1}
+        direct = self._block("one", labels, blocks[0], both)
+        got = cb.restrict(b1, common)
+        assert set(common.template) == set(direct.pcols.template)
+        for lab, cols in common.template.items():
+            assert np.array_equal(cols, direct.pcols.template[lab])
+            for pair in got.tpl:
+                assert np.allclose(got.tpl[pair][lab], direct.tpl[pair][lab])
+            if lab in common.target:
+                assert np.array_equal(common.target[lab], direct.pcols.target[lab])
+                for pair in got.tgt:
+                    assert np.allclose(got.tgt[pair][lab], direct.tgt[pair][lab])
+
+    def test_stacked_grams_equal_procrustes_on_the_stacked_rows(self):
+        """Weighted Gram sums == template averaging on rows stacked with sqrt(w c) scaling."""
+        labels, _, blocks = self._planted(seed=3)
+        bl = [self._block(f"b{i}", labels, d) for i, d in enumerate(blocks)]
+        coefs = [0.25 * cb.energy_scale(bl[0], ["A", "B"]), 0.75 * cb.energy_scale(bl[1], ["A", "B"])]
+        stacked = {s: np.vstack([np.sqrt(c) * d[s] for c, d in zip(coefs, blocks)]) for s in ("A", "B", "T")}
+        tpl, tfs = pr.template_average([stacked["A"], stacked["B"]], labels, lam=0.0, n_iter=sr.TEMPLATE_ITERATIONS)
+        for lab in bl[0].pcols.template:
+            out = cb.fit_piece([{pair: b.tpl[pair][lab] for pair in b.tpl} for b in bl],
+                               [{pair: b.tgt[pair][lab] for pair in b.tgt} for b in bl], coefs, ["A", "B"], "T",
+                               bl[0].pcols.target[lab])
+            cols = bl[0].pcols.template[lab]
+            for s in ("A", "B", "T"):
+                assert np.allclose(out[s], stacked[s][:, cols].T @ tpl[:, cols], atol=1e-6)
+
+    def test_rotation_matches_procrustes_from_cross(self):
+        m = np.random.default_rng(4).standard_normal((6, 6))
+        for lam in pr.LAMBDA_GRID:
+            assert np.allclose(cb._rotation(m, lam, cb._mean_sv(m)), pr.procrustes_from_cross(m, lam))
+
+    def test_tuning_prefers_alignment_when_anatomy_is_wrong_and_identity_is_anatomical(self):
+        labels, q, blocks = self._planted(seed=5)
+        bl = [self._block(f"b{i}", labels, d) for i, d in enumerate(blocks)]
+        coefs = [cb.energy_scale(b, ["A", "B"]) for b in bl]
+        rng = np.random.default_rng(6)
+        test = rng.standard_normal((150, labels.size))
+        y = {s: test @ q[s] + 0.3 * rng.standard_normal(test.shape) for s in ("A", "B")}
+        weights = cb.simplex(2)
+        results = {}
+        for lab, cols in bl[0].pcols.template.items():
+            results[lab] = cb.tune_piece([{pair: b.tpl[pair][lab] for pair in b.tpl} for b in bl], coefs, weights,
+                                         ["A", "B"], {s: y[s][:, cols] for s in y})
+        table = cb.tuning_table(results, weights, ["b0", "b1"])
+        inf = table[np.isinf(table["lam"])]
+        assert np.allclose(inf["objective"], _r(y["A"], y["B"]), atol=1e-9)  # identity = anatomical
+        best = cb.select(table, ["b0", "b1"])
+        assert best["b0+b1"]["objective"] > 0.8 > 0.2 > inf["objective"].iat[0]
+        assert best["b0+b1"]["objective"] >= max(best["b0"]["objective"], best["b1"]["objective"])
+
+    def test_a_nonfinite_tuning_column_leaves_the_piece_out(self):
+        labels, _, blocks = self._planted()
+        b = self._block("b", labels, blocks[0])
+        lab, cols = next(iter(b.pcols.template.items()))
+        y = {s: np.random.default_rng(7).standard_normal((50, cols.size)) for s in ("A", "B")}
+        y["B"][:, 0] = np.nan
+        assert cb.tune_piece([{pair: b.tpl[pair][lab] for pair in b.tpl}], [1.0], [(1.0,)], ["A", "B"], y) is None
+
+    def test_select_uses_closed_faces(self):
+        rows = [{"w_x": wx, "w_y": 1 - wx, "lam": 0.0, "objective": o}
+                for wx, o in ((0.0, 0.5), (0.25, 0.1), (0.5, 0.2), (0.75, 0.3), (1.0, 0.4))]
+        sel = cb.select(pd.DataFrame(rows), ["x", "y"])
+        assert sel["x+y"]["weights"] == {"x": 0.0, "y": 1.0}  # the full model may land on a vertex
+        assert sel["x"]["objective"] == 0.4 and sel["y"]["objective"] == 0.5
+
+    def test_grams_round_trip_with_columns(self, tmp_path):
+        labels, _, blocks = self._planted()
+        rng = np.random.default_rng(8)
+        valid = {s: rng.random(labels.size) > 0.2 for s in ("A", "B", "T")}
+        b = self._block("b", labels, blocks[0], valid)
+        sr.save_grams(b.tpl, tmp_path / "grams_template_x.npz", b.pcols)
+        sr.save_grams(b.tgt, tmp_path / "grams_target_x.npz", b.pcols)
+        got = cb.load_block("b", tmp_path, ("x",), ["A", "B"], "T")
+        for lab in b.pcols.template:
+            assert np.array_equal(got.pcols.template[lab], b.pcols.template[lab])
+            assert np.allclose(got.tpl[("A", "B")][lab], b.tpl[("A", "B")][lab], atol=1e-4)
+
+    def test_columns_from_crosses_fallback(self, tmp_path):
+        labels, _, blocks = self._planted()
+        rng = np.random.default_rng(9)
+        valid = {s: rng.random(labels.size) > 0.2 for s in ("A", "B", "T")}
+        b = self._block("b", labels, blocks[0], valid)
+        tcols = {lab: b.pcols.template[lab][pos] for lab, pos in b.pcols.target.items()}
+        for s in ("A", "B", "T"):
+            cols = tcols if s == "T" else b.pcols.template
+            cha.save_cross({lab: (c, np.eye(c.size)) for lab, c in cols.items()}, tmp_path / f"cross_sub-{s}.npz")
+        pc_ = cb.columns_from_crosses(tmp_path, ["A", "B"], "T")
+        for lab in b.pcols.template:
+            assert np.array_equal(pc_.template[lab], b.pcols.template[lab])
+        for lab in b.pcols.target:
+            assert np.array_equal(pc_.target[lab], b.pcols.target[lab])
+
+
+# ---------------------------------------------------------------------------
+# scoring (synthetic only)
+# ---------------------------------------------------------------------------
+
+sc = _load("scoring")
+
+
+class TestScoring:
+    def test_segments_drop_the_remainder(self):
+        assert sc.segment_slices(25, 10) == [slice(0, 10), slice(10, 20)]
+        assert sc.segment_slices(9, 10) == []
+
+    def test_identification_perfect_random_and_ties(self):
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal((40, 50))
+        rank, top1 = sc.identification(x, x + 0.01 * rng.standard_normal(x.shape))
+        assert np.allclose(rank, 1) and top1.all()
+        rank, _ = sc.identification(x, rng.standard_normal(x.shape))
+        assert 0.35 < rank.mean() < 0.65
+        same = np.tile(rng.standard_normal(5), (3, 1))  # every pattern identical: all ties
+        rank, _ = sc.identification(same + np.arange(3)[:, None] * 0, same)
+        assert np.allclose(rank, 0.5)
+
+    def test_m2b_ranks_matched_films_and_zscores_per_film(self):
+        rng = np.random.default_rng(1)
+        nets = {"n0": np.arange(20), "n1": np.arange(20, 40)}
+        films = {f: rng.standard_normal((35, 40)) for f in ("a", "b", "c")}
+        tpl = {f: 5.0 + 3.0 * x + 0.5 * rng.standard_normal(x.shape) for f, x in films.items()}  # offset + scale
+        df = sc.m2b(films, tpl, nets)
+        assert set(df["network"]) == {"n0", "n1"} and df["n_segments"].iat[0] == 9  # 3 per film, remainder 5 dropped
+        assert df["rank_acc"].mean() > 0.95
+        shuffled = sc.m2b(films, {f: rng.standard_normal(x.shape) for f, x in films.items()}, nets)
+        assert 0.3 < shuffled["rank_acc"].mean() < 0.7
+        assert set(sc.per_film(df)["film"]) == {"a", "b", "c"}
+
+    def test_m2b_leaves_out_nonfinite_columns(self):
+        rng = np.random.default_rng(2)
+        films = {f: rng.standard_normal((20, 10)) for f in ("a", "b")}
+        tpl = {f: x.copy() for f, x in films.items()}
+        tpl["b"][:, 3] = np.nan
+        df = sc.m2b(films, tpl, {"n": np.arange(10)})
+        assert (df["n_columns"] == 9).all()
+
+    def test_project_with_identity_is_the_template_mean(self):
+        rng = np.random.default_rng(3)
+        n = 12
+        ident = pr.PiecewiseTransform(n, {0: (np.arange(n), np.eye(n))})
+        data = {s: rng.standard_normal((5, n)) for s in ("A", "B")}
+        got = sc.project(data, {"A": ident, "B": ident, "T": ident}, "T")
+        assert np.allclose(got, (data["A"] + data["B"]) / 2)
+
+    def test_m1_angle_is_scored_within_hemisphere(self):
+        """Each hemisphere maps the contralateral hemifield; a good prediction must score near 1."""
+        rng = np.random.default_rng(4)
+        n = 400
+        hemi = np.repeat(["L", "R"], n // 2)
+        ang = np.where(hemi == "L", rng.uniform(100, 260, n), rng.uniform(-80, 80, n))
+        ecc = rng.uniform(1, 8, n)
+        t = sc.cartesian(ang, ecc)
+        p = sc.cartesian(ang + rng.normal(0, 5, n), ecc)
+        got = sc.m1_angle(t, p, hemi, np.ones(n, bool), {"vis": np.arange(n)})
+        assert got["vis"] > 0.9
+
+    def test_m1_map_pearson_per_network(self):
+        rng = np.random.default_rng(5)
+        m = rng.standard_normal(30)
+        got = sc.m1_map(m, 2 * m + 1, {"a": np.arange(15), "b": np.arange(15, 30)})
+        assert np.isclose(got["a"], 1) and np.isclose(got["b"], 1)
+
+    def _cells(self, value_fn, targets=("03", "04", "05"), networks=("n0", "n1", "n2"), films=range(12)):
+        return pd.DataFrame([{"target": t, "network": n, "film": f"f{f:02d}", "rank_acc": value_fn(t, n, f)}
+                             for t in targets for n in networks for f in films])
+
+    def test_reference_is_the_stronger_baseline_per_target_and_network(self):
+        mni = self._cells(lambda t, n, f: 0.6 if n == "n0" else 0.5)
+        fs6 = self._cells(lambda t, n, f: 0.55)
+        ref = sc.reference_scores({"mni": mni, "fsaverage6": fs6})
+        chosen = ref.groupby("network")["baseline"].first().to_dict()
+        assert chosen == {"n0": "mni", "n1": "fsaverage6", "n2": "fsaverage6"}
+
+    def test_decision_rule(self):
+        rng = np.random.default_rng(6)
+        route = self._cells(lambda t, n, f: 0.6 + (0.2 if n == "n1" and t != "05" else 0.0)
+                            + 0.01 * rng.standard_normal())
+        ref = self._cells(lambda t, n, f: 0.6)
+        res = sc.decide(sc.film_gains(route, ref))
+        assert res["go"] and res["networks_counted"] == ["n1"]
+        assert res["p"]["03"]["n1"] == 1 / 2 ** 12  # every film positive: the exact floor
+        worse = sc.decide(sc.film_gains(self._cells(lambda t, n, f: 0.5), ref))
+        assert not worse["go"]
+
+    def test_gains_need_matching_cells(self):
+        route = self._cells(lambda t, n, f: 0.6)
+        with pytest.raises(ValueError):
+            sc.film_gains(route, route.iloc[:-1])
+
+    def test_selftest_small(self):
+        res = sc.selftest(n_columns=700, piece=50, n_films=3, film_trs=40, n_items=60, noise=1.0,
+                          log=lambda *a: None)
+        assert res["passed"], res["scores"]

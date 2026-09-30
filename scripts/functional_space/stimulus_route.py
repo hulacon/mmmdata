@@ -375,7 +375,7 @@ def run_job(args: argparse.Namespace, log=print) -> Path:
         cha.save_cross(as_cross(cross[s], cols), dest / f"cross_sub-{s}.npz")
     if args.save_grams:
         for (kind, blk), a in acc.items():
-            save_grams(a.g, dest / f"grams_{kind}_{blk}.npz")
+            save_grams(a.g, dest / f"grams_{kind}_{blk}.npz", pcols)
     seconds["total"] = round(time.time() - t0, 1)
     side = {
         "description": "Stimulus route, one partition job: per-piece cross-products (X_s' template) for every "
@@ -408,7 +408,8 @@ def run_job(args: argparse.Namespace, log=print) -> Path:
     return dest
 
 
-def save_grams(g: dict, path: Path) -> None:
+def save_grams(g: dict, path: Path, pcols: PieceColumns | None = None) -> None:
+    """Per-pair, per-piece Grams (float32); ``pcols`` also stores the columns they index."""
     arrays, index = {}, []
     for i, ((a, b), per_piece) in enumerate(g.items()):
         for j, (lab, m) in enumerate(per_piece.items()):
@@ -416,7 +417,31 @@ def save_grams(g: dict, path: Path) -> None:
             arrays[key] = m.astype(np.float32)
             index.append((a, b, str(lab), key))
     arrays["index"] = np.array(index, dtype=object)
+    if pcols is not None:
+        labs = list(pcols.template)
+        arrays["pcols_labels"] = np.array([str(lab) for lab in labs], dtype=object)
+        for j, lab in enumerate(labs):
+            arrays[f"pcols_t{j}"] = pcols.template[lab].astype(np.int32)
+            arrays[f"pcols_p{j}"] = pcols.target.get(lab, np.array([], np.int64)).astype(np.int32)
     np.savez(path, **arrays)
+
+
+def load_grams(path: Path) -> tuple[dict, PieceColumns | None]:
+    """``save_grams``'s inverse: ``({(a, b): {label: G float64}}, columns or None)``; labels are ``str``."""
+    z = np.load(path, allow_pickle=True)
+    g: dict = {}
+    for a, b, lab, key in z["index"]:
+        g.setdefault((str(a), str(b)), {})[str(lab)] = z[key].astype(np.float64)
+    pcols = None
+    if "pcols_labels" in z.files:
+        tpl, tgt = {}, {}
+        for j, lab in enumerate(z["pcols_labels"]):
+            tpl[str(lab)] = z[f"pcols_t{j}"].astype(np.int64)
+            pos = z[f"pcols_p{j}"].astype(np.int64)
+            if pos.size:
+                tgt[str(lab)] = pos
+        pcols = PieceColumns(tpl, tgt)
+    return g, pcols
 
 
 def _code_version() -> str:

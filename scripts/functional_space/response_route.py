@@ -215,8 +215,8 @@ def run_job(args: argparse.Namespace, log=print) -> Path | None:
         cha.save_cross(sr.as_cross(cross[s], tcols if s == args.target else pcols.template),
                        dest / f"cross_sub-{s}.npz")
     if args.save_grams:
-        sr.save_grams(acc_tpl.g, dest / "grams_template_film.npz")
-        sr.save_grams(acc_tgt.g, dest / "grams_target_film.npz")
+        sr.save_grams(acc_tpl.g, dest / "grams_template_film.npz", pcols)
+        sr.save_grams(acc_tgt.g, dest / "grams_target_film.npz", pcols)
     side = {
         "description": "Response route, one partition job: per-piece cross-products (X_s' template) for every "
                        "subject; procrustes.transform_from_cross(cha.load_cross(path), n, lam) gives the "

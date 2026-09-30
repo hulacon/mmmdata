@@ -29,10 +29,11 @@ Verbs:
 
   plan   report the inputs and the memory estimate; computes nothing
   fit    one target subject: writes <derivatives>/functional_space/routes/cha/target-<sub>/
+         (--save-grams adds the final-level profile Grams the combined model stacks)
 
 Usage:
     python cha.py plan
-    python cha.py fit --target 03 [--save-templates]
+    python cha.py fit --target 03 [--save-templates] [--save-grams]
 """
 
 from __future__ import annotations
@@ -183,9 +184,10 @@ def fit_diagnostic(profile: np.ndarray, template: np.ndarray, tf: pr.PiecewiseTr
 
 
 def fit_target(geo: Geometry, data: dict[str, np.ndarray], target: str, log=print
-               ) -> tuple[dict[str, dict], dict, dict[str, np.ndarray]]:
+               ) -> tuple[dict[str, dict], dict, dict[str, np.ndarray], dict[str, np.ndarray]]:
     """Template from the non-target subjects, then the target into it. Returns
-    (cross-products per subject at the final level, diagnostics, templates per level)."""
+    (cross-products per subject at the final level, diagnostics, templates per level,
+    final-level profiles per subject)."""
     template_subs = [s for s in data if s != target]
     tfs: dict[str, pr.PiecewiseTransform | None] = {s: None for s in data}
     templates, diag = {}, {}
@@ -210,7 +212,27 @@ def fit_target(geo: Geometry, data: dict[str, np.ndarray], target: str, log=prin
             + f" ({diag[level]['elapsed_s']:.0f} s)")
     final = templates[pc.CHA_LEVELS[-1]]
     cross = {s: pr.cross_products(profiles[s], final, geo.labels) for s in data}
-    return cross, diag, templates
+    return cross, diag, templates, profiles
+
+
+def profile_grams(profiles: dict[str, np.ndarray], labels: np.ndarray, target: str) -> tuple:
+    """Per-piece Grams of the final-level profiles, for the combined model's CHA block.
+
+    Same pairs, columns and solver as the stimulus and response routes
+    (``stimulus_route.GramAccumulator``): template pairs over the columns valid
+    in both template subjects, target pairs over the target's subset of them.
+    Returns ``(pcols, template Grams, target Grams)``.
+    """
+    import stimulus_route as sr
+
+    template_subs = sorted(s for s in profiles if s != target)
+    valid = {s: np.isfinite(p).all(axis=0) for s, p in profiles.items()}
+    pcols = sr.piece_columns(labels, valid, template_subs, target)
+    tpl = sr.GramAccumulator(pcols, [(a, b) for i, a in enumerate(template_subs) for b in template_subs[i:]], target)
+    tgt = sr.GramAccumulator(pcols, [(target, s) for s in template_subs], target)
+    tpl.add({s: profiles[s] for s in template_subs})
+    tgt.add(profiles)
+    return pcols, tpl.g, tgt.g
 
 
 # ---------------------------------------------------------------------------
@@ -272,11 +294,21 @@ def cmd_fit(args: argparse.Namespace) -> None:
         data[s], info[s] = load_rest(paths.cleaned, s)
         print(f"sub-{s}: {info[s]['n_runs']} rest runs, {info[s]['n_vol']} volumes, "
               f"{info[s]['n_valid_columns']}/{geo.n} valid columns")
-    cross, diag, templates = fit_target(geo, data, args.target)
+    cross, diag, templates, profiles = fit_target(geo, data, args.target)
+    del data
     dest = out_dir(paths.derivatives, args.target)
     dest.mkdir(parents=True, exist_ok=True)
     for s, c in cross.items():
         save_cross(c, dest / f"cross_sub-{s}.npz")
+    if args.save_grams:
+        import stimulus_route as sr
+
+        t1 = time.time()
+        pcols, g_tpl, g_tgt = profile_grams(profiles, geo.labels, args.target)
+        sr.save_grams(g_tpl, dest / "grams_template_profile.npz", pcols)
+        sr.save_grams(g_tgt, dest / "grams_target_profile.npz", pcols)
+        print(f"grams: {len(pcols.template)} pieces in {time.time() - t1:.0f} s")
+    del profiles
     if args.save_templates:
         for level, tpl in templates.items():
             np.save(dest / f"template_{level}.npy", tpl)
@@ -289,6 +321,7 @@ def cmd_fit(args: argparse.Namespace) -> None:
         "targets": "cortex Voronoi tiles (mean) + 12 HOSPA structures + 2 hippocampi",
         "pieces": "Schaefer-400 17n (fsaverage6) + HOSPA structures + hippocampal thirds (unfold x)",
         "densification_lam": 0.0, "template_iterations": TEMPLATE_ITERATIONS,
+        "grams_saved": bool(args.save_grams),
         "rest": {f"sub-{s}": info[s] for s in SUBJECTS},
         "fit_diagnostics": diag,
         "fit_diagnostics_note": "mean correlation of each subject's rest-connectivity profile with the template, "
@@ -311,6 +344,8 @@ def main() -> None:
     f.add_argument("--target", required=True, help="target subject label without 'sub-'")
     f.add_argument("--save-templates", action="store_true",
                    help="also save each level's template profile (large; for entering new subjects later)")
+    f.add_argument("--save-grams", action="store_true",
+                   help="also keep the final-level profile Grams (the combined model's CHA block)")
     args = ap.parse_args()
     {"plan": cmd_plan, "fit": cmd_fit}[args.verb](args)
 
