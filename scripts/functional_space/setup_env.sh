@@ -9,6 +9,10 @@
 # .venv on purpose. This env takes the CUDA 13.0 build (cu130): the encoders'
 # himalaya kernel ridge runs on the gpu partition's A100s (12-27x faster than
 # CPU in the 2026-09-29 sizing fits) and the build still runs on CPU nodes.
+# BrainIAK (the SRM comparator; DECIDED 2026-09-30) imports mpi4py, whose
+# wheel carries no MPI library: conda-forge mpich supplies libmpi in
+# $PREFIX/lib, and callers clear Slurm's PMIX_* variables before importing
+# brainiak (MPICH aborts on the PMIx runtime inside an srun step).
 #
 # Follows psytwill/scripts/setup_env.sh (the stimfeat builder):
 #   - `conda create --override-channels -c conda-forge`: the FSL installer's
@@ -54,7 +58,7 @@ PINS=(
   nilearn==0.13.1 nibabel==5.3.3 joblib==1.5.3 matplotlib==3.10.8
   h5py==3.16.0 nitransforms==25.1.0 pybids==0.21.0 duckdb==1.5.5
 )
-EXTRAS=(neuroboros==0.1.9 himalaya==0.4.11 pot pyarrow pytest)
+EXTRAS=(neuroboros==0.1.9 himalaya==0.4.11 brainiak==0.12 mpi4py pot pyarrow pytest)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -75,7 +79,7 @@ export PIP_CACHE_DIR="$CACHE/pip"   # shared cache; also spares /home quota
 mkdir -p "$CACHE/pip"
 
 echo "prefix : $PREFIX"
-echo "conda  : python=3.12 pip connectome-workbench (conda-forge, --override-channels)"
+echo "conda  : python=3.12 pip connectome-workbench mpich (conda-forge, --override-channels)"
 echo "pip    : torch (cu130) + fmralign @ pinned git + neuroboros + mmmdata pins"
 echo
 
@@ -84,7 +88,7 @@ if [[ -d "$PREFIX" && -n "$(ls -A "$PREFIX" 2>/dev/null)" ]]; then
 else
   echo "==> conda create"
   conda create --prefix "$PREFIX" --override-channels -c conda-forge --yes \
-    python=3.12 pip connectome-workbench
+    python=3.12 pip connectome-workbench mpich
 fi
 
 PY="$PREFIX/bin/python"
@@ -115,18 +119,21 @@ echo "ok — conda-forge (+ pypi payload) only"
 # and exercise the entry points the routes use.
 echo
 "$PY" - "$PREFIX" "$MMMDATA/src/python" <<'PYCHECK'
-import sys
+import os, sys
 prefix, mmmdata_src = sys.argv[1], sys.argv[2]
 assert sys.executable.startswith(prefix), sys.executable
+for k in [k for k in os.environ if k.startswith(("PMIX_", "PMI_"))]:
+    del os.environ[k]  # MPICH aborts on Slurm's PMIx runtime inside an srun step
 import numpy, scipy, pandas, sklearn, nilearn, nibabel, torch, ot
-import fmralign, neuroboros, himalaya
+import fmralign, neuroboros, himalaya, brainiak
+from brainiak.funcalign.srm import SRM, DetSRM  # noqa: F401  (loads libmpi via mpi4py)
 from fmralign import PairwiseAlignment, GroupAlignment  # noqa: F401
 from neuroboros import searchlights  # noqa: F401
 from neuroboros.linalg import safe_polar  # noqa: F401
 print('python        ', sys.version.split()[0])
 bad = []
 for m in (numpy, scipy, pandas, sklearn, nilearn, nibabel, torch, ot,
-          fmralign, neuroboros, himalaya):
+          fmralign, neuroboros, himalaya, brainiak):
     where = getattr(m, '__file__', '') or ''
     print(f'{m.__name__:<14}', getattr(m, '__version__', 'unknown'))
     if not where.startswith(prefix):
@@ -140,13 +147,18 @@ if bad:
     print('\nFAIL: modules resolved from outside the environment:', file=sys.stderr)
     print('\n'.join(bad), file=sys.stderr)
     sys.exit(1)
-if torch.version.cuda is not None:
-    sys.exit('FAIL: torch is a CUDA build; expected CPU')
+if torch.version.cuda != '13.0':
+    sys.exit(f'FAIL: torch CUDA build {torch.version.cuda}; expected 13.0 (cu130)')
 # Exercise safe_polar rather than trusting the import.
 rng = numpy.random.default_rng(0)
 R, _ = safe_polar(rng.standard_normal((20, 20)))  # returns (u, p)
 assert numpy.allclose(R @ R.T, numpy.eye(20), atol=1e-8)
 print('smoke         ', 'safe_polar returns an orthogonal matrix')
+S = rng.standard_normal((5, 200))
+X = [numpy.linalg.qr(rng.standard_normal((30, 5)))[0] @ S for _ in range(3)]
+w = DetSRM(n_iter=5, features=5).fit(X).w_
+assert all(numpy.allclose(wi.T @ wi, numpy.eye(5), atol=1e-8) for wi in w)
+print('smoke         ', 'brainiak DetSRM fits (MPI loads)')
 PYCHECK
 "$PREFIX/bin/wb_command" -version | sed -n '3p'
 

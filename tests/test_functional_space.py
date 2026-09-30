@@ -461,6 +461,33 @@ class TestEncoderFit:
         assert e.diagnostics_["alpha_at_grid_edge"] == pytest.approx(
             e.diagnostics_["alpha_at_low_edge"] + e.diagnostics_["alpha_at_high_edge"])
 
+    def test_lag_sweep_peaks_at_zero_and_the_null_collapses(self):
+        bands = {"a": slice(0, 20)}
+        x, y, groups = self._data(bands, n=1000)
+        y = enc._zscore_film_windows(y, groups)  # as the real path does, so 1 + score ~ CV R^2
+        q99 = {}
+        for k in (-2, 0, 2, "half"):
+            d = enc.Encoder(bands, n_iter=5, backend="numpy").fit(
+                x, enc.roll_within_windows(y, groups, k), groups).diagnostics_
+            q99[k] = d["cv_1_plus_score_q50_q95_q99"][2]
+        assert q99[0] > 0.9
+        assert max(q99[-2], q99[2], q99["half"]) < 0.2
+
+
+class TestRollWithinWindows:
+    def test_sign_and_window_confinement(self):
+        y = np.arange(10, dtype=float)[:, None]
+        groups = np.array(["a"] * 6 + ["b"] * 4)
+        out = enc.roll_within_windows(y, groups, 1)
+        # row t takes row t + 1 of its own window, wrapping inside the window
+        assert out[:, 0].tolist() == [1, 2, 3, 4, 5, 0, 7, 8, 9, 6]
+        assert enc.roll_within_windows(y, groups, -1)[:, 0].tolist() == [5, 0, 1, 2, 3, 4, 9, 6, 7, 8]
+
+    def test_half_rolls_each_window_by_half_its_length(self):
+        y = np.arange(10, dtype=float)[:, None]
+        groups = np.array(["a"] * 6 + ["b"] * 4)
+        assert enc.roll_within_windows(y, groups, "half")[:, 0].tolist() == [3, 4, 5, 0, 1, 2, 8, 9, 6, 7]
+
 
 # ---------------------------------------------------------------------------
 # stimulus route (Gram-space template and entry)
@@ -571,3 +598,151 @@ class TestStimulusRoute:
         out = sr.center_blocks(x, np.array(["a"] * 3 + ["b"] * 3))
         assert np.allclose(out[:3].mean(0), 0) and np.allclose(out[3:].mean(0), 0)
         assert np.allclose(out.std(0), x[:3].std(0))  # centred, not rescaled
+
+
+# ---------------------------------------------------------------------------
+# pairing shared films across subjects
+# ---------------------------------------------------------------------------
+
+fm = _load("films")
+
+
+def _win(start, n, onset, tr=1.5):
+    return pd.Series({"start": start, "n": n, "onset": onset, "repetition_time": tr})
+
+
+class TestPairedSlices:
+    def test_nearest_film_time_within_half_a_tr(self):
+        tr = 1.5
+        rows = {"a": _win(10, 20, 3.0), "b": _win(12, 21, 3.2), "c": _win(8, 19, 0.3)}
+        sl = fm.paired_slices(rows, "a")
+        lengths = {s.stop - s.start for s in sl.values()}
+        assert len(lengths) == 1 and lengths.pop() > 0
+        for s, r in rows.items():
+            t = (r.start + np.arange(sl[s].start, sl[s].stop)) * tr - r.onset
+            t_ref = (rows["a"].start + np.arange(sl["a"].start, sl["a"].stop)) * tr - rows["a"].onset
+            assert np.all(np.abs(t - t_ref) <= tr / 2 + 1e-9)
+            assert 0 <= sl[s].start and sl[s].stop <= r.n
+
+    def test_whole_volume_offset_is_shifted_not_index_paired(self):
+        # b's grid starts exactly one volume later in film time: b's volume 0 is a's volume 1
+        rows = {"a": _win(10, 20, 0.0), "b": _win(11, 20, 0.0)}
+        sl = fm.paired_slices(rows, "a")
+        assert sl == {"a": slice(1, 20), "b": slice(0, 19)}
+
+    def test_no_overlap_is_an_error(self):
+        with pytest.raises(ValueError):
+            fm.paired_slices({"a": _win(0, 5, 0.0), "b": _win(20, 5, 0.0)}, "a")
+
+
+# ---------------------------------------------------------------------------
+# response route (shared films, measured rows)
+# ---------------------------------------------------------------------------
+
+rr = _load("response_route")
+
+
+def _parts(uses: dict[str, dict[str, str]], pct=50, draw=0, target="03", scenario="primary"):
+    return pd.DataFrame([{"scenario": scenario, "pct": pct, "s": 0, "draw": draw, "target": target,
+                          "subject": sub, "stimulus_id": sid, "use": use}
+                         for sub, m in uses.items() for sid, use in m.items()])
+
+
+def _windows(subs, films, n=10):
+    return pd.DataFrame([{"sub": s, "stimulus_id": f, "role": "alignment", "start": 5 + 20 * i, "n": n,
+                          "onset": 3.0 + 0.4 * int(s), "repetition_time": 1.5}
+                         for s in subs for i, f in enumerate(films)])
+
+
+class TestResponseRoute:
+    def test_shared_films_are_the_three_way_align_shared_set(self):
+        uses = {s: {"f1": "align_shared", "f2": "align_shared", f"u{s}": "align_unique", "t": "tuning"}
+                for s in ("03", "04", "05")}
+        films, rows = rr.shared_films(_parts(uses), _windows(["03", "04", "05"], ["f1", "f2", "u03", "u04", "u05"]),
+                                      "primary", 50, 0, "03")
+        assert films == ["f1", "f2"] and sorted(rows) == ["03", "04", "05"]
+        assert all(list(r.index) == ["f1", "f2"] for r in rows.values())
+
+    def test_undefined_when_the_target_shares_nothing(self):
+        # secondary: template subjects share, the target does not
+        uses = {"04": {"f1": "align_shared"}, "05": {"f1": "align_shared"}, "03": {"u": "align_unique"}}
+        assert rr.shared_films(_parts(uses), _windows(["03", "04", "05"], ["f1", "u"]), "primary", 50, 0, "03") \
+            == ([], {})
+
+    def test_paired_block_equal_rows_zscored(self):
+        subs, films = ["03", "04", "05"], ["f1", "f2"]
+        w = _windows(subs, films)
+        rows = {s: w[w["sub"] == s].set_index("stimulus_id") for s in subs}
+        rng = np.random.default_rng(0)
+        series = {s: {f: rng.standard_normal((10, 4)) for f in films} for s in subs}
+        series["04"]["f1"][:, 2] = 1.0  # constant column -> invalid (NaN), not filled
+        blk = rr.paired_block(series, rows, subs, "04", films)
+        assert len({b.shape for b in blk.values()}) == 1
+        assert np.isnan(blk["04"][:, 2]).any() and np.isfinite(blk["03"]).all()
+        assert np.allclose(np.nanmean(blk["03"][: blk["03"].shape[0] // 2], 0), 0, atol=1e-9)
+
+    def test_target_rows_map_into_the_template_block(self):
+        subs, films = ["03", "04", "05"], ["f1", "f2"]
+        w = _windows(subs, films)
+        w.loc[w["sub"] == "03", "start"] += 1  # the target's grid sits a volume later
+        rows = {s: w[w["sub"] == s].set_index("stimulus_id") for s in subs}
+        rng = np.random.default_rng(1)
+        series = {s: {f: rng.standard_normal((10, 3)) for f in films} for s in subs}
+        tpl_subs = ["04", "05"]
+        idx = rr.target_row_map(rows, tpl_subs, "03", "04", films)
+        tpl = rr.paired_block(series, rows, tpl_subs, "04", films)
+        tgt = rr.paired_block(series, rows, subs, "04", films)
+        assert idx.shape[0] == tgt["04"].shape[0]
+        # the reference subject's raw series agree up to the per-slice z-score, so compare ranks per film
+        raw_tpl = np.concatenate([series["04"][f][fm.paired_slices({s: rows[s].loc[f] for s in tpl_subs}, "04")["04"]]
+                                  for f in films])
+        raw_tgt = np.concatenate([series["04"][f][fm.paired_slices({s: rows[s].loc[f] for s in subs}, "04")["04"]]
+                                  for f in films])
+        assert np.array_equal(raw_tpl[idx], raw_tgt)
+
+
+# ---------------------------------------------------------------------------
+# SRM comparator and PCA control
+# ---------------------------------------------------------------------------
+
+srm = _load("srm_route")
+
+
+class TestSRMRoute:
+    def _planted(self, n=400, p=30, k=4, seed=0):
+        rng = np.random.default_rng(seed)
+        s = rng.standard_normal((n, k))
+        ws = [np.linalg.qr(rng.standard_normal((p, k)))[0] for _ in range(3)]
+        xs = [s @ w.T + 0.05 * rng.standard_normal((n, p)) for w in ws]
+        return xs, ws
+
+    def test_srm_recovers_the_shared_response_through_the_target_entry(self):
+        pytest.importorskip("brainiak")
+        xs, _ = self._planted()
+        tgt_rows = np.arange(20, 380)  # the target block covers a sub-range of the template rows
+        w_tpl, w_t, k_eff = srm.fit_piece(xs[:2], xs[2][tgt_rows], tgt_rows, k=4)
+        assert k_eff == 4
+        # template subject 0 carried into the target's space predicts the target's data
+        pred = xs[0][tgt_rows] @ w_tpl[0] @ w_t.T
+        r = np.corrcoef(pred.ravel(), xs[2][tgt_rows].ravel())[0, 1]
+        assert r > 0.95
+        assert np.allclose(w_t.T @ w_t, np.eye(4), atol=1e-6)
+
+    def test_k_is_capped_at_the_piece_size(self):
+        pytest.importorskip("brainiak")
+        xs, _ = self._planted(p=6, k=3)
+        _, w_t, k_eff = srm.fit_piece(xs[:2], xs[2], np.arange(xs[2].shape[0]), k=100)
+        assert k_eff == 6 and w_t.shape == (6, 6)
+
+    def test_pca_control_is_one_orthonormal_basis(self):
+        xs, _ = self._planted()
+        v, k_eff = srm.pca_piece(xs[:2], 4)
+        assert k_eff == 4 and np.allclose(v.T @ v, np.eye(4), atol=1e-8)
+
+    def test_all_k_wrapper_slices_the_targets_pca_rows(self):
+        pytest.importorskip("brainiak")
+        xs, _ = self._planted(p=12, k=3)
+        pos = np.array([0, 2, 3, 5, 7, 8, 9, 11])  # the target lacks four of the template's columns
+        out = srm.fit_piece_all_k(xs[:2], xs[2][:, pos], np.arange(xs[2].shape[0]), pos, [3, 50])
+        for k, (ws, w_t, v, v_t, ke) in out.items():
+            assert ke == min(k, pos.size) and w_t.shape == (pos.size, ke) and np.array_equal(v_t, v[pos])

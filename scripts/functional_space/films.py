@@ -23,6 +23,13 @@ shorter than its showing, so the file length caps it. The volume convention
 (volume ``i`` spans ``[i*TR, (i+1)*TR)``) is data-quality tier 2's
 ``window()``, reused here.
 
+Pairing across subjects (DECIDED 2026-09-29/30): subjects' window grids sit at
+different film times (up to ~1 TR apart), so a shared film is paired by
+**nearest film time**, never by volume index and never by resampling. Each
+subject is paired to one reference grid by a whole-volume shift and only the
+volumes all subjects cover are kept (``paired_slices``); every subject then
+sits within half a TR of the reference.
+
 Verbs:
 
   build   write <derivatives>/functional_space/films/film_windows.tsv (+ .json)
@@ -253,6 +260,29 @@ def cmd_check(args: argparse.Namespace) -> None:
     if fails:
         sys.exit("FAIL\n  " + "\n  ".join(fails))
     print(f"ok: {len(df)} showings, {df['sub'].nunique()} subjects")
+
+
+def paired_slices(rows: dict, ref: str) -> dict[str, slice]:
+    """Equal-length slices into each subject's window pairing one shared film by nearest film time.
+
+    ``rows`` maps subject to its window row for one film (fields ``start``,
+    ``n``, ``onset``, ``repetition_time``); ``ref`` names the subject whose grid
+    the others are paired to. Subject ``s``'s volume ``i`` is taken as the
+    reference's volume ``i + k_s``, with ``k_s`` the offset between the two
+    grids' first-volume film times rounded to whole volumes; the slices cover
+    the reference volumes every subject has. An empty overlap is an error.
+    """
+    trs = {float(r.repetition_time) for r in rows.values()}
+    if len(trs) != 1:
+        raise ValueError(f"cannot pair windows with different TRs {sorted(trs)}")
+    tr = trs.pop()
+    t0 = {s: int(r.start) * tr - float(r.onset) for s, r in rows.items()}
+    k = {s: int(np.round((t0[s] - t0[ref]) / tr)) for s in rows}
+    lo = max(0, *(k.values()))
+    hi = min(int(rows[s].n) + k[s] for s in rows)
+    if hi <= lo:
+        raise ValueError(f"windows share no film time: {sorted(rows)}")
+    return {s: slice(lo - k[s], hi - k[s]) for s in rows}
 
 
 def film_series(row, cleaned_root: Path, cache: dict | None = None) -> np.ndarray:

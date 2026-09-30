@@ -35,12 +35,20 @@ Verbs:
   fit    sizing run: fit one subject's encoder for one partition job on its
          own alignment films and time a full probe-set prediction; writes
          only timings and fit diagnostics (alignment data; no score)
+  lagcheck
+         timing check: refit one subject's encoder with its responses rolled
+         circularly within each film window by k TRs (k > 0 pairs a volume's
+         features with the response k TRs later, i.e. delays d + k), plus a
+         half-window roll as a null; inner-CV diagnostics per k. Correct
+         timing peaks at k ~ 0 and collapses under the null (alignment data;
+         no score)
 
 Usage:
     python encoding.py cache --space ebind
     python encoding.py cache --space vgg19
     python encoding.py plan
     python encoding.py fit --space ebind --sub 04 --pct 0 --draw 0 --target 03
+    python encoding.py lagcheck --space ebind --sub 04 --pct 0 --draw 0 --target 03
 """
 
 from __future__ import annotations
@@ -332,23 +340,43 @@ def _zscore_film_windows(y: np.ndarray, groups: np.ndarray) -> np.ndarray:
     return out
 
 
-def cmd_fit(args: argparse.Namespace) -> None:
-    import time
-
+def _job_films(paths: Paths, args: argparse.Namespace):
+    """One subject's alignment-film windows for one partition job."""
     import films as fm
-    import grayordinates as go
     import partitions as pt
 
-    paths = Paths()
-    t0 = time.time()
     windows = fm.load_windows(paths.derivatives)
     parts = pt.load_partitions(paths.derivatives)
     job = parts[(parts["scenario"] == args.scenario) & (parts["pct"] == args.pct) & (parts["draw"] == args.draw)
                 & (parts["target"] == args.target) & (parts["subject"] == args.sub) & (parts["use"] != "tuning")]
     if len(job) != pt.N_FILMS:
         sys.exit(f"partition job resolves to {len(job)} alignment films, expected {pt.N_FILMS}")
-    rows = windows[(windows["sub"] == args.sub) & (windows["role"] == "alignment")
+    return windows[(windows["sub"] == args.sub) & (windows["role"] == "alignment")
                    & windows["stimulus_id"].isin(job["stimulus_id"])]
+
+
+def roll_within_windows(y: np.ndarray, groups: np.ndarray, k: int | str) -> np.ndarray:
+    """Row ``t`` of each film window takes the window's row ``t + k`` (circular).
+
+    Paired with an unshifted design, ``k > 0`` means delays ``d + k``. ``"half"``
+    rolls each window by half its length: the timing null.
+    """
+    out = np.empty_like(y)
+    for g in dict.fromkeys(groups.tolist()):
+        idx = np.flatnonzero(groups == g)
+        shift = len(idx) // 2 if k == "half" else int(k)
+        out[idx] = np.roll(y[idx], -shift, axis=0)
+    return out
+
+
+def cmd_fit(args: argparse.Namespace) -> None:
+    import time
+
+    import grayordinates as go
+
+    paths = Paths()
+    t0 = time.time()
+    rows = _job_films(paths, args)
     x, y, groups, bands = film_design(rows, paths.cache, args.space, go.tree_root(paths.derivatives))
     y = _zscore_film_windows(y, groups)
     t_load = time.time() - t0
@@ -375,6 +403,36 @@ def cmd_fit(args: argparse.Namespace) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(json.dumps(rec, indent=2) + "\n")
     print(json.dumps(rec, indent=2))
+
+
+def cmd_lagcheck(args: argparse.Namespace) -> None:
+    import time
+
+    import grayordinates as go
+
+    paths = Paths()
+    rows = _job_films(paths, args)
+    x, y, groups, bands = film_design(rows, paths.cache, args.space, go.tree_root(paths.derivatives))
+    y = _zscore_film_windows(y, groups)
+    shifts = [int(k) for k in args.shifts.split(",")] + ["half"]
+    per_shift = {}
+    for k in shifts:
+        t0 = time.time()
+        d = Encoder(bands, backend=args.backend).fit(x, roll_within_windows(y, groups, k), groups).diagnostics_
+        d["seconds"] = round(time.time() - t0, 1)
+        per_shift[str(k)] = d
+        print(f"k={k}: 1+score q50/q95/q99 {d['cv_1_plus_score_q50_q95_q99']}  "
+              f"alpha high edge {d['alpha_at_high_edge']:.3f}  ({d['seconds']} s)", flush=True)
+    rec = {
+        "space": args.space, "sub": args.sub, "job": {"scenario": args.scenario, "pct": args.pct, "draw": args.draw,
+                                                        "target": args.target},
+        "delays_tr": list(DELAYS_TR), "shift_sign": "k > 0 pairs features with the response k TRs later",
+        "train": {"films": int(len(rows)), "volumes": int(x.shape[0]), "features": int(x.shape[1])},
+        "per_shift": per_shift, "backend": args.backend,
+    }
+    dest = paths.derivatives / "functional_space" / "dryrun" / f"lagcheck_{args.space}_sub-{args.sub}.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(rec, indent=2) + "\n")
 
 
 def cmd_cache(args: argparse.Namespace) -> None:
@@ -430,8 +488,17 @@ def main() -> None:
     f.add_argument("--target", required=True)
     f.add_argument("--backend", default="torch")
     f.add_argument("--chunk", type=int, default=4000)
+    lc = sub.add_parser("lagcheck")
+    lc.add_argument("--space", choices=list(FEATURE_SPACES), required=True)
+    lc.add_argument("--sub", required=True)
+    lc.add_argument("--scenario", default="primary")
+    lc.add_argument("--pct", type=int, default=0)
+    lc.add_argument("--draw", type=int, default=0)
+    lc.add_argument("--target", required=True)
+    lc.add_argument("--backend", default="torch")
+    lc.add_argument("--shifts", default="-6,-3,-1,0,1,3,6", help="comma-separated TR shifts; a half-window null is always added")
     args = ap.parse_args()
-    {"cache": cmd_cache, "plan": cmd_plan, "fit": cmd_fit}[args.verb](args)
+    {"cache": cmd_cache, "plan": cmd_plan, "fit": cmd_fit, "lagcheck": cmd_lagcheck}[args.verb](args)
 
 
 if __name__ == "__main__":
