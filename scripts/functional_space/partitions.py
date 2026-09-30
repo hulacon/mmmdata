@@ -27,10 +27,15 @@ Verbs:
 
   build   write <derivatives>/functional_space/partitions/{partitions,partition_summary}.tsv
   check   assert the invariants; exits non-zero on any failure
+  job     print array task ``--index``'s ``scenario pct draw target`` (``--count``
+          prints the number of jobs); ``--shared`` lists only the jobs whose
+          target shares films (primary, s > 0), which the response and SRM
+          routes need
 
 Usage:
     python partitions.py build [--draws-zero 50] [--draws-other 20]
     python partitions.py check
+    python partitions.py job --index 7 [--shared]
 """
 
 from __future__ import annotations
@@ -75,6 +80,19 @@ def load_partitions(derivatives: Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"{path} is missing; run `partitions.py build`")
     return pd.read_csv(path, sep="\t", dtype={"target": str, "subject": str})
+
+
+def job_list(df: pd.DataFrame, shared: bool = False) -> pd.DataFrame:
+    """One row per partition job, in a fixed order an array index can address.
+
+    Ordered by scenario, level, draw, target, so an array index is stable
+    across calls and indexes the same job in every route's array.
+    ``shared`` keeps only the primary jobs with *s* > 0.
+    """
+    jobs = df[["scenario", "pct", "s", "draw", "target"]].drop_duplicates()
+    if shared:
+        jobs = jobs[(jobs["scenario"] == "primary") & (jobs["s"] > 0)]
+    return jobs.sort_values(["scenario", "pct", "draw", "target"], ignore_index=True)
 
 
 def expected_tuning(pct: int, pool: int, scenario: str = "primary") -> int:
@@ -255,6 +273,17 @@ def cmd_check(args: argparse.Namespace) -> None:
     print(f"ok: {df.drop_duplicates(['scenario', 'pct', 'draw', 'target']).shape[0]} jobs")
 
 
+def cmd_job(args: argparse.Namespace) -> None:
+    jobs = job_list(load_partitions(Path(load_config()["paths"]["output_dir"])), shared=args.shared)
+    if args.count:
+        print(len(jobs))
+        return
+    if not 0 <= args.index < len(jobs):
+        sys.exit(f"index {args.index} out of range: {len(jobs)} jobs")
+    j = jobs.iloc[args.index]
+    print(j["scenario"], int(j["pct"]), int(j["draw"]), j["target"])
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="verb", required=True)
@@ -262,8 +291,13 @@ def main() -> None:
     b.add_argument("--draws-zero", type=int, default=DEFAULT_DRAWS_ZERO)
     b.add_argument("--draws-other", type=int, default=DEFAULT_DRAWS_OTHER)
     sub.add_parser("check")
+    j = sub.add_parser("job")
+    g = j.add_mutually_exclusive_group(required=True)
+    g.add_argument("--index", type=int)
+    g.add_argument("--count", action="store_true")
+    j.add_argument("--shared", action="store_true")
     args = ap.parse_args()
-    {"build": cmd_build, "check": cmd_check}[args.verb](args)
+    {"build": cmd_build, "check": cmd_check, "job": cmd_job}[args.verb](args)
 
 
 if __name__ == "__main__":

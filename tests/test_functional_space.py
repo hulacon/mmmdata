@@ -205,6 +205,16 @@ class TestPartitions:
         keep = big[big["draw"] < 2].sort_values(key + ["stimulus_id"], ignore_index=True)
         assert keep.equals(small.sort_values(key + ["stimulus_id"], ignore_index=True))
 
+    def test_job_list_order_and_shared_subset(self, table):
+        jobs = parts.job_list(table)
+        assert len(jobs) == len(table.drop_duplicates(["scenario", "pct", "draw", "target"]))
+        assert jobs.equals(parts.job_list(table.sample(frac=1, random_state=0)))  # order is input-independent
+        shared = parts.job_list(table, shared=True)
+        assert (shared["scenario"] == "primary").all() and (shared["s"] > 0).all()
+        # the shared list is a contiguous block of the full one, in the same order
+        start = jobs.index[(jobs["scenario"] == "primary") & (jobs["s"] > 0)][0]
+        assert jobs.iloc[start:start + len(shared)].reset_index(drop=True).equals(shared)
+
     def test_check_catches_a_leak(self, table):
         bad = table.copy()
         row = bad[(bad["scenario"] == "primary") & (bad["pct"] == 0) & (bad["use"] == "tuning")].index[0]

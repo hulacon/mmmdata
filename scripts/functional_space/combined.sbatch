@@ -24,6 +24,8 @@
 #   python scripts/functional_space/combined.py plan --pct 0 --draw 0 --target 03
 #   sbatch --export=ALL,PCT=0,DRAW=0,TARGET=03 combined.sbatch
 #   (optional: SCENARIO=secondary, SPACE=vgg19)
+#   sbatch --array=0-479%20 combined.sbatch
+#   (array index = `partitions.py job --index N`)
 #
 # Outputs: <derivatives>/functional_space/routes/combined-<space>/<scenario>/
 # pct-<pct>/draw-<draw>/target-<sub>/ (tuning.tsv, cross_sub-*.npz, combined.json).
@@ -31,11 +33,15 @@
 
 set -euo pipefail
 
+REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
+PY="/gpfs/projects/hulacon/shared/envs/functional-space/bin/python"
+if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then  # array task: the job comes from the partition table
+    read -r SCENARIO PCT DRAW TARGET < <("${PY}" "${REPO_ROOT}/scripts/functional_space/partitions.py" \
+        job --index "${SLURM_ARRAY_TASK_ID}")
+fi
 : "${PCT:?set PCT}" "${DRAW:?set DRAW}" "${TARGET:?set TARGET}"
 SCENARIO="${SCENARIO:-primary}"
 SPACE="${SPACE:-ebind}"
-REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
-PY="/gpfs/projects/hulacon/shared/envs/functional-space/bin/python"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 
 echo "Job ${SLURM_JOB_ID} combined-${SPACE} ${SCENARIO} ${PCT}% draw ${DRAW} target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"

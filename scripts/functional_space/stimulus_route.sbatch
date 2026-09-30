@@ -24,6 +24,8 @@
 #   python scripts/functional_space/stimulus_route.py plan --space ebind --pct 0 --draw 0 --target 03
 #   sbatch --export=ALL,SPACE=ebind,PCT=0,DRAW=0,TARGET=03 stimulus_route.sbatch
 #   (optional: SCENARIO=secondary, EXTRA="--save-grams")
+#   sbatch --array=0-479%6 --export=ALL,SPACE=ebind,EXTRA=--save-grams stimulus_route.sbatch
+#   (array index = `partitions.py job --index N`)
 #
 # Outputs: <derivatives>/functional_space/routes/stimulus-<space>/<scenario>/
 # pct-<pct>/draw-<draw>/target-<sub>/ (cross_sub-*.npz + stimulus.json).
@@ -31,10 +33,14 @@
 
 set -euo pipefail
 
-: "${SPACE:?set SPACE (ebind|vgg19)}" "${PCT:?set PCT}" "${DRAW:?set DRAW}" "${TARGET:?set TARGET}"
-SCENARIO="${SCENARIO:-primary}"
 REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
 PY="/gpfs/projects/hulacon/shared/envs/functional-space/bin/python"
+if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then  # array task: the job comes from the partition table
+    read -r SCENARIO PCT DRAW TARGET < <("${PY}" "${REPO_ROOT}/scripts/functional_space/partitions.py" \
+        job --index "${SLURM_ARRAY_TASK_ID}")
+fi
+: "${SPACE:?set SPACE (ebind|vgg19)}" "${PCT:?set PCT}" "${DRAW:?set DRAW}" "${TARGET:?set TARGET}"
+SCENARIO="${SCENARIO:-primary}"
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 
 echo "Job ${SLURM_JOB_ID} ${SPACE} ${SCENARIO} ${PCT}% draw ${DRAW} target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"
