@@ -952,6 +952,56 @@ class TestScoring:
         got = sc.project(data, {"A": ident, "B": ident, "T": ident}, "T")
         assert np.allclose(got, (data["A"] + data["B"]) / 2)
 
+    def test_carry_square_matches_inverse_apply(self):
+        rng = np.random.default_rng(31)
+        n = 10
+        labels = np.repeat([0, 1], 5)
+        tf = {s: pr.PiecewiseTransform(n, {lab: (np.flatnonzero(labels == lab), _rotation(5, 10 * i + lab))
+                                           for lab in (0, 1)}) for i, s in enumerate("AT")}
+        x = rng.standard_normal((7, n))
+        assert np.allclose(sc.carry(x, tf["A"], tf["T"]), tf["T"].inverse().apply(tf["A"].apply(x)), atol=1e-5)
+
+    def test_carry_nonsquare_target_and_srm_bases(self):
+        """The target's columns may be a subset of the template's; SRM bases are columns x k."""
+        rng = np.random.default_rng(32)
+        n = 8
+        x = rng.standard_normal((6, n))
+        r_s = _rotation(5, 1)                     # template subject: 5 columns -> 5 template columns
+        r_t = _rotation(5, 2)[[0, 2, 3]]          # target: 3 of those columns, rows orthonormal
+        src = pr.PiecewiseTransform(n, {"p": (np.arange(5), r_s)})
+        tgt = pr.PiecewiseTransform(n, {"p": (np.array([0, 2, 3]), r_t)})
+        got = sc.carry(x, src, tgt)
+        assert np.allclose(got[:, [0, 2, 3]], x[:, :5] @ r_s @ r_t.T, atol=1e-5)
+        assert np.isnan(got[:, [1, 4, 5, 6, 7]]).all()
+        w_s, w_t = np.linalg.qr(rng.standard_normal((5, 2)))[0], np.linalg.qr(rng.standard_normal((3, 2)))[0]
+        got = sc.carry(x, pr.PiecewiseTransform(n, {"p": (np.arange(5), w_s)}),
+                       pr.PiecewiseTransform(n, {"p": (np.array([0, 2, 3]), w_t)}))
+        assert np.allclose(got[:, [0, 2, 3]], x[:, :5] @ w_s @ w_t.T, atol=1e-5)
+
+    def test_carry_target_on_a_column_subset_matches_target_cross(self):
+        """As stimulus_route.target_cross: a target valid on a subset of the template's columns enters on those
+        template coordinates, so R_T is square over its own columns."""
+        rng = np.random.default_rng(33)
+        n, p, keep = 7, 5, np.array([0, 1, 3, 4])
+        r_s = _rotation(p, 3)
+        r_t = _rotation(keep.size, 4)
+        src = pr.PiecewiseTransform(n, {"p": (np.arange(p), r_s)})
+        tgt = pr.PiecewiseTransform(n, {"p": (keep, r_t)})
+        x = rng.standard_normal((6, n))
+        got = sc.carry(x, src, tgt)
+        assert np.allclose(got[:, keep], (x[:, :p] @ r_s)[:, keep] @ r_t.T, atol=1e-5)
+        assert np.isnan(got[:, [2, 5, 6]]).all()
+        with pytest.raises(ValueError):
+            sc.carry(x, src, pr.PiecewiseTransform(n, {"p": (np.array([0, 1, 5, 6]), r_t)}))
+
+    def test_carry_nan_column_spoils_only_its_piece(self):
+        n = 6
+        tf = pr.PiecewiseTransform(n, {"a": (np.arange(3), np.eye(3)), "b": (np.arange(3, 6), np.eye(3))})
+        x = np.ones((4, n))
+        x[:, 1] = np.nan
+        got = sc.carry(x, tf, tf)
+        assert np.isnan(got[:, :3]).all() and np.isfinite(got[:, 3:]).all()
+
     def test_m1_angle_is_scored_within_hemisphere(self):
         """Each hemisphere maps the contralateral hemifield; a good prediction must score near 1."""
         rng = np.random.default_rng(4)
@@ -1001,3 +1051,119 @@ class TestScoring:
         res = sc.selftest(n_columns=700, piece=50, n_films=3, film_trs=40, n_items=60, noise=1.0,
                           log=lambda *a: None)
         assert res["passed"], res["scores"]
+
+
+# ---------------------------------------------------------------------------
+# scoring driver
+# ---------------------------------------------------------------------------
+
+scr = _load("score_route")
+
+
+class TestScoreRoute:
+    def test_face_names(self):
+        three = ["cha", "stimulus", "response"]
+        assert scr.face_name("cha+stimulus+response", three, "ebind") == "combined"
+        assert scr.face_name("cha+response", three, "ebind") == "combined-minus-stimulus"
+        assert scr.face_name("stimulus", three, "ebind") == "stimulus-ebind"
+        assert scr.face_name("cha", ["cha", "stimulus"], "ebind") == "cha"
+        assert scr.face_name("cha+stimulus", ["cha", "stimulus"], "ebind") == "combined"
+
+    def test_mni_network_labels(self):
+        vox = pd.DataFrame({"schaefer7n": ["7Networks_LH_Vis_1", "7Networks_RH_Default_PFCm_3", np.nan, ""]})
+        assert list(scr.mni_network_labels(vox)) == ["Vis", "Default", "", ""]
+
+    def test_shared_valid_is_the_intersection(self):
+        tgt = {"a": np.ones((3, 5)), "b": np.ones((3, 5))}
+        tgt["b"][1, 0] = np.nan
+        m1 = {k: v.copy() for k, v in tgt.items()}
+        m1["a"][:, 2] = np.nan
+        m2 = {k: np.ones((3, 5)) for k in tgt}
+        m2["b"][:, 4] = np.inf
+        ok = scr.shared_valid(tgt, {"m1": m1, "m2": m2})
+        assert list(ok) == [False, True, False, True, False]
+
+    def test_srm_objective_prefers_the_true_bases(self):
+        rng = np.random.default_rng(40)
+        shared = rng.standard_normal((200, 4))
+        w = {s: np.linalg.qr(rng.standard_normal((12, 4)))[0] for s in ("A", "B")}
+        y = {s: shared @ w[s].T + 0.1 * rng.standard_normal((200, 12)) for s in ("A", "B")}
+        cols = np.arange(12)
+        good, n = scr.srm_objective({s: {"p": (cols, w[s])} for s in w}, ["A", "B"], y)
+        wrong = {s: {"p": (cols, np.linalg.qr(rng.standard_normal((12, 4)))[0])} for s in w}
+        bad, _ = scr.srm_objective(wrong, ["A", "B"], y)
+        assert n == 12 and good > 0.9 and good > bad
+
+    def test_srm_objective_leaves_out_nonfinite_pieces(self):
+        y = {"A": np.ones((5, 4)), "B": np.ones((5, 4))}
+        y["A"][0, 3] = np.nan
+        w = {s: {"p": (np.arange(2), np.eye(2)), "q": (np.arange(2, 4), np.eye(2))} for s in y}
+        _, n = scr.srm_objective(w, ["A", "B"], y)
+        assert n == 0  # 'q' left out (NaN); 'p' constant columns give NaN r and drop too
+
+    def test_project_all_identity_and_transform(self):
+        rng = np.random.default_rng(41)
+        n = 6
+        data = {s: {"f": rng.standard_normal((4, n)).astype(np.float32)} for s in ("A", "B", "T")}
+        ident = pr.PiecewiseTransform(n, {"p": (np.arange(n), np.eye(n))})
+        out = scr.project_all({"anat": None, "id": {s: ident for s in data}}, data, ["A", "B"], "T")
+        assert np.allclose(out["anat"]["f"], out["id"]["f"], atol=1e-6)
+
+    def test_identification_foil_pool(self):
+        rng = np.random.default_rng(42)
+        x = rng.standard_normal((30, 40))
+        noisy = x + 0.5 * rng.standard_normal(x.shape)
+        full_rank, full_top1 = sc.identification(x, noisy)
+        same_rank, same_top1 = sc.identification(x, noisy, np.ones(30, bool))
+        assert np.array_equal(full_rank, same_rank) and np.array_equal(full_top1, same_top1)
+        tpl = noisy.copy()
+        tpl[1] = tpl[0] + 0.01 * rng.standard_normal(40)  # row 1 is a near-copy of row 0: a privileged foil
+        pool = np.ones(30, bool)
+        pool[1] = False
+        r_all, _ = sc.identification(x, tpl)
+        r_pool, _ = sc.identification(x, tpl, pool)
+        assert r_pool[0] >= r_all[0]
+        with pytest.raises(ValueError):
+            sc.identification(x, noisy, np.zeros(30, bool))
+
+    def test_score_maps_and_items_identity_recovers_shared_maps(self):
+        rng = np.random.default_rng(43)
+        n = 60
+        networks = np.array(["Vis"] * 30 + ["SomMot"] * 30, dtype=object)
+        hemi = np.tile(np.repeat(["L", "R"], 15), 2)
+        keys = [("floc", "a"), ("floc", "b"), ("motor", "handVsFootDerived"), ("prf", "x"), ("prf", "y")]
+        base = rng.standard_normal((len(keys), n))
+        base[3:] = np.stack(sc.cartesian(np.where(hemi == "L", 180.0, 0.0) + rng.uniform(-60, 60, n),
+                                         rng.uniform(1, 7, n)))
+        maps = {s: (base + 0.05 * rng.standard_normal(base.shape)).astype(np.float32) for s in ("A", "B", "T")}
+        maps["T"][0, 5] = np.nan
+        keep = {s: np.ones(n, bool) for s in maps}
+        m1 = scr.score_maps({"anatomical": None}, maps, keys, keep, networks, hemi, ["A", "B"], "T")
+        med = m1[(m1["contrast"] == "median")].set_index(["network", "component"])["r"]
+        assert (med > 0.95).all()
+        ang = m1[m1["component"] == "prf"].set_index("network")["r"]
+        assert (ang > 0.9).all()
+        assert m1.loc[(m1["contrast"] == "a") & (m1["network"] == "Vis"), "n_columns"].iat[0] == 29
+        assert set(m1.loc[m1["read"], "component"]) == {"floc", "motor", "prf"}  # Vis reads all three
+        shared = rng.standard_normal((20, n))
+        items = {s: (shared + 0.1 * rng.standard_normal((20, n))).astype(np.float32) for s in maps}
+        floor = {s: np.ones(n, bool) for s in maps}
+        floor["B"][:10] = False
+        m3, cols = scr.score_items({"anatomical": None}, items, floor, np.arange(20) % 2 == 0, networks,
+                                   ["A", "B"], "T")
+        assert cols == {"SomMot": 30, "Vis": 20}
+        assert set(m3["foils"]) == {"all", "no_triplet"} and (m3["rank_acc"] > 0.95).all()
+
+    def test_mc_error_uses_per_draw_gains(self):
+        rows = []
+        for d in range(4):
+            for model, v in (("combined", 0.6 + 0.01 * d), ("anatomical", 0.5)):
+                rows += [{"target": "03", "draw": d, "model": model, "network": "Vis", "film": f, "rank_acc": v}
+                         for f in ("a", "b")]
+        level = pd.DataFrame(rows)
+        ref = scr.draw_average(level, "anatomical").assign(baseline="fsaverage6")
+        se = scr.mc_error(level, "combined", ref)
+        want = np.std([0.1, 0.11, 0.12, 0.13], ddof=1) / 2
+        assert np.isclose(se["median"], want) and se["n_cells"] == 2
+        mni = ref.assign(baseline="mni")
+        assert np.isclose(scr.mc_error(level, "combined", mni)["median"], want)

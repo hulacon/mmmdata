@@ -1,0 +1,802 @@
+#!/usr/bin/env python3
+"""Score the functional-space routes on the held-out test data, and decide H1/H2.
+
+Pre-registration §9 (metrics, inference), §3.2 (test data), §6 (routes);
+scoring choices DECIDED 2026-09-30 in mmmdata-agents
+``docs/workbench/functional-space/``. The metrics themselves are
+``scoring.py``'s; this module loads data, builds each job's models and runs
+them.
+
+Models, per partition job. Each maps the template subjects' held-out data
+into the target's space (``scoring.carry``: ``x_s[:, cols_s] A_s A_T'`` per
+piece), and the template side of every metric is their mean:
+
+  anatomical            fsaverage6 vertex identity (§6)
+  combined              the stacked model at the job's tuned (w, λ)
+  combined-minus-<b>    leave-one-route-out (three-block jobs only)
+  cha, stimulus-<space>, response
+                        the single routes, i.e. the tuned one-block faces
+  stimulus-vgg19        tuned alone (λ only), on its own Grams
+  srm, pca              the SRM comparator and its PCA control at the tuned k (s > 0)
+
+Faces (DECIDED #1). Every face of the combined job's tuning table (the full
+model, leave-one-route-out, the single routes) is refitted in memory from
+the routes' Grams at its weights, on the combined model's common columns,
+and taken at its tuned λ. The full model must reproduce the combined job's
+saved crosses; a mismatch is an error. So the Grams must still be on disk.
+
+Columns (DECIDED #2). Per job and film set, every model is scored on one
+column set: the columns finite in the target's data and in every model's
+projection over every film.
+
+Film sets (§3.2): ``heldout``, the 12 unique films of ses-23 and ses-26
+(primary); ``repeat``, the repeated films' held-out showings, scored
+separately. Every subject's window is paired to the target's grid by nearest
+film time (``films.paired_slices``) and z-scored per column before
+projection.
+
+Metrics here: M2a (per film), M2b (per segment), M3 (TB items; the 294 images
+with three exposures in every subject, all-item and triplet-free foil pools,
+DECIDED 2026-09-30) and M1 (localizer maps: fLoc t, motor between-effector
+effect, pRF angle from projected Cartesian components). M4 is a GPU step of
+its own. Floors (TB meanvol/|beta|, pRF R^2 and radius) decide which columns
+are SCORED; projection inputs are never blanked, since one NaN column would
+spoil its whole piece.
+
+Verbs:
+
+  score    one job -> <derivatives>/functional_space/scores/<scenario>/pct-<pct>/
+           draw-<draw>/target-<sub>/ (m2b.parquet, m2a.tsv, m3.tsv, m1.tsv, score.json)
+  mni      the MNI voxel-identity baseline for one target (job-independent) ->
+           scores/anatomical-mni/target-<sub>/
+  decide   H1, then H2 only if H1 is a go, from the primary 0% scores ->
+           scores/decision.json
+
+Usage:
+    python score_route.py score --pct 0 --draw 0 --target 03 --n-jobs 16
+    python score_route.py mni --target 03
+    python score_route.py decide
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import json
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parents[1]
+for p in (REPO_ROOT / "src" / "python", HERE):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+
+import procrustes as pr  # noqa: E402
+import scoring as sc  # noqa: E402
+
+FAMILY_A = "schaefer7n"
+FILM_SETS = {"heldout": "heldout", "heldout_repeat": "repeat"}  # window role -> film set
+PRIMARY_SET = "heldout"
+H1_JOBS = ("primary", 0)  # scenario, level
+SPACE = "ebind"  # the combined model's stimulus block (§6)
+MNI_STEM = ("space-fsaverage6", "space-MNI152NLin2009cAsym_res-2")
+FULL_REPRO_RTOL = 1e-6
+#: Where M1 is read, per family-A network (M1 floor DECIDED 2026-09-29: ceiling >= .4).
+M1_COMPONENTS = {"Vis": ("floc", "motor", "prf"), "SomMot": ("motor",), "DorsAttn": ("floc", "motor"),
+                 "SalVentAttn": ("motor",), "Cont": ("motor",)}
+#: Motor's between-effector contrasts with the mouth contrasts excluded (DECIDED 2026-09-29).
+MOTOR_CONTRASTS = ("handVsFootDerived", "saccadeVsOthersDerived")
+PRF_R2_FLOOR = 10.0  # percent (DECIDED 2026-09-29)
+#: TB beta floor, as retrieval_modeling/benchmark_6cell.py:clean_voxels (meanvol-floor reference).
+MEANVOL_FRAC, BETA_CAP = 0.25, 100.0
+
+
+def scores_root(derivatives: Path) -> Path:
+    return Path(derivatives) / "functional_space" / "scores"
+
+
+def out_dir(derivatives: Path, scenario: str, pct: int, draw: int, target: str) -> Path:
+    return scores_root(derivatives) / scenario / f"pct-{pct:03d}" / f"draw-{draw:02d}" / f"target-{target}"
+
+
+def mni_dir(derivatives: Path, target: str) -> Path:
+    return scores_root(derivatives) / "anatomical-mni" / f"target-{target}"
+
+
+# ---------------------------------------------------------------------------
+# test data
+# ---------------------------------------------------------------------------
+
+def network_labels(table: pd.DataFrame, atlases: Path) -> np.ndarray:
+    """Family-A network per grayordinate ('' outside the 7 Schaefer networks)."""
+    import grayordinates as go
+    import localizer_ceiling as lc
+
+    cortex = np.flatnonzero(table["piece"].to_numpy() == "cortex")
+    want = np.concatenate([np.arange(go.FSAVERAGE6_N)] * 2)
+    hemi = np.repeat(["L", "R"], go.FSAVERAGE6_N)
+    if (not np.array_equal(cortex, np.arange(want.size))
+            or not np.array_equal(table.loc[cortex, "vertex"].to_numpy(), want)
+            or not np.array_equal(table.loc[cortex, "hemi"].to_numpy(), hemi)):
+        raise ValueError("grayordinate cortex rows are not fsaverage6 L then R vertices in order")
+    lab = np.full(len(table), "", dtype=object)
+    for (fam, net), mask in lc.load_rois(Path(atlases)).items():
+        if fam == FAMILY_A:
+            lab[cortex[mask]] = net
+    return lab
+
+
+def mni_network_labels(voxels: pd.DataFrame) -> np.ndarray:
+    """Family-A network per MNI voxel, from the MNI Schaefer 7-network atlas (§6)."""
+    names = voxels["schaefer7n"].fillna("").astype(str).to_numpy()
+    return np.array([n.split("_")[2] if n.startswith("7Networks_") else "" for n in names], dtype=object)
+
+
+def film_rows(windows: pd.DataFrame, subs: list[str], role: str) -> dict[str, pd.DataFrame]:
+    """Each subject's windows of one role, indexed by film key (the same keys for every subject)."""
+    out = {}
+    for s in subs:
+        r = windows[(windows["sub"] == s) & (windows["role"] == role)].copy()
+        r["key"] = r["stimulus_id"] if role == "heldout" else r["stimulus_id"] + "@" + r["showing"].astype(str)
+        r = r.set_index("key")
+        if r.index.duplicated().any():
+            raise ValueError(f"sub-{s}: duplicate {role} film keys")
+        out[s] = r
+    keys = sorted(out[subs[0]].index)
+    if not keys or any(sorted(v.index) != keys for v in out.values()):
+        raise ValueError(f"{role}: subjects' film keys differ or are empty")
+    return out
+
+
+def load_films(rows: dict[str, pd.DataFrame], subs: list[str], target: str, read) -> dict[str, dict[str, np.ndarray]]:
+    """Every subject's paired, per-column z-scored window of each film, on the target's grid.
+
+    ``read(row, cache)`` returns one showing's full window (``films.film_series``
+    or its MNI counterpart). Subjects are loaded one at a time so only one
+    subject's runs sit in the cache.
+    """
+    import films as fm
+
+    keys = sorted(rows[target].index)
+    slices = {k: fm.paired_slices({s: rows[s].loc[k] for s in subs}, target) for k in keys}
+    out = {}
+    for s in subs:
+        cache: dict = {}
+        out[s] = {k: sc.zscore_columns(read(rows[s].loc[k], cache)[slices[k][s]]).astype(np.float32) for k in keys}
+        cache.clear()
+    return out
+
+
+def mni_reader(cleaned: Path, n_voxels: int):
+    """``read(row, cache)`` for the MNI series of a window row (same runs, same volumes)."""
+    import nibabel as nib
+
+    def read(row, cache):
+        rel = str(row.series)
+        if MNI_STEM[0] not in rel:
+            raise ValueError(f"{rel}: not an fsaverage6 series path")
+        path = Path(cleaned) / rel.replace(*MNI_STEM)
+        if path not in cache:
+            data = np.asarray(nib.load(str(path)).dataobj, dtype=np.float32)
+            if data.shape[1] != n_voxels:
+                raise ValueError(f"{path.name}: {data.shape[1]} voxels, index has {n_voxels}")
+            cache[path] = data
+        x = cache[path][int(row.start): int(row.start) + int(row.n)]
+        if np.isnan(x).all(axis=1).any():
+            raise ValueError(f"{path.name}: window {row.start}+{row.n} contains a non-steady-state row")
+        return x
+
+    return read
+
+
+def fs6_columns(v: np.ndarray, n: int) -> np.ndarray:
+    """An L+R fsaverage6 vertex vector as a grayordinate row (cortex columns come first, in order)."""
+    import grayordinates as go
+
+    if v.shape != (2 * go.FSAVERAGE6_N,):
+        raise ValueError(f"expected {2 * go.FSAVERAGE6_N} fsaverage6 values, got {v.shape}")
+    out = np.full(n, np.nan, dtype=np.float32)
+    out[: v.size] = v
+    return out
+
+
+def load_items(derivatives: Path, subs: list[str], n: int, networks: np.ndarray
+               ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], list[str], np.ndarray]:
+    """M3 inputs (deviation DECIDED 2026-09-30): the images with exactly three exposures in every subject.
+
+    Returns per subject the item patterns (items x columns: GLMsingle TYPED
+    ``betasmd`` averaged over the three exposures, then z-scored per column
+    across items) and the floor (bool per column: finite in every trial,
+    meanvol >= MEANVOL_FRAC x its network's median, median |beta| <= BETA_CAP);
+    the item ids; and the triplet-free foil pool (not enCon 3 in any subject).
+    """
+    import grayordinates as go
+
+    root = Path(derivatives) / "functional_space" / "glmsingle_tb_fsaverage6"
+    trials = {}
+    for s in subs:
+        t = pd.read_csv(root / f"sub-{s}" / "enc" / "trial_info.csv", dtype={"mmmId": str})
+        if not t.groupby(["session", "run"], sort=False)["onset"].apply(lambda o: o.is_monotonic_increasing).all():
+            raise ValueError(f"sub-{s}: trial_info onsets are not increasing within runs (betas are in time order)")
+        trials[s] = t
+    three = [set(c[c == 3].index) for c in (t.groupby("mmmId").size() for t in trials.values())]
+    items = sorted(set.intersection(*three))
+    triplet = set().union(*(set(t.loc[t["enCon"] == 3, "mmmId"]) for t in trials.values()))
+    foils = np.array([i not in triplet for i in items])
+    patterns, floor = {}, {}
+    for s in subs:
+        d = root / f"sub-{s}" / "enc"
+        fit = np.load(d / "glmsingle_outputs" / "TYPED_FITHRF_GLMDENOISE_RR.npy", allow_pickle=True).item()
+        betas = fit["betasmd"].reshape(fit["betasmd"].shape[0], -1)
+        meanvol = fit["meanvol"].reshape(-1)
+        if betas.shape[1] != len(trials[s]):
+            raise ValueError(f"sub-{s}: {betas.shape[1]} betas for {len(trials[s])} trials")
+        vi = pd.read_csv(d / "vertex_index.tsv", sep="\t")
+        if not np.array_equal(vi["row"].to_numpy(), np.arange(len(vi))) or len(vi) != betas.shape[0]:
+            raise ValueError(f"sub-{s}: vertex_index does not match the beta rows")
+        cols = np.where(vi["hemi"].to_numpy() == "R", go.FSAVERAGE6_N, 0) + vi["vertex"].to_numpy()
+        ids = trials[s]["mmmId"].to_numpy()
+        x = np.full((len(items), n), np.nan, dtype=np.float32)
+        x[:, cols] = np.stack([betas[:, ids == i].mean(axis=1) for i in items])
+        patterns[s] = sc.zscore_columns(x).astype(np.float32)
+        ok = np.zeros(n, dtype=bool)
+        good = np.isfinite(betas).all(axis=1)
+        with np.errstate(invalid="ignore"):
+            good &= np.nanmedian(np.abs(betas), axis=1) <= BETA_CAP
+        net = networks[cols]
+        for name in sorted(set(net) - {""}):
+            sel = net == name
+            good[sel] &= meanvol[sel] >= MEANVOL_FRAC * np.nanmedian(meanvol[sel])
+        ok[cols] = good
+        floor[s] = ok
+        del betas, fit
+    return patterns, floor, items, foils
+
+
+def load_maps(derivatives: Path, subs: list[str], n: int) -> tuple[dict[str, np.ndarray], list[tuple], dict]:
+    """M1 inputs: per subject a (maps x columns) array; the row keys; each subject's pRF keep mask.
+
+    Rows: fLoc full-data t maps (all contrasts), motor between-effector effect
+    maps (MOTOR_CONTRASTS, the mean over runs of each run's derived effect,
+    as the ceiling built them), and the pRF centre as Cartesian components
+    (x, y), projected as such (§9).
+    """
+    import nibabel as nib
+    import localizer_ceiling as lc
+
+    tree = Path(derivatives) / "functional_space" / "localizer_splithalf"
+    prf_root = Path(derivatives) / "functional_space" / "prf_splithalf"
+    rows_by_sub, keys_by_sub, keep = {}, {}, {}
+    for s in subs:
+        func = tree / f"sub-{s}" / "func"
+        floc = sorted(p.name.split("contrast-")[1].split("_")[0] for p in
+                      func.glob(f"sub-{s}_task-floc_hemi-L_space-fsaverage6_contrast-*_stat-t_desc-referenceOLS_statmap.func.gii"))
+        if not floc:
+            raise FileNotFoundError(f"{func}: no full-data fLoc t maps")
+        vecs, keys = [], []
+        for c in floc:
+            vecs.append(np.concatenate([np.asarray(nib.load(str(
+                func / f"sub-{s}_task-floc_hemi-{h}_space-fsaverage6_contrast-{c}_stat-t_desc-referenceOLS_statmap.func.gii"
+            )).darrays[0].data, dtype=np.float64).ravel() for h in lc.HEMIS]))
+            keys.append(("floc", c))
+        meta = json.loads(next(func.glob(f"sub-{s}_task-motor_space-fsaverage6_desc-*Splithalf_statmap.json")).read_text())
+        runs = [lc._sr(prefix) for prefix in meta["runs"]]
+        for c in MOTOR_CONTRASTS:
+            w = lc.DERIVED["motor"][c]
+            vecs.append(np.mean([sum(wt * lc._run_effect(tree, s, "motor", ses, run, base, meta["desc"])
+                                     for base, wt in w.items()) for ses, run in runs], axis=0))
+            keys.append(("motor", c))
+        root = prf_root / f"sub-{s}"
+        angle, ecc, r2 = (lc._prf_map(root, f"sub-{s}", prm) for prm in ("angle", "eccentricity", "R2"))
+        radius = float(json.loads((Path(derivatives) / "prf" / f"sub-{s}" /
+                                   f"sub-{s}_task-prf_space-T1w_prf.json").read_text())["StimulusRadiusDeg"])
+        px, py = sc.cartesian(angle, ecc)
+        vecs += [px, py]
+        keys += [("prf", "x"), ("prf", "y")]
+        with np.errstate(invalid="ignore"):
+            keep[s] = fs6_columns(((r2 > PRF_R2_FLOOR) & (ecc <= radius)).astype(np.float32), n) == 1
+        rows_by_sub[s] = np.stack([fs6_columns(v, n) for v in vecs])
+        keys_by_sub[s] = keys
+    keys = keys_by_sub[subs[0]]
+    if any(k != keys for k in keys_by_sub.values()):
+        raise ValueError("subjects' localizer maps differ in contrasts")
+    return rows_by_sub, keys, keep
+
+
+# ---------------------------------------------------------------------------
+# models
+# ---------------------------------------------------------------------------
+
+def face_name(face: str, names: list[str], space: str) -> str:
+    """Model name for a combined-table face: combined, combined-minus-<b>, or the single route."""
+    blocks = face.split("+")
+    if len(blocks) == len(names):
+        return "combined"
+    if len(blocks) == 1:
+        return f"stimulus-{space}" if blocks[0] == "stimulus" else blocks[0]
+    return "combined-minus-" + "+".join(b for b in names if b not in blocks)
+
+
+def face_models(job: dict, template_subs: list[str], n: int, n_jobs: int, log=print) -> tuple[dict, dict]:
+    """Every face of the combined job's tuning table, refitted from the Grams at its (w, λ)."""
+    import combined as cb
+    import stimulus_route as sr
+    from joblib import Parallel, delayed
+
+    target = job["target"]
+    cdir = cb.out_dir(job["derivatives"], SPACE, job["scenario"], job["pct"], job["draw"], target)
+    side = json.loads((cdir / "combined.json").read_text())
+    specs = cb.job_blocks(job["derivatives"], job["parts"], job["windows"], SPACE, job["scenario"], job["pct"],
+                          job["draw"], target)
+    names = [nm for nm, _, _ in specs]
+    if names != list(side["blocks"]):
+        raise ValueError(f"combined job's blocks {list(side['blocks'])} differ from this job's {names}")
+    raw = [cb.load_block(nm, d, prts, template_subs, target) for nm, d, prts in specs]
+    common = cb.common_columns(raw)
+    blocks = [cb.restrict(b, common) for b in raw]
+    del raw
+    coefs = [cb.energy_scale(b, template_subs) for b in blocks]
+    for nm, c in zip(names, coefs):
+        if not np.isclose(c, side["blocks"][nm]["scale_c"], rtol=1e-9):
+            raise ValueError(f"{nm}: energy scale {c} differs from the combined job's {side['blocks'][nm]['scale_c']}")
+    labs = sorted(common.template, key=lambda lab: -common.template[lab].size)
+    tcols = {lab: common.template[lab][pos] for lab, pos in common.target.items()}
+    subs = [*template_subs, target]
+    models, info = {}, {}
+    for face, spec in side["selection"].items():
+        w = [spec["weights"][nm] * c for nm, c in zip(names, coefs)]
+        fitted = Parallel(n_jobs=n_jobs)(
+            delayed(cb.fit_piece)([{pair: b.tpl[pair][lab] for pair in b.tpl} for b in blocks],
+                                  [{pair: b.tgt[pair][lab] for pair in b.tgt} for b in blocks]
+                                  if lab in common.target else [], w, template_subs, target,
+                                  common.target.get(lab))
+            for lab in labs)
+        crosses = {s: sr.as_cross({lab: f[s] for lab, f in zip(labs, fitted) if s in f},
+                                  tcols if s == target else common.template) for s in subs}
+        name = face_name(face, names, SPACE)
+        models[name] = {s: pr.transform_from_cross(crosses[s], n, spec["lam"]) for s in subs}
+        info[name] = {"source": "combined face", "face": face, "weights": spec["weights"], "lam": spec["lam"],
+                      "objective": spec["objective"]}
+        if face == side["full_model"]:
+            info[name]["reproduces_saved_crosses"] = _check_full(crosses, cdir, subs)
+    log(f"combined faces: {sorted(models)} ({len(common.template)} pieces)")
+    return models, info
+
+
+def _check_full(crosses: dict, cdir: Path, subs: list[str]) -> float:
+    """Max relative difference between the refitted full model and the combined job's saved crosses."""
+    import cha
+
+    worst = 0.0
+    for s in subs:
+        saved = cha.load_cross(cdir / f"cross_sub-{s}.npz")
+        mine = {str(lab): v for lab, v in crosses[s].items()}
+        if saved.keys() != mine.keys():
+            raise ValueError(f"sub-{s}: refitted full model covers other pieces than the saved crosses")
+        for lab, (cols, m) in saved.items():
+            c2, m2 = mine[lab]
+            if not np.array_equal(cols, c2):
+                raise ValueError(f"sub-{s} {lab}: refitted columns differ from the saved crosses")
+            worst = max(worst, float(np.abs(m2 - m).max() / max(np.abs(m).max(), 1e-300)))
+    if worst > FULL_REPRO_RTOL:
+        raise ValueError(f"refitted full model differs from the saved crosses (max relative {worst:.2e})")
+    return worst
+
+
+def tuned_alone(job: dict, space: str, template_subs: list[str], y: dict, n: int, n_jobs: int) -> tuple[dict, dict]:
+    """A stimulus route outside the combined model, tuned alone (λ only) by the §3.4 objective."""
+    import cha
+    import combined as cb
+    import stimulus_route as sr
+    from joblib import Parallel, delayed
+
+    target = job["target"]
+    d = sr.out_dir(job["derivatives"], space, job["scenario"], job["pct"], job["draw"], target)
+    blk = cb.load_block("stimulus", d, sr.BLOCKS, template_subs, target)
+    labs = list(blk.pcols.template)
+    res = Parallel(n_jobs=n_jobs)(
+        delayed(cb.tune_piece)([{pair: blk.tpl[pair][lab] for pair in blk.tpl}], [1.0], [(1.0,)], template_subs,
+                               {s: y[s][:, blk.pcols.template[lab]] for s in template_subs})
+        for lab in labs)
+    results = {lab: r for lab, r in zip(labs, res) if r is not None}
+    table = cb.tuning_table(results, [(1.0,)], ["stimulus"])
+    best = table.loc[table["objective"].idxmax()]
+    lam = float(best["lam"])
+    subs = [*template_subs, target]
+    tfs = {s: pr.transform_from_cross(cha.load_cross(d / f"cross_sub-{s}.npz"), n, lam) for s in subs}
+    return tfs, {"source": "tuned alone on its own Grams", "lam": lam, "objective": float(best["objective"]),
+                 "pieces_left_out": len(labs) - len(results)}
+
+
+def srm_objective(w: dict[str, dict], template_subs: list[str], y: dict[str, np.ndarray]) -> tuple[float, int]:
+    """§3.4 objective through the shared space: b carried into a's space by ``W_b W_a'``, per-column r, both ways."""
+    a, b = template_subs
+    num = 0.0
+    cols_n = 0
+    for lab, (cols, w_a) in w[a].items():
+        cols_b, w_b = w[b][lab]
+        if not np.array_equal(cols, cols_b):
+            raise ValueError(f"{lab}: template subjects' SRM columns differ")
+        ya, yb = y[a][:, cols], y[b][:, cols]
+        if not (np.isfinite(ya).all() and np.isfinite(yb).all()):
+            continue  # left out, never filled (as combined.tune_piece)
+        r_ab = sc.column_r(yb @ w_b @ w_a.T, ya)
+        r_ba = sc.column_r(ya @ w_a @ w_b.T, yb)
+        ok = np.isfinite(r_ab) & np.isfinite(r_ba)
+        num += r_ab[ok].sum() + r_ba[ok].sum()
+        cols_n += int(ok.sum())
+    return (num / (2 * cols_n) if cols_n else np.nan), cols_n
+
+
+def srm_models(job: dict, template_subs: list[str], y: dict, n: int) -> tuple[dict, dict]:
+    """SRM and its PCA control at the k the §3.4 objective picks (DECIDED #3)."""
+    import cha
+    import srm_route as srm
+
+    target = job["target"]
+    d = srm.out_dir(job["derivatives"], job["scenario"], job["pct"], job["draw"], target)
+    side = json.loads((d / "srm.json").read_text())
+    subs = [*template_subs, target]
+
+    def load(kind, k):
+        return {s: cha.load_cross(d / f"{kind}_sub-{s}_k-{k:03d}.npz") for s in subs}
+
+    objective = {k: srm_objective(load("w", k), template_subs, y)[0] for k in side["k_grid"]}
+    k = max(objective, key=lambda kk: (objective[kk], -kk))  # ties go to the smaller k
+    models = {kind: {s: pr.PiecewiseTransform(n, dict(v)) for s, v in load(kind, k).items()} for kind in ("w", "pca")}
+    info = {"source": "srm route, k tuned by the §3.4 objective", "k": int(k),
+            "objective": {str(kk): float(v) for kk, v in objective.items()}}
+    return {"srm": models["w"], "pca": models["pca"]}, {"srm": info, "pca": {**info, "source": "PCA control at SRM's k"}}
+
+
+# ---------------------------------------------------------------------------
+# scoring
+# ---------------------------------------------------------------------------
+
+def project_all(models: dict, data: dict[str, dict[str, np.ndarray]], template_subs: list[str], target: str
+                ) -> dict[str, dict[str, np.ndarray]]:
+    """``{model: {film: template mean in the target's space}}``; a ``None`` model is identity."""
+    out = {}
+    for name, tfs in models.items():
+        out[name] = {}
+        for k in data[target]:
+            if tfs is None:
+                out[name][k] = np.mean([data[s][k] for s in template_subs], axis=0)
+            else:
+                out[name][k] = sc.project({s: data[s][k] for s in template_subs}, tfs, target).astype(np.float32)
+    return out
+
+
+def shared_valid(target_films: dict[str, np.ndarray], proj: dict[str, dict[str, np.ndarray]]) -> np.ndarray:
+    """Columns finite in the target's data and in every model's projection over every film (DECIDED #2)."""
+    ok = np.logical_and.reduce([np.isfinite(x).all(axis=0) for x in target_films.values()])
+    for per_film in proj.values():
+        for x in per_film.values():
+            ok &= np.isfinite(x).all(axis=0)
+    return ok
+
+
+def score_set(target_films: dict[str, np.ndarray], proj: dict[str, dict[str, np.ndarray]],
+              networks: np.ndarray) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """M2b (per segment) and M2a (per film) for every model on the shared column set."""
+    valid = shared_valid(target_films, proj)
+    nets = {net: cols[valid[cols]] for net, cols in sc.network_columns(networks).items()}
+    m2b, m2a = [], []
+    for name, per_film in proj.items():
+        m2b.append(sc.m2b(target_films, per_film, nets).assign(model=name))
+        for k, x in target_films.items():
+            m2a += [{"model": name, "network": net, "film": k, "r": r}
+                    for net, r in sc.m2a(x, per_film[k], nets).items()]
+    cols = {net: int(c.size) for net, c in nets.items()}
+    return pd.concat(m2b, ignore_index=True), pd.DataFrame(m2a), cols
+
+
+def score_items(models: dict, items: dict, floor: dict, foils: np.ndarray, networks: np.ndarray,
+                template_subs: list[str], target: str) -> tuple[pd.DataFrame, dict]:
+    """M3 for every model, with both foil pools, on one shared column set (finite everywhere, above every floor)."""
+    data = {s: {"items": x} for s, x in items.items()}
+    proj = project_all(models, data, template_subs, target)
+    valid = shared_valid({"items": items[target]}, proj) & np.logical_and.reduce(list(floor.values()))
+    nets = {net: cols[valid[cols]] for net, cols in sc.network_columns(networks).items()}
+    rows = [sc.m3(items[target], d["items"], nets, f).assign(model=name, foils=pool)
+            for name, d in proj.items() for pool, f in (("all", None), ("no_triplet", foils))]
+    return pd.concat(rows, ignore_index=True), {net: int(c.size) for net, c in nets.items()}
+
+
+def score_maps(models: dict, maps: dict, keys: list[tuple], keep: dict, networks: np.ndarray, hemi: np.ndarray,
+               template_subs: list[str], target: str) -> pd.DataFrame:
+    """M1 for every model: per contrast and the component median (fLoc, motor); pRF angle; ``read`` marks §9's cells.
+
+    Per map row, a column is scored where the target's map and every model's
+    projection are finite; pRF angle additionally needs the target's keep mask.
+    """
+    data = {s: {"maps": x} for s, x in maps.items()}
+    proj = project_all(models, data, template_subs, target)
+    tgt = maps[target]
+    valid = np.isfinite(tgt)
+    for d in proj.values():
+        valid &= np.isfinite(d["maps"])
+    nets = sc.network_columns(networks)
+    ix = {k: i for i, k in enumerate(keys)}
+    rows = []
+    for name, d in proj.items():
+        pm = d["maps"]
+        for net, cols in nets.items():
+            read = M1_COMPONENTS.get(net, ())
+            for comp in ("floc", "motor"):
+                rs = []
+                for key in (k for k in keys if k[0] == comp):
+                    i = ix[key]
+                    c = cols[valid[i, cols]]
+                    r = sc.m1_map(tgt[i], pm[i], {net: c})[net]
+                    rs.append(r)
+                    rows.append({"model": name, "network": net, "component": comp, "contrast": key[1], "r": r,
+                                 "n_columns": int(c.size), "read": comp in read})
+                rows.append({"model": name, "network": net, "component": comp, "contrast": "median",
+                             "r": float(np.nanmedian(rs)) if np.isfinite(rs).any() else np.nan,
+                             "n_columns": None, "read": comp in read})
+            ix_x, ix_y = ix[("prf", "x")], ix[("prf", "y")]
+            ok = valid[ix_x] & valid[ix_y] & keep[target]
+            c = cols[ok[cols]]
+            r = sc.m1_angle((tgt[ix_x], tgt[ix_y]), (pm[ix_x], pm[ix_y]), hemi, ok, {net: c})[net]
+            rows.append({"model": name, "network": net, "component": "prf", "contrast": "angle", "r": r,
+                         "n_columns": int(c.size), "read": "prf" in read})
+    return pd.DataFrame(rows)
+
+
+def run_score(args: argparse.Namespace, log=print) -> Path:
+    import cha
+    import combined as cb
+    import encoding as enc
+    import films as fm
+    import grayordinates as go
+    import partitions as pt
+
+    t0 = time.time()
+    paths = enc.Paths()
+    cleaned = cha.Paths().cleaned
+    parts = pt.load_partitions(paths.derivatives)
+    windows = fm.load_windows(paths.derivatives)
+    subs = sorted(parts.loc[(parts["scenario"] == args.scenario) & (parts["pct"] == args.pct)
+                            & (parts["draw"] == args.draw) & (parts["target"] == args.target), "subject"].unique())
+    if args.target not in subs or len(subs) != 3:
+        raise ValueError(f"job resolves to subjects {subs}; expected the target and two template subjects")
+    template_subs = [s for s in subs if s != args.target]
+    job = {"derivatives": paths.derivatives, "parts": parts, "windows": windows, "scenario": args.scenario,
+           "pct": args.pct, "draw": args.draw, "target": args.target}
+    table = pd.read_csv(go.grayordinates_path(cleaned), sep="\t")
+    n = len(table)
+    networks = network_labels(table, cha.Paths().atlases)
+    seconds = {}
+
+    t1 = time.time()
+    models: dict = {"anatomical": None}
+    info: dict = {"anatomical": {"source": "fsaverage6 vertex identity"}}
+    faces, face_info = face_models(job, template_subs, n, args.n_jobs, log)
+    models.update(faces)
+    info.update(face_info)
+    _, y = cb.tuning_rows(parts, windows, args.scenario, args.pct, args.draw, args.target, template_subs, cleaned)
+    models["stimulus-vgg19"], info["stimulus-vgg19"] = tuned_alone(job, "vgg19", template_subs, y, n, args.n_jobs)
+    if "response" in models:  # the target shares films: SRM is defined
+        m, i = srm_models(job, template_subs, y, n)
+        models.update(m)
+        info.update(i)
+    del y
+    seconds["models"] = round(time.time() - t1, 1)
+    log(f"models: {list(models)} ({seconds['models']:.0f} s)")
+
+    frames_b, frames_a, n_cols = [], [], {}
+    for role, fset in FILM_SETS.items():
+        t1 = time.time()
+        data = load_films(film_rows(windows, subs, role), subs, args.target,
+                          lambda row, cache: fm.film_series(row, cleaned, cache))
+        proj = project_all(models, data, template_subs, args.target)
+        b, a, cols = score_set(data[args.target], proj, networks)
+        frames_b.append(b.assign(set=fset))
+        frames_a.append(a.assign(set=fset))
+        n_cols[fset] = cols
+        del data, proj
+        seconds[f"score_{fset}"] = round(time.time() - t1, 1)
+        log(f"{fset}: {b['film'].nunique()} films, columns {cols} ({seconds[f'score_{fset}']:.0f} s)")
+
+    t1 = time.time()
+    items, floor, item_ids, foils = load_items(paths.derivatives, subs, n, networks)
+    m3, m3_cols = score_items(models, items, floor, foils, networks, template_subs, args.target)
+    del items
+    seconds["score_m3"] = round(time.time() - t1, 1)
+    log(f"M3: {len(item_ids)} items ({int(foils.sum())} triplet-free foils), columns {m3_cols} "
+        f"({seconds['score_m3']:.0f} s)")
+
+    t1 = time.time()
+    maps, map_keys, keep = load_maps(paths.derivatives, subs, n)
+    m1 = score_maps(models, maps, map_keys, keep, networks, table["hemi"].to_numpy(), template_subs, args.target)
+    del maps
+    seconds["score_m1"] = round(time.time() - t1, 1)
+    log(f"M1: {len(map_keys)} maps ({seconds['score_m1']:.0f} s)")
+
+    dest = out_dir(paths.derivatives, args.scenario, args.pct, args.draw, args.target)
+    dest.mkdir(parents=True, exist_ok=True)
+    pd.concat(frames_b, ignore_index=True).to_parquet(dest / "m2b.parquet", index=False)
+    pd.concat(frames_a, ignore_index=True).to_csv(dest / "m2a.tsv", sep="\t", index=False, float_format="%.6g")
+    m3.to_csv(dest / "m3.tsv", sep="\t", index=False, float_format="%.6g")
+    m1.to_csv(dest / "m1.tsv", sep="\t", index=False, float_format="%.6g")
+    seconds["total"] = round(time.time() - t0, 1)
+    side = {
+        "description": "functional-space scores for one partition job, per model and family-A network: M2b per "
+                       "segment (m2b.parquet) and M2a per film (m2a.tsv) per film set, M3 per foil pool (m3.tsv), "
+                       "M1 per map and component median (m1.tsv); template side = mean of the template subjects "
+                       "carried into the target's space",
+        "job": {"scenario": args.scenario, "pct": args.pct, "draw": args.draw, "target": args.target},
+        "template_subjects": template_subs, "models": info, "n_columns": n_cols,
+        "m3": {"items": len(item_ids), "triplet_free_foils": int(foils.sum()), "n_columns": m3_cols,
+               "floor": {"meanvol_frac": MEANVOL_FRAC, "beta_cap": BETA_CAP}},
+        "m1": {"maps": [list(k) for k in map_keys], "read": {k: list(v) for k, v in M1_COMPONENTS.items()},
+               "prf_r2_floor": PRF_R2_FLOOR},
+        "film_sets": {fset: role for role, fset in FILM_SETS.items()}, "reference_grid": "target",
+        "code_version": sc._code_version(), "seconds": seconds,
+        "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+    }
+    (dest / "score.json").write_text(json.dumps(side, indent=2) + "\n")
+    log(f"wrote {dest} in {seconds['total']:.0f} s")
+    return dest
+
+
+def run_mni(args: argparse.Namespace, log=print) -> Path:
+    """The MNI voxel-identity baseline for one target: job-independent (no alignment)."""
+    import cha
+    import encoding as enc
+    import films as fm
+
+    t0 = time.time()
+    paths = enc.Paths()
+    cleaned = cha.Paths().cleaned
+    windows = fm.load_windows(paths.derivatives)
+    voxels = pd.read_csv(Path(cleaned) / "mni_voxels.tsv", sep="\t")
+    networks = mni_network_labels(voxels)
+    subs = sorted(windows["sub"].unique())
+    if args.target not in subs or len(subs) != 3:
+        raise ValueError(f"film windows cover subjects {subs}; expected three including the target")
+    template_subs = [s for s in subs if s != args.target]
+    frames_b, frames_a, n_cols = [], [], {}
+    for role, fset in FILM_SETS.items():
+        data = load_films(film_rows(windows, subs, role), subs, args.target, mni_reader(cleaned, len(voxels)))
+        proj = project_all({"anatomical-mni": None}, data, template_subs, args.target)
+        b, a, cols = score_set(data[args.target], proj, networks)
+        frames_b.append(b.assign(set=fset))
+        frames_a.append(a.assign(set=fset))
+        n_cols[fset] = cols
+        log(f"{fset}: {b['film'].nunique()} films, columns {cols}")
+    dest = mni_dir(paths.derivatives, args.target)
+    dest.mkdir(parents=True, exist_ok=True)
+    pd.concat(frames_b, ignore_index=True).to_parquet(dest / "m2b.parquet", index=False)
+    pd.concat(frames_a, ignore_index=True).to_csv(dest / "m2a.tsv", sep="\t", index=False, float_format="%.6g")
+    side = {"description": "MNI152NLin2009cAsym res-2 voxel-identity baseline (§6): M2b/M2a on the held-out films, "
+                           "family-A networks from the MNI Schaefer 7-network atlas; no alignment, so one per target",
+            "target": args.target, "template_subjects": template_subs, "n_columns": n_cols,
+            "code_version": sc._code_version(), "seconds": round(time.time() - t0, 1),
+            "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")}
+    (dest / "score.json").write_text(json.dumps(side, indent=2) + "\n")
+    log(f"wrote {dest}")
+    return dest
+
+
+# ---------------------------------------------------------------------------
+# decision
+# ---------------------------------------------------------------------------
+
+def load_level(derivatives: Path, parts: pd.DataFrame, scenario: str, pct: int, fset: str = PRIMARY_SET
+               ) -> pd.DataFrame:
+    """Per-film M2b (segment means) of every job at one level: target, draw, model, network, film, rank_acc.
+
+    Every job the partition table lists must have been scored; a missing one is an error.
+    """
+    import partitions as pt
+
+    jobs = pt.job_list(parts)
+    jobs = jobs[(jobs["scenario"] == scenario) & (jobs["pct"] == pct)]
+    frames, missing = [], []
+    for j in jobs.itertuples(index=False):
+        path = out_dir(derivatives, scenario, pct, int(j.draw), j.target) / "m2b.parquet"
+        if not path.exists():
+            missing.append(str(path))
+            continue
+        df = pd.read_parquet(path)
+        df = df[df["set"] == fset]
+        frames.append(df.groupby(["model", "network", "film"], as_index=False)["rank_acc"].mean()
+                      .assign(target=j.target, draw=int(j.draw)))
+    if missing:
+        raise FileNotFoundError(f"{len(missing)} of {len(jobs)} jobs unscored, e.g. {missing[:3]}")
+    return pd.concat(frames, ignore_index=True)
+
+
+def draw_average(level: pd.DataFrame, model: str) -> pd.DataFrame:
+    df = level[level["model"] == model]
+    if df.empty:
+        raise ValueError(f"no scores for model {model!r}")
+    return df.groupby(["target", "network", "film"], as_index=False)["rank_acc"].mean()
+
+
+def mc_error(level: pd.DataFrame, model: str, reference: pd.DataFrame, fs6_model: str = "anatomical") -> dict:
+    """Monte Carlo error of each film's draw-averaged gain (SD over draws / sqrt(draws)), summarised (§4)."""
+    key = ["target", "network", "film"]
+    route = level[level["model"] == model]
+    rows = []
+    for (t, net), ref in reference.groupby(["target", "network"]):
+        base = ref["baseline"].iat[0]
+        r = route[(route["target"] == t) & (route["network"] == net)]
+        if base == "fsaverage6":
+            b = level[(level["model"] == fs6_model) & (level["target"] == t) & (level["network"] == net)]
+            g = r.merge(b, on=[*key, "draw"], suffixes=("", "_ref"))
+            g = g.assign(gain=g["rank_acc"] - g["rank_acc_ref"])
+        else:
+            g = r.merge(ref[[*key, "rank_acc"]], on=key, suffixes=("", "_ref"))
+            g = g.assign(gain=g["rank_acc"] - g["rank_acc_ref"])
+        rows.append(g.groupby("film")["gain"].agg(lambda v: v.std(ddof=1) / np.sqrt(len(v))))
+    se = pd.concat(rows)
+    return {"median": float(se.median()), "max": float(se.max()), "n_cells": int(se.size)}
+
+
+def run_decide(args: argparse.Namespace, log=print) -> Path:
+    import encoding as enc
+    import partitions as pt
+
+    paths = enc.Paths()
+    parts = pt.load_partitions(paths.derivatives)
+    scenario, pct = H1_JOBS
+    level = load_level(paths.derivatives, parts, scenario, pct)
+    targets = sorted(level["target"].unique())
+    mni = []
+    for t in targets:
+        df = pd.read_parquet(mni_dir(paths.derivatives, t) / "m2b.parquet")
+        df = df[df["set"] == PRIMARY_SET]
+        mni.append(df.groupby(["network", "film"], as_index=False)["rank_acc"].mean().assign(target=t))
+    baselines = {"fsaverage6": draw_average(level, "anatomical"), "mni": pd.concat(mni, ignore_index=True)}
+    reference = sc.reference_scores(baselines)
+    combined = draw_average(level, "combined")
+    h1 = sc.decide(sc.film_gains(combined, reference))
+    h1["reference_choice"] = (reference.groupby(["target", "network"])["baseline"].first()
+                              .unstack().to_dict(orient="index"))
+    h1["mc_error"] = mc_error(level, "combined", reference)
+    out = {"description": "Functional-space H1 (combined vs the stronger anatomical baseline) and, if H1 is a go, "
+                          "H2 (combined vs CHA): M2b rank accuracy, film means averaged over draws, exact one-sided "
+                          "sign-flip per target x network, Holm across networks within target, go if a network "
+                          "survives in >= 2 targets (pre-registration §9)",
+           "scenario": scenario, "pct": pct, "film_set": PRIMARY_SET,
+           "n_draws": level.groupby("target")["draw"].nunique().to_dict(), "H1": h1}
+    cha = draw_average(level, "cha")
+    if h1["go"]:
+        out["H2"] = sc.decide(sc.film_gains(combined, cha))
+    else:
+        out["H2"] = "not tested: H1 is a no-go (fixed sequence, §1)"
+        out["exploratory_cha_vs_anatomical"] = sc.decide(sc.film_gains(cha, reference))
+    out["code_version"] = sc._code_version()
+    out["created"] = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    dest = scores_root(paths.derivatives) / "decision.json"
+    dest.write_text(json.dumps(out, indent=2) + "\n")
+    log(f"H1 {'GO' if h1['go'] else 'NO-GO'}: networks counted {h1['networks_counted']}; wrote {dest}")
+    return dest
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="verb", required=True)
+    s = sub.add_parser("score")
+    s.add_argument("--scenario", default="primary", choices=("primary", "secondary"))
+    s.add_argument("--pct", type=int, required=True)
+    s.add_argument("--draw", type=int, required=True)
+    s.add_argument("--target", required=True)
+    s.add_argument("--n-jobs", type=int, default=1)
+    m = sub.add_parser("mni")
+    m.add_argument("--target", required=True)
+    sub.add_parser("decide")
+    args = ap.parse_args()
+    {"score": run_score, "mni": run_mni, "decide": run_decide}[args.verb](args)
+
+
+if __name__ == "__main__":
+    main()

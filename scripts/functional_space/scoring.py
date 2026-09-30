@@ -78,19 +78,49 @@ SEGMENT_TRS = 10  # 15 s at TR 1.5 s (§9; DECIDED 2026-09-27)
 # space
 # ---------------------------------------------------------------------------
 
+def carry(x: np.ndarray, source: pr.PiecewiseTransform, target: pr.PiecewiseTransform) -> np.ndarray:
+    """One subject's data carried into the target's space: ``x[:, cols_s] A_s A_T'`` per piece.
+
+    Each transform maps its subject's columns into a shared frame, piece by
+    piece: Procrustes into the template (``A = R``), SRM or PCA into the shared
+    space (``A = W``, columns x k). For Procrustes the frame's dimensions ARE
+    the template's columns, and a target valid on only a subset of them
+    entered the template on that subset (``stimulus_route.target_cross``), so
+    its ``R_T`` is square over its own columns: the source's frame coordinates
+    are cut to the target's columns before ``R_T'``. A piece missing on either
+    side, and every column outside the target's pieces, comes out NaN; a NaN
+    input column spoils its whole piece (nothing is filled).
+    """
+    if x.shape[1] != source.n_columns or source.n_columns != target.n_columns:
+        raise ValueError(f"data {x.shape[1]}, source {source.n_columns}, target {target.n_columns} columns differ")
+    out = np.full((x.shape[0], target.n_columns), np.nan, dtype=np.float32)
+    for lab, (tcols, a_t) in target.pieces.items():
+        if lab not in source.pieces:
+            continue
+        scols, a_s = source.pieces[lab]
+        z = x[:, scols] @ a_s
+        if a_t.shape[1] != a_s.shape[1]:
+            pos = np.searchsorted(scols, tcols)
+            if (a_s.shape[0] != a_s.shape[1] or a_t.shape[0] != a_t.shape[1] or pos.max(initial=0) >= scols.size
+                    or not np.array_equal(scols[pos], tcols)):
+                raise ValueError(f"piece {lab}: target frame {a_t.shape} is not the source's {a_s.shape} "
+                                 "restricted to the target's columns")
+            z = z[:, pos]
+        out[:, tcols] = z @ a_t.T
+    return out
+
+
 def project(data: dict[str, np.ndarray], transforms: dict[str, pr.PiecewiseTransform], target: str
             ) -> np.ndarray:
-    """Mean over the template subjects of their data carried into the target's space.
+    """Mean over the template subjects of their data carried into the target's space (``carry``).
 
     ``data`` holds the template subjects' rows (same rows for each);
-    ``transforms`` every subject's transform into the template. Columns
-    outside the target's transform come out NaN.
+    ``transforms`` every subject's transform into the shared frame.
     """
-    back = transforms[target].inverse()
     subs = [s for s in data if s != target]
     if not subs:
         raise ValueError("no template subject to project")
-    return np.mean(np.stack([back.apply(transforms[s].apply(data[s])) for s in subs]), axis=0)
+    return np.mean(np.stack([carry(data[s], transforms[s], transforms[target]) for s in subs]), axis=0)
 
 
 def zscore_columns(y: np.ndarray) -> np.ndarray:
@@ -142,12 +172,14 @@ def m2a(target: np.ndarray, template: np.ndarray, nets: dict[str, np.ndarray]) -
 # identification (M2b, M3)
 # ---------------------------------------------------------------------------
 
-def identification(target: np.ndarray, template: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def identification(target: np.ndarray, template: np.ndarray, foils: np.ndarray | None = None
+                   ) -> tuple[np.ndarray, np.ndarray]:
     """Row i of ``target`` against every row of ``template``: (rank accuracy, top-1 hit) per row.
 
     Rank accuracy = share of foils (j ≠ i) whose correlation is below the true
     one's (chance .5; a tie counts half). Patterns are rows; correlation is
-    Pearson over their entries.
+    Pearson over their entries. ``foils`` (bool per row) restricts the foil
+    pool, for rank and top-1 alike; every row is still scored.
     """
     if target.shape != template.shape:
         raise ValueError(f"target {target.shape} and template {template.shape} differ")
@@ -159,8 +191,13 @@ def identification(target: np.ndarray, template: np.ndarray) -> tuple[np.ndarray
     c = a @ b.T / a.shape[1]
     true = np.diag(c)[:, None]
     foil = ~np.eye(n, dtype=bool)
-    rank = (((c < true) & foil).sum(1) + 0.5 * ((c == true) & foil).sum(1)) / (n - 1)
-    top1 = c.argmax(axis=1) == np.arange(n)
+    if foils is not None:
+        foil &= np.asarray(foils, dtype=bool)[None, :]
+    n_foils = foil.sum(1)
+    if (n_foils == 0).any():
+        raise ValueError("a row has no foil")
+    rank = (((c < true) & foil).sum(1) + 0.5 * ((c == true) & foil).sum(1)) / n_foils
+    top1 = np.where(foil | np.eye(n, dtype=bool), c, -np.inf).argmax(axis=1) == np.arange(n)
     return rank, top1
 
 
@@ -203,15 +240,16 @@ def per_film(scores: pd.DataFrame, value: str = "rank_acc") -> pd.DataFrame:
     return scores.groupby(["network", "film"], as_index=False)[value].mean()
 
 
-def m3(target_items: np.ndarray, template_items: np.ndarray, nets: dict[str, np.ndarray]) -> pd.DataFrame:
-    """TB item identification per network: rank accuracy per item (and top-1)."""
+def m3(target_items: np.ndarray, template_items: np.ndarray, nets: dict[str, np.ndarray],
+       foils: np.ndarray | None = None) -> pd.DataFrame:
+    """TB item identification per network: rank accuracy per item (and top-1); ``foils`` as ``identification``."""
     rows = []
     for net, cols in nets.items():
         ok = _valid(target_items[:, cols], template_items[:, cols])
         c = cols[ok]
         if c.size < 2:
             continue
-        rank, top1 = identification(target_items[:, c], template_items[:, c])
+        rank, top1 = identification(target_items[:, c], template_items[:, c], foils)
         rows.append({"network": net, "rank_acc": float(rank.mean()), "top1": float(top1.mean()),
                      "n_items": int(rank.size), "n_columns": int(c.size)})
     return pd.DataFrame(rows)
