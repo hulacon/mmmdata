@@ -10,6 +10,8 @@ import sys
 import wave
 from pathlib import Path
 
+import nibabel as nib
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -211,3 +213,94 @@ class TestConvertSession:
         bids, source = roots
         _session(bids, source)
         assert sr.nat_sessions(SUBJ) == [SES]
+
+
+def _memo_words(rows):
+    return pd.DataFrame(rows, columns=["word", "start", "end", "movie"])
+
+
+class TestSpeechBounds:
+    def test_one_event_per_film_first_to_last_word(self):
+        table = pd.DataFrame({
+            "onset": [10.0, 12.0, 30.0, None], "duration": [0.5, 1.0, 0.2, 0.3],
+            "trial_num": [2, 2, 1, 1], "movie_name": ["B", "B", "A", "A"]})
+        ev = sr.speech_bounds(table)
+        assert ev["trial_num"].tolist() == [2, 1]
+        assert ev["onset"].tolist() == [10.0, 30.0]
+        assert ev["duration"].tolist() == [3.0, 0.2]
+
+
+class TestMemoEvents:
+    def test_onset_is_memo_time_minus_lead(self):
+        table = sr.memo_events(
+            _memo_words([["Um...", 30.0, 30.5, "Film 2"], ["b", 40.0, 40.2, "Film 1"]]),
+            _trials(), lead_s=20.0, run_seconds=100.0)
+        assert table["onset"].tolist() == [10.0, 20.0]
+        assert table["trial_num"].tolist() == [2, 1]
+        assert table["recording_onset"].tolist() == [30.0, 40.0]
+        assert table["filler"].tolist() == [1, 0]
+        assert set(table["time_zero"]) == {"memo_aligned"}
+
+    def test_word_outside_run_masks_onset(self):
+        words = _memo_words([["w", 30.0 + i, 30.5 + i, "Film 1"] for i in range(30)]
+                            + [["late", 500.0, 500.5, "Film 1"]])
+        table = sr.memo_events(words, _trials(), lead_s=20.0, run_seconds=100.0)
+        late = table[table["word"] == "late"].iloc[0]
+        assert pd.isna(late["onset"]) and pd.isna(late["duration"])
+
+    def test_mostly_outside_run_means_wrong_offset(self):
+        words = _memo_words([["w", 5.0 + i, 5.5 + i, "Film 1"] for i in range(5)])
+        with pytest.raises(ValueError, match="offset is wrong"):
+            sr.memo_events(words, _trials(), lead_s=20.0, run_seconds=100.0)
+
+    def test_unknown_film_refuses(self):
+        with pytest.raises(ValueError, match="not among"):
+            sr.memo_events(_memo_words([["w", 30.0, 30.5, "Film 9"]]), _trials(),
+                           lead_s=20.0, run_seconds=100.0)
+
+
+class TestConvertMemoRun:
+    def _memo_session(self, bids, source, monkeypatch):
+        _session(bids, source, runs=("01", "02"))
+        func = bids / SUB / SESL / "func"
+        stem = f"{SUB}_{SESL}_task-NATretrieval_run-01_bold"
+        (func / f"{stem}.nii.gz").unlink()
+        nib.save(nib.Nifti1Image(np.zeros((2, 2, 2, 40), np.int16), np.eye(4)),
+                 str(func / f"{stem}.nii.gz"))
+        (func / f"{stem}.json").write_text(json.dumps({"RepetitionTime": 1.5}))
+        (bids / SUB / SESL / "beh" / "memo_word_timestamps.csv").write_text(
+            "word,start,end,movie\nOkay,25.0,25.4,Film 1\nthen,70.0,70.3,Film 2\n")
+        monkeypatch.setattr(sr, "EVENTS_RUN", {(SUBJ, SES): "02"})
+        monkeypatch.setattr(sr, "MEMO_RUNS", {(SUBJ, SES): {
+            "run": "01", "transcript": "memo_word_timestamps.csv",
+            "lead_s": 20.0, "uncertainty_s": 0.2}})
+
+    def test_memo_run_written_beside_events_run(self, roots, monkeypatch):
+        bids, source = roots
+        self._memo_session(bids, source, monkeypatch)
+        sr.convert_nat_session(SUBJ, SES)
+        beh = bids / SUB / SESL / "beh"
+        tsv = beh / f"{SUB}_{SESL}_task-NATretrieval_run-01_beh.tsv"
+        table = pd.read_csv(tsv, sep="\t")
+        assert table["onset"].tolist() == [5.0, 50.0]
+        side = json.loads(tsv.with_suffix(".json").read_text())
+        assert "20.0" in side["TimeBase"] and "SpeechBoundedEvents" in side
+        assert (beh / f"{SUB}_{SESL}_task-NATretrieval_run-02_beh.tsv").exists()
+        ev = pd.read_csv(bids / SUB / SESL / "func"
+                         / f"{SUB}_{SESL}_task-NATretrieval_run-01_events.tsv", sep="\t")
+        assert ev["trial_type"].tolist() == ["recall_speech"] * 2
+        assert ev["onset"].tolist() == [5.0, 50.0]
+        assert ev["duration"].tolist() == [0.4, 0.3]
+
+    def test_rerun_ignores_the_memo_runs_own_events(self, roots, monkeypatch):
+        bids, source = roots
+        self._memo_session(bids, source, monkeypatch)
+        sr.convert_nat_session(SUBJ, SES)
+        assert sr.convert_nat_session(SUBJ, SES).endswith("_run-02_beh.tsv")
+
+    def test_memo_run_with_the_events_file_refuses(self, roots, monkeypatch):
+        bids, source = roots
+        self._memo_session(bids, source, monkeypatch)
+        monkeypatch.setattr(sr, "EVENTS_RUN", {(SUBJ, SES): "01"})
+        with pytest.raises(ValueError, match="has the events file"):
+            sr.convert_memo_run(SUBJ, SES)

@@ -30,7 +30,7 @@ import sys
 import pandas as pd
 
 from common import (
-    NA, BIDS_ROOT, FR_SESSION_OFFSET,
+    NA, BIDS_ROOT, FR_SESSION_OFFSET, NAT_EVENTS_RUN,
     bids_ses_fr, bids_sub, int_or_na,
     write_events_tsv, write_json_sidecar,
 )
@@ -333,7 +333,9 @@ def main():
         subj, sess = parse_filename(args.psychopy_csv)
         sub = bids_sub(subj)
         ses = bids_ses_fr(sess)
-        fname = f"{sub}_{ses}_task-NATretrieval_events.tsv"
+        run = NAT_EVENTS_RUN.get((sub, ses))
+        run_part = f"_run-{run}" if run else ""
+        fname = f"{sub}_{ses}_task-NATretrieval{run_part}_events.tsv"
         output = os.path.join(BIDS_ROOT, sub, ses, "func", fname)
     else:
         output = args.output_tsv

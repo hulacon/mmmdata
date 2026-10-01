@@ -34,7 +34,7 @@ if os.path.dirname(SCRIPT_DIR) not in sys.path:
 # data moved out of <bids_root>/sourcedata to the sibling mmmsourcedata tree,
 # so deriving SOURCE_ROOT from BIDS_ROOT silently walked a path that no longer
 # exists -- and an empty walk reads as "this subject has no behavioral data".
-from raw2bids_converters.common import BIDS_ROOT, SOURCE_DIR as SOURCE_ROOT  # noqa: E402
+from raw2bids_converters.common import BIDS_ROOT, NAT_EVENTS_RUN, SOURCE_DIR as SOURCE_ROOT  # noqa: E402
 EDF_TRIAGE_CSV = os.path.join(SCRIPT_DIR, "edf_triage.csv")
 PHYSIO_TRIAGE_CSV = os.path.join(SCRIPT_DIR, "physio_triage.csv")
 
@@ -249,9 +249,11 @@ def classify_free_recall_behavioral(filename, subj_num, bids_ses_num):
     if m:
         subj_str, sess_str, ext = m.groups()
         if ext == "csv":
+            run = NAT_EVENTS_RUN.get((sub, ses))
+            run_part = f"_run-{run}" if run else ""
             return {
                 "description": f"PsychoPy retrieval data, {sub} {ses}",
-                "bids_destination": f"{sub}/{ses}/func/{sub}_{ses}_task-NATretrieval_events.tsv",
+                "bids_destination": f"{sub}/{ses}/func/{sub}_{ses}_task-NATretrieval{run_part}_events.tsv",
                 "conversion_type": "psychopy_retrieval",
             }
         else:

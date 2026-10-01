@@ -54,6 +54,13 @@ def bids_ses(num):
     return f"ses-{num:02d}"
 
 
+# Sessions with two NATretrieval BOLD runs whose single PsychoPy CSV belongs
+# to run-02 (run-01 crashed). Keyed on real BIDS labels because nothing in the
+# CSV says which run it is; without a run entity the events file would apply
+# to both runs by BIDS inheritance.
+NAT_EVENTS_RUN = {("sub-04", "ses-20"): "02", ("sub-04", "ses-24"): "02"}
+
+
 def bids_ses_fr(sess_num):
     """Map free recall session number to BIDS session label."""
     return bids_ses(sess_num + FR_SESSION_OFFSET)

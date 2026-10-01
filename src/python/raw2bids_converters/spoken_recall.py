@@ -19,6 +19,9 @@ base rather than by session:
       the trial's recall routine (recall1.started -> recall1.stopped), so a
       word's onset on the run clock is recall1.started + its recording
       time. See scanner_events() for how gaps in that rule are carried.
+      A crashed run with no events file but a session-long voice memo gets
+      its own table from the memo's vetted transcript, placed by one
+      measured memo -> run offset (MEMO_RUNS, memo_events()).
 
 Raw audio stays in mmmsourcedata (PII separation); only word tables enter
 the BIDS tree.
@@ -37,6 +40,7 @@ import os
 import re
 import wave
 
+import nibabel as nib
 import pandas as pd
 
 from common import (
@@ -166,9 +170,10 @@ ROUTINE_SLACK = 1.0
 # paired with the wrong transcript -- refuse rather than mask.
 MAX_OFF_WINDOW_FRACTION = 0.05
 
-# Sessions whose single, run-less NATretrieval events file belongs to the
-# second BOLD run because the first run crashed. Keyed on real labels because
-# the events file carries no run entity: nothing in the data says which run.
+# Sessions whose single NATretrieval events file belongs to the second BOLD
+# run because the first run crashed. psychopy_retrieval.py now names those
+# files run-02; this map still places a run-less file (an older conversion).
+# Keyed on real labels: nothing in the data says which run.
 EVENTS_RUN = {(4, 20): "02", (4, 24): "02"}
 
 # Trials skipped on screen (~1 s each) because their films were recalled in a
@@ -177,9 +182,23 @@ EVENTS_RUN = {(4, 20): "02", (4, 24): "02"}
 # earlier recording can be placed on its own run's clock.
 WITHHELD_TRIALS = {(4, 24): {1, 2, 3, 4, 5}}
 
+# Crashed runs whose only record is a session-long voice memo with a vetted
+# transcript (word,start,end plus a hand-added `movie` column). There is no
+# events file for the run, so the memo is placed on the run clock by one
+# measured offset: run time = memo time - lead_s. The offset was measured by
+# locking the other run's memo to its events (cross-correlating its per-trial
+# recordings) and reading the scanner's acoustic onset/offset in both memos;
+# the three reads agreed to within ~0.4 s. Keyed on real labels and a real
+# filename because nothing generic identifies a crashed run or its memo.
+MEMO_RUNS = {
+    (4, 24): {"run": "01",
+              "transcript": "Sub4Sess6_cumulative_word_timestamps.csv",
+              "lead_s": 23.94, "uncertainty_s": 0.2},
+}
 
-def read_vetted_transcript(path):
-    """One vetted word table -> (word/start/end frame, blank rows dropped).
+
+def read_vetted_transcript(path, extra=()):
+    """One vetted word table -> (word/start/end[+extra] frame, blank rows dropped).
 
     Read-only. Some files were re-saved from a spreadsheet (cp1252, a BOM,
     trailing empty columns), and NA parsing is off because "None" is a word
@@ -192,10 +211,11 @@ def read_vetted_transcript(path):
     except UnicodeDecodeError:
         text = raw.decode("cp1252")
     table = pd.read_csv(io.StringIO(text), keep_default_na=False, dtype=str)
-    missing = {"word", "start", "end"} - set(table.columns)
+    columns = ["word", "start", "end", *extra]
+    missing = set(columns) - set(table.columns)
     if missing:
         raise ValueError(f"{path}: missing columns {sorted(missing)}")
-    words = table[["word", "start", "end"]].copy()
+    words = table[columns].copy()
     blank = words["word"].str.strip() == ""
     words = words[~blank].reset_index(drop=True)
     words["start"] = pd.to_numeric(words["start"], errors="raise")
@@ -229,8 +249,10 @@ def nat_target_run(sub_num, ses_num, sub, ses):
 
     run is None when the bold file has no run entity.
     """
-    events = sorted(glob.glob(
-        f"{BIDS_ROOT}/{sub}/{ses}/func/{sub}_{ses}_task-{NAT_TASK}*_events.tsv"))
+    memo_run = MEMO_RUNS.get((sub_num, ses_num), {}).get("run")
+    events = sorted(e for e in glob.glob(
+        f"{BIDS_ROOT}/{sub}/{ses}/func/{sub}_{ses}_task-{NAT_TASK}*_events.tsv")
+        if not (memo_run and f"_run-{memo_run}_events" in e))
     if len(events) != 1:
         raise ValueError(f"{sub} {ses}: expected one {NAT_TASK} events file, "
                          f"found {len(events)}")
@@ -381,9 +403,161 @@ def scanner_sidecar(status, withheld):
             "trial_num": sorted(withheld),
             "Reason": ("Skipped on screen in this run because the films were "
                        "recalled in an earlier, crashed run; that speech is "
-                       "not on this run's clock and is not included."),
+                       "not on this run's clock and is not included here. "
+                       "Where that run's memo could be placed, its words are "
+                       "in that run's _beh.tsv."),
         }
     return side
+
+
+def memo_events(words, trials, lead_s, run_seconds):
+    """A memo's vetted words -> one word table on its crashed run's clock.
+
+    words: word/start/end/movie, memo time. trials: the session's recall rows
+        (trial_num, movie_name), which number the films for the session.
+    onset = start - lead_s, n/a where it falls outside the run; duration is
+    n/a where the vetted end precedes the start or leaves the run.
+    """
+    by_movie = dict(zip(trials["movie_name"], trials["trial_num"].astype(int)))
+    unknown = sorted(set(words["movie"]) - set(by_movie))
+    if unknown:
+        raise ValueError(f"memo films not among the session's recall trials: "
+                         f"{unknown}")
+    start = words["start"].astype(float)
+    end = words["end"].astype(float)
+    onset, offset = start - lead_s, end - lead_s
+    in_run = (onset >= 0) & (onset <= run_seconds)
+    if len(words) and (~in_run).mean() > MAX_OFF_WINDOW_FRACTION:
+        raise ValueError(f"{(~in_run).sum()} of {len(words)} words fall outside "
+                         f"the {run_seconds:.1f} s run; the memo offset is wrong")
+    good_end = in_run & (end >= start) & (offset <= run_seconds)
+    clean = words["word"].str.strip(".,!?…'\"").str.lower()
+    return pd.DataFrame({
+        "onset": onset.where(in_run).round(3),
+        "duration": (end - start).where(good_end).round(3),
+        "word": words["word"],
+        "trial_num": words["movie"].map(by_movie).astype(int),
+        "movie_name": words["movie"],
+        "recording_onset": start.round(3),
+        "recording_offset": end.round(3),
+        "filler": clean.isin(FILLERS).astype(int),
+        "time_zero": "memo_aligned",
+    })
+
+
+def speech_bounds(table):
+    """Word table -> one recall_speech event per film: first word to last word."""
+    timed = table.dropna(subset=["onset"])
+    end = timed["onset"] + timed["duration"].fillna(0)
+    g = timed.assign(end=end).groupby(["trial_num", "movie_name"], sort=False)
+    ev = g.agg(onset=("onset", "min"), end=("end", "max")).reset_index()
+    ev = ev.sort_values("onset", ignore_index=True)
+    return pd.DataFrame({
+        "onset": ev["onset"].round(3),
+        "duration": (ev["end"] - ev["onset"]).round(3),
+        "trial_type": "recall_speech",
+        "trial_num": ev["trial_num"],
+        "movie_name": ev["movie_name"],
+    })
+
+
+def speech_events_sidecar(lead_s, uncertainty_s, events_run):
+    return {
+        "onset": {"Description": (
+            f"First transcribed word of the film's recall, on this run's clock "
+            f"(memo time - {lead_s} s, about +/-{uncertainty_s} s; see the "
+            f"run's _beh.json TimeBase)."), "Units": "s"},
+        "duration": {"Description": "First word onset to last word offset.",
+                     "Units": "s"},
+        "trial_type": {"Description": "Type of event", "Levels": {
+            "recall_speech": (
+                "Span of spoken recall for one film, bounded by speech. NOT "
+                "the screen-defined 'recall' event of other NATretrieval runs "
+                "(prompt or image-cue end to spacebar): this run crashed and "
+                "no prompt, cue or keypress times were saved. Elsewhere the "
+                "first word follows the screen onset by ~0-3 s and the "
+                "spacebar follows the last word by ~1 s, so this span starts "
+                "later and ends earlier than a screen-defined one would.")}},
+        "trial_num": {"Description": (
+            f"Film's trial_num in run-{events_run}'s events.tsv, where it was "
+            f"skipped on screen because it had been recalled in this run.")},
+        "movie_name": {"Description": "Film recalled, from the memo transcript."},
+    }
+
+
+def memo_sidecar(status, lead_s, uncertainty_s, events_run):
+    side = scanner_sidecar(status, withheld=())
+    side["TimeBase"] = (
+        f"This run crashed and has no events file; its only record is a "
+        f"session-long audio memo. onset = memo time - {lead_s} s. The offset "
+        f"was measured, not logged: the memo of run-{events_run} was locked to "
+        f"that run's events by cross-correlating its per-trial recordings, and "
+        f"the scanner's acoustic onset and offset were read in both memos. "
+        f"Zero is therefore the point standing in the same relation to the "
+        f"scanner's audible onset as run-{events_run}'s events zero "
+        f"(wait.started) does, and carries about +/-{uncertainty_s} s.")
+    side["TranscriptSource"] = (
+        "The human-vetted memo transcript in this directory "
+        "(word,start,end,movie in memo time), read unchanged. The same words "
+        f"also sit, re-based per film, in the vetted per-trial files of "
+        f"run-{events_run}'s skipped trials, which that run's table withholds.")
+    side["SpeechBoundedEvents"] = (
+        "Prompt, cue and spacebar times of this run were not saved. The "
+        "run's events.tsv carries one speech-bounded recall_speech event per "
+        "film (first to last word), not screen-defined recall events.")
+    side["recording_onset"]["Description"] = (
+        "Vetted word start, seconds from the memo's start, unaltered.")
+    side["recording_offset"]["Description"] = (
+        "Vetted word end, seconds from the memo's start, unaltered.")
+    side["trial_num"]["Description"] = (
+        f"Film's trial_num in run-{events_run}'s events.tsv, where it was "
+        f"skipped on screen because it had been recalled in this run.")
+    side["movie_name"]["Description"] = "Film recalled, from the memo transcript."
+    side["time_zero"]["Levels"] = {
+        "memo_aligned": "zero is the measured memo -> run offset (TimeBase)"}
+    return side
+
+
+def convert_memo_run(sub_num, ses_num, dry_run=False, status="corrected"):
+    """A crashed run's memo transcript -> its run's _beh.tsv + sidecar."""
+    spec = MEMO_RUNS[(sub_num, ses_num)]
+    sub, ses = bids_sub(sub_num), f"ses-{ses_num:02d}"
+    events_path, events_run = nat_target_run(sub_num, ses_num, sub, ses)
+    if events_run == spec["run"]:
+        raise ValueError(f"{sub} {ses}: memo run-{spec['run']} has the events file")
+    events = pd.read_csv(events_path, sep="\t")
+    trials = events[events["trial_type"] == "recall"]
+    stem = f"{sub}_{ses}_task-{NAT_TASK}_run-{spec['run']}"
+    bold = f"{BIDS_ROOT}/{sub}/{ses}/func/{stem}_bold.nii.gz"
+    if not os.path.exists(bold):
+        raise FileNotFoundError(f"no bold for the memo run: {bold}")
+    with open(bold.replace(".nii.gz", ".json")) as f:
+        tr = float(json.load(f)["RepetitionTime"])
+    run_seconds = nib.load(bold).shape[3] * tr
+    words, blanks = read_vetted_transcript(
+        f"{BIDS_ROOT}/{sub}/{ses}/beh/{spec['transcript']}", extra=("movie",))
+    try:
+        table = memo_events(words, trials, spec["lead_s"], run_seconds)
+    except ValueError as e:
+        raise ValueError(f"{sub} {ses}: {e}") from None
+
+    tsv = f"{BIDS_ROOT}/{sub}/{ses}/beh/{stem}_beh.tsv"
+    write_beh_tsv(table, tsv, dry_run=dry_run)
+    write_json_sidecar(memo_sidecar(status, spec["lead_s"], spec["uncertainty_s"],
+                                    events_run),
+                       tsv.replace("_beh.tsv", "_beh.json"), dry_run=dry_run)
+    ev_tsv = f"{BIDS_ROOT}/{sub}/{ses}/func/{stem}_events.tsv"
+    write_beh_tsv(speech_bounds(table), ev_tsv, dry_run=dry_run)
+    write_json_sidecar(speech_events_sidecar(spec["lead_s"], spec["uncertainty_s"],
+                                             events_run),
+                       ev_tsv.replace("_events.tsv", "_events.json"), dry_run=dry_run)
+    print(f"{sub} {ses}_run-{spec['run']} (memo): {table['trial_num'].nunique()} "
+          f"films, {len(table)} words, onset {table['onset'].min():.1f}-"
+          f"{table['onset'].max():.1f} of {run_seconds:.1f} s; "
+          f"onset n/a {table['onset'].isna().sum()}, "
+          f"duration n/a {table['duration'].isna().sum()}, blank dropped {blanks}"
+          + (" (dry run)" if dry_run else ""))
+    return tsv
 
 
 def nat_sessions(sub_num):
@@ -427,6 +601,8 @@ def convert_nat_session(sub_num, ses_num, dry_run=False, status="corrected"):
           + (f", assumed zero trials {list(assumed)}" if len(assumed) else "")
           + (f", withheld {sorted(withheld)}" if withheld else "")
           + (" (dry run)" if dry_run else ""))
+    if (sub_num, ses_num) in MEMO_RUNS:
+        convert_memo_run(sub_num, ses_num, dry_run=dry_run, status=status)
     return tsv
 
 
