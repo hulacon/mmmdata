@@ -198,14 +198,18 @@ def generate_vviq() -> None:
     score_bids = [f"vviq_{i+1:02d}" for i in range(len(score_cols[:16]))]
     vviq["vviq_total"] = vviq[score_bids].sum(axis=1).astype(int)
 
-    # Sidecar
+    # Sidecar. The administered form (mmmsourcedata archive/recruitment/VVIQ.pdf)
+    # uses the reversed scale -- 5 = vivid as real seeing, 1 = no image -- not
+    # Marks's (1973) original 1 = vivid. Values are stored as answered, so the
+    # level labels must follow the form, verbatim.
     sidecar: dict = {
         "participant_id": {"Description": "BIDS participant identifier"},
         "MeasurementToolName": "Vividness of Visual Imagery Questionnaire (VVIQ)",
         "MeasurementToolDescription": (
             "16-item self-report measure of the vividness of visual imagery. "
-            "Four scenarios with 4 items each. Rating scale: 1 = perfectly clear "
-            "and vivid as normal vision, 5 = no image at all."
+            "Four scenarios with 4 items each. Rating scale as administered "
+            "(reversed relative to Marks, 1973): 5 = perfectly clear and vivid "
+            "as real seeing, 1 = no image at all."
         ),
     }
 
@@ -216,11 +220,11 @@ def generate_vviq() -> None:
         sidecar[bids_name] = {
             "Description": item_descriptions[i] if i < len(item_descriptions) else f"VVIQ item {i+1}",
             "Levels": {
-                "1": "Perfectly clear and as vivid as normal vision",
-                "2": "Clear and reasonably vivid",
-                "3": "Moderately clear and vivid",
-                "4": "Vague and dim",
-                "5": "No image at all, you only know that you are thinking of the object",
+                "1": "No image at all, you only \"know\" that you are thinking of the object",
+                "2": "Vague and dim",
+                "3": "Moderately clear and lively",
+                "4": "Clear and reasonably vivid",
+                "5": "Perfectly clear and vivid as real seeing",
             },
             "Scenario": (
                 f"{scenario_names[scenario_idx]} (items {scenario_idx*4+1}-{scenario_idx*4+4})"
@@ -230,7 +234,7 @@ def generate_vviq() -> None:
         }
 
     sidecar["vviq_total"] = {
-        "Description": "Sum of all 16 VVIQ items (range: 16-80). Lower scores indicate more vivid imagery.",
+        "Description": "Sum of all 16 VVIQ items (range: 16-80). Higher scores indicate more vivid imagery.",
     }
 
     _write_tsv_json(vviq, PHENOTYPE_DIR / "vviq.tsv", sidecar)
