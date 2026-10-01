@@ -1,4 +1,4 @@
-"""The five map classes of the neural-rotation pilot, one interface.
+"""The five map classes of the cross-phase map pilot, one interface.
 
 Every class fits ``R ~ f(E)`` on training items and predicts ``R_hat`` for
 new ``E``, in the k-dimensional shared basis of basis.py unless noted:

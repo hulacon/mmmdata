@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rung (iv) of the neural-rotation ladder: pRF-defined voxel populations.
+"""Rung (iv) of the ROI ladder: pRF-defined voxel populations.
 
 From the analyzePRF pooled fits (``derivatives/prf/sub-##/``, space-T1w,
 R² in percent, unthresholded) three masks per R² threshold t:

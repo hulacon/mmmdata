@@ -231,7 +231,7 @@ def main():
     ap.add_argument("--seed", type=int, default=20260923)
     ap.add_argument("--cache-root", default=None)
     ap.add_argument("--design-root", default=None)
-    ap.add_argument("--out-root", default=None, help="default <output_dir>/neural_rotation/anchors")
+    ap.add_argument("--out-root", default=None, help="default <output_dir>/crossphase_maps/anchors")
     args = ap.parse_args()
     t0 = time.time()
     cache_root, design, arm_map, out_root, _ = load_subject(args)

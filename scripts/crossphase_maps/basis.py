@@ -1,5 +1,5 @@
 """Cleaning, exposure averaging, reliability preselection, block
-normalisation and the shared basis for the neural-rotation operator fits.
+normalisation and the shared basis for the cross-phase map fits.
 
 Conventions (every module in this directory): patterns are ``(n_items,
 n_vox)`` float64, item order is the design table's ``mmmId`` order for the

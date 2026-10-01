@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ROI ladder masks for the neural-rotation pilot, rungs (i)-(iii).
+"""ROI ladder masks for the cross-phase map pilot, rungs (i)-(iii).
 
 The *state-space ladder* makes the level at which an operator is fitted a
 measured factor. This script cuts the anatomical rungs from the staged
@@ -229,14 +229,14 @@ def write_tree(out_root: Path, ref_img, rows, masks, dseg, block_rows, spec: dic
     if not dd.exists():
         with open(dd, "w") as f:
             json.dump({
-                "Name": "Functional and anatomical ROI masks (neural-rotation ladder)",
+                "Name": "Functional and anatomical ROI masks (ROI ladder)",
                 "BIDSVersion": "1.8.0",
                 "DatasetType": "derivative",
-                "GeneratedBy": [{"Name": "mmmdata/scripts/neural_rotation/build_roi_ladder.py",
+                "GeneratedBy": [{"Name": "mmmdata/scripts/crossphase_maps/build_roi_ladder.py",
                                  "Description": "state-space ladder rungs (i)-(iii); "
                                                 "design record: mmmdata-agents "
-                                                "docs/workbench/neural-rotation-pilot/"},
-                                {"Name": "mmmdata/scripts/neural_rotation/build_prf_masks.py",
+                                                "docs/results/ (encoding-retrieval map pilot)"},
+                                {"Name": "mmmdata/scripts/crossphase_maps/build_prf_masks.py",
                                  "Description": "rung (iv), pRF-defined populations "
                                                 "under sub-*/"}],
                 "SourceDatasets": [{"URL": str(s)} for s in sources],

@@ -29,7 +29,7 @@ matrix only). Matching between arms is on (session, run, onset).
 
 Design record: mmmdata-agents docs/workbench/retrieval-modeling/ (2026-09-10).
 
-``--roi-set ladder`` (neural-rotation pilot) reads the ROI ladder instead:
+``--roi-set ladder`` (cross-phase map pilot) reads the ROI ladder instead:
 every row of ``derivatives/functional_rois/ladder.tsv`` (rungs i-iii, masks
 already on the fit grid -- asserted, never resampled) plus, when present, the
 subject's rung-(iv) pRF masks under ``functional_rois/<sub>/space-<SPACE>/``.
@@ -38,7 +38,7 @@ with the same per-ROI arrays, ``roi_rungs`` beside ``roi_names``, and for the
 union ROIs ``blocks_<ROI>`` (int per voxel) + ``blocknames_<ROI>``:
 VTCAG (VTC, AG), Posterior (the rung-(i) index of the dseg), PrfUnion*
 (pos, negstrict, negother). Design record: mmmdata-agents
-docs/workbench/neural-rotation-pilot/.
+docs/results/ (encoding-retrieval map pilot).
 
 Usage:
     python extract_roi_betas.py --subject sub-## --arm pooled --dry-run
@@ -155,7 +155,7 @@ def ladder_masks_on_grid(ref_img, roi_root: Path, subject: str):
     space = f"space-{tb.SPACE}"
     ladder = roi_root / "ladder.tsv"
     if not ladder.exists():
-        sys.exit(f"ERROR: ladder table missing: {ladder} (run neural_rotation/build_roi_ladder.py)")
+        sys.exit(f"ERROR: ladder table missing: {ladder} (run crossphase_maps/build_roi_ladder.py)")
     rows = pd.read_csv(ladder, sep="\t")
     masks, rungs, blocks, blocknames = {}, {}, {}, {}
 

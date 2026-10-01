@@ -84,7 +84,7 @@ PATTERN_CORTICAL_ROIS = {
     # Ventral temporal cortex per Ye et al. 2020 eLife (Harvard-Oxford at 25 %):
     # inferior temporal gyrus, parahippocampal gyrus, temporal fusiform cortex.
     # Temporal Occipital Fusiform Cortex (39) is a separate label and excluded
-    # on the literal reading (neural-rotation pilot, DECIDED 2026-09-16).
+    # on the literal reading (cross-phase map pilot, DECIDED 2026-09-16).
     "VTC":       {14: "Inferior Temporal Gyrus, anterior",
                   15: "Inferior Temporal Gyrus, posterior",
                   16: "Inferior Temporal Gyrus, temporooccipital",

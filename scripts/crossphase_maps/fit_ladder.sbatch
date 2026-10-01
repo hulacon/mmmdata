@@ -11,9 +11,9 @@
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/nr_fit_%A_%a.err
 
 #==============================================================================
-# Neural-rotation pilot: one operator-fit cell per array task
+# Cross-phase map pilot: one operator-fit cell per array task
 #==============================================================================
-# Workbench: mmmdata-agents/docs/workbench/neural-rotation-pilot/.
+# Record: mmmdata-agents docs/results/ (encoding-retrieval map pilot).
 # Each task is one line of a cells manifest (make_cells.py writes it):
 #   subject <TAB> rung <TAB> roi <TAB> pair
 # and runs fit_pair.py on it with the cluster null (--n-perm 1000). Extra
@@ -26,7 +26,7 @@
 # Usage:
 #   python make_cells.py --subjects sub-03 --out cells_sub03.tsv
 #   sbatch --array=1-$(wc -l < cells_sub03.tsv) fit_ladder.sbatch cells_sub03.tsv \
-#       --k-max 200 --out-root ${OUTPUT_DIR}/neural_rotation/<pass>
+#       --k-max 200 --out-root ${OUTPUT_DIR}/crossphase_maps/<pass>
 # A pass = one (preselect, k-max) setting; give each its own --out-root so
 # report.py reads one pass at a time (the 2026-09-22 preselect-0.5 pass sits
 # at the tree root).
@@ -56,7 +56,7 @@ source "${REPO_ROOT}/.venv/bin/activate"
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
-python ${REPO_ROOT}/scripts/neural_rotation/fit_pair.py \
+python ${REPO_ROOT}/scripts/crossphase_maps/fit_pair.py \
     --subject "${SUBJECT}" --rung "${RUNG}" --roi "${ROI}" --pair "${PAIR}" \
     --n-perm 1000 --n-perm-rot 100 "$@"
 

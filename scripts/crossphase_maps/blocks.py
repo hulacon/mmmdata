@@ -47,5 +47,5 @@ def predicted_retinotopic_map(*args, **kwargs):
     rule is not decided in the design record yet."""
     raise NotImplementedError(
         "level-3 predicted map: correspondence rule between pos and neg pRF "
-        "populations is not decided; see the neural-rotation-pilot charter, "
+        "populations is not decided; see the pilot design record, "
         "Settles-when 6(b)")

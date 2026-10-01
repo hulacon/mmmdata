@@ -1,4 +1,4 @@
-"""Gate, ceiling, null and CIs for the neural-rotation operator fits.
+"""Gate, ceiling, null and CIs for the cross-phase map fits.
 
   identify         run-matched held-out item identification (the gate)
   encoding_ceiling the only ceiling: enc -> enc identity, exposure 1 vs the

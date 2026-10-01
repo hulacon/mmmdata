@@ -1,4 +1,4 @@
-"""Planted-truth tests for scripts/neural_rotation: the whole pipeline
+"""Planted-truth tests for scripts/crossphase_maps: the whole pipeline
 (fake_caches.py -> fit_pair.py -> report.py) on a self-contained synthetic
 design, asserting on the output tables only (the schema WP5 consumes).
 
@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-NR = Path(__file__).resolve().parent.parent / "scripts" / "neural_rotation"
+NR = Path(__file__).resolve().parent.parent / "scripts" / "crossphase_maps"
 PY = sys.executable
 
 N_SES = 6

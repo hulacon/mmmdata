@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trial design table for the neural-rotation pilot: one tidy row per trial.
+"""Trial design table for the cross-phase map pilot: one tidy row per trial.
 
 Built from the TB events files and the catalog's session dates only, so it
 can be rebuilt anywhere the BIDS tree and ``inventory/catalog.duckdb`` are
@@ -7,7 +7,7 @@ staged and matched to a GLMsingle ``trial_info.csv`` on (session, run, onset).
 Every later step of the pilot (folds, item age, anchors, exposure counts)
 joins on this table rather than re-deriving it from events.
 
-Outputs, under ``<output_dir>/neural_rotation/sub-##/``:
+Outputs, under ``<output_dir>/crossphase_maps/sub-##/``:
 
   sub-##_desc-trials.tsv      one row per trial of interest (see COLUMNS)
   sub-##_desc-anchorlags.tsv  every (session, session') pair per anchor x cue
@@ -58,7 +58,7 @@ def _load_module(name: str, path: Path):
 
 tb = _load_module("glmsingle_tb", SCRIPTS / "glmsingle_tb.py")
 
-TREE = "neural_rotation"
+TREE = "crossphase_maps"
 PHASES = ("enc", "ret-word", "ret-image")
 MODALITY_TO_PHASE = {"visual": "ret-image", "auditory": "ret-word"}
 CUE_TO_PHASE = {1: "ret-image", 2: "ret-word"}
@@ -303,13 +303,13 @@ def ensure_dataset_description(root: Path, bids_root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     with open(dd, "w") as f:
         json.dump({
-            "Name": "Neural-rotation pilot: trial design tables, ROI ladder "
+            "Name": "Cross-phase map pilot: trial design tables, ROI ladder "
                     "caches and operator fits",
             "BIDSVersion": "1.8.0",
             "DatasetType": "derivative",
-            "GeneratedBy": [{"Name": "mmmdata/scripts/neural_rotation/",
+            "GeneratedBy": [{"Name": "mmmdata/scripts/crossphase_maps/",
                              "Description": "design record: mmmdata-agents "
-                                            "docs/workbench/neural-rotation-pilot/"}],
+                                            "docs/results/ (encoding-retrieval map pilot)"}],
             "SourceDatasets": [{"URL": str(bids_root)}],
         }, f, indent=2)
 

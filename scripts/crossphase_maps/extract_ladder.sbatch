@@ -11,9 +11,9 @@
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/nr_extract_%A_%a.err
 
 #==============================================================================
-# Neural-rotation pilot: ROI-ladder pattern caches (TYPED) per subject x arm
+# Cross-phase map pilot: ROI-ladder pattern caches (TYPED) per subject x arm
 #==============================================================================
-# Workbench: mmmdata-agents/docs/workbench/neural-rotation-pilot/ (step 0/1).
+# Record: mmmdata-agents docs/results/ (encoding-retrieval map pilot).
 # Same job as retrieval_modeling/extract_roi_betas.sbatch with
 # --roi-set ladder: every ladder row (rungs i-iii) + the subject's rung-(iv)
 # pRF masks, written beside the six-ROI caches as

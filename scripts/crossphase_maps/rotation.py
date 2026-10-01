@@ -12,7 +12,7 @@ fitted on:
   principal_angles     Bjorck-Golub between the top-m PCs of E and R
   per_item_plane_angle signed angle between e_i and r_i inside a plane
   age_slopes           per-plane OLS slope of that angle on item age
-  anchor_regression    similarity ~ lag + absolute time (RoPE relative-time
+  anchor_regression    similarity ~ lag + absolute time (relative-time
                        readout)
 
 Shapes: Q (k, k); E, R (n_items, k); plane basis P (k, 2).
@@ -143,8 +143,8 @@ def content_position_split(spectrum_rows: list) -> dict:
 
 def anchor_regression(y, lag_days, abs_time_days, n_boot: int = 2000, seed: int = 0) -> dict:
     """y ~ 1 + lag_days + abs_time_days by OLS, bootstrap CIs over pairs.
-    RoPE's defining property is dependence on relative position only, so
-    the absolute-time coefficient is the readout. Returns both coefficients
+    A purely relative-time account depends on lag only, so the
+    absolute-time coefficient is the readout. Returns both coefficients
     with CIs and n."""
     y, l, t = (np.asarray(v, float) for v in (y, lag_days, abs_time_days))
     ok = np.isfinite(y) & np.isfinite(l) & np.isfinite(t)

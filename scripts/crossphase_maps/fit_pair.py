@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fit and score the five map classes for one cell of the neural-rotation
+"""Fit and score the five map classes for one cell of the cross-phase map
 pilot: subject x rung x ROI x phase pair x beta type.
 
 This is the cluster entry point (one SLURM array task per cell) and the
@@ -86,7 +86,7 @@ def _load_module(name: str, path: Path):
 
 tb = _load_module("glmsingle_tb", SCRIPTS / "glmsingle_tb.py")
 
-DESIGN_TREE = "neural_rotation"
+DESIGN_TREE = "crossphase_maps"
 CACHE_TREE = "pattern_similarity"
 ROI_SET = "ladder"
 PHASE_ARMS = {"enc": "enc", "ret-word": "ret-word-tbonly", "ret-image": "ret-image-tbonly"}
