@@ -5,11 +5,12 @@ Handles files with conversion_type='localizer_events': the auditory, motor,
 fixation and tone localizers. Per-task run counts are not listed here -- query
 the catalog.
 
-Auditory and fixation are final-session files -> BIDS ses-30. Tone and motor
+Fixation is a final-session file -> BIDS ses-30. Tone, motor and auditory
 take their BIDS session from the **source path**, never from the CSV's
-`sess_id`: tone was collected in the localizer sessions, and motor moved there
-too under the regularised protocol, so `sess_id` means different things for
-different cohorts while the path always means the same thing.
+`sess_id`: tone was collected in the localizer sessions, and motor and
+auditory moved there too under the regularised protocol, so `sess_id` means
+different things for different cohorts while the path always means the same
+thing.
 
 Auditory localizer format:
   Columns: sub_id, task_id, sess_id, run_id, trial_id, stim_start, stim_end,
@@ -22,7 +23,7 @@ Motor localizer format:
   saccade, rest. The order is frozen by a hardcoded seed in the stimulus
   program -- identical in every run of every subject. The run entity comes
   from the BOLD, not from the CSV filename, whose `runN` is a per-subject
-  counter (see motor_target).
+  counter (see localizer_target).
 
 Fixation format:
   Columns: event, onset_s, offset_s. Two rows: a `sync` marker at 0 with no
@@ -143,8 +144,25 @@ def convert_auditory(csv_path, output_tsv, dry_run=False):
     Source has one row per trial with stim_start/stim_end and
     stim_fixation_start/stim_fixation_end. Output has two events:
     stimulus (auditory presentation) and fixation (post-stimulus).
+
+    Subject and session come from the sourcedata path and the run entity from
+    `output_tsv`, as for motor: the CSV's `sessN`/`runN` are per-subject
+    counters under the regularised protocol (`sess3_run2` is a session's only
+    run). Onsets are the measured values verbatim -- the program starts its
+    clock on the scanner sync with no lead-in.
     """
-    subj, run = parse_subj_run(csv_path)
+    subj_in_name, _ = parse_subj_run(csv_path)
+    subj = subj_from_path(csv_path)
+    if subj != subj_in_name:
+        raise ValueError(
+            f"{csv_path}: the filename says sub{subj_in_name} but the path "
+            f"says sub-{subj:02d}. The path wins; move or rename the file."
+        )
+    ses = ses_from_path(csv_path)
+    m = re.search(r"_run-(\d+)_", os.path.basename(output_tsv))
+    run_entity = int(m.group(1)) if m else None
+    run_idx = 1 if run_entity is None else run_entity
+
     df = pd.read_csv(csv_path)
 
     events_list = []
@@ -158,8 +176,8 @@ def convert_auditory(csv_path, output_tsv, dry_run=False):
             "onset": stim_start,
             "duration": stim_end - stim_start,
             "subj_num": subj,
-            "ses_num": FINAL_SESSION,
-            "run_idx": run,
+            "ses_num": ses,
+            "run_idx": run_idx,
             "trial_type": "stimulus",
             "trial_id": trial_id,
         })
@@ -167,41 +185,49 @@ def convert_auditory(csv_path, output_tsv, dry_run=False):
             "onset": stim_end,
             "duration": fix_end - stim_end,
             "subj_num": subj,
-            "ses_num": FINAL_SESSION,
-            "run_idx": run,
+            "ses_num": ses,
+            "run_idx": run_idx,
             "trial_type": "fixation",
             "trial_id": trial_id,
         })
 
     events = pd.DataFrame(events_list)
+    # stim_fixation_end is the program's trial timer, recorded, not filled in
+    # here -- so this is a real check, not the circular one the 2026-09-08
+    # entry warns about.
+    margin = design_margin_s("auditory", subj, ses, run_entity,
+                             float(df["stim_fixation_end"].max()))
+
     write_events_tsv(events, output_tsv, dry_run=dry_run)
 
     json_path = output_tsv.replace("_events.tsv", "_events.json")
-    write_json_sidecar(SIDECAR_AUDITORY, json_path, dry_run=dry_run)
+    write_json_sidecar(auditory_sidecar(csv_path, margin), json_path,
+                       dry_run=dry_run)
     return True
 
 
 MOTOR_DESIGN_S = 600.0      # 30 blocks x 20 s, which exactly fills the run
-MOTOR_TR_S = 1.5
+TR_S = 1.5
 # Ben's acceptance bar (2026-09-08): a margin under 500 ms is delta = 0. The
-# measured runs sit at -0.25 to -0.39 s, so anything reaching this threshold is
-# a new finding, not the known flip-latency overrun.
-MOTOR_MARGIN_TOL_S = 0.5
+# measured motor runs sit at -0.25 to -0.39 s and auditory at -0.01 to +0.01 s,
+# so anything reaching this threshold is a new finding, not known latency.
+MARGIN_TOL_S = 0.5
 
 
-def motor_target(csv_path):
-    """Resolve (subj, ses, run_entity) for a motor CSV from the path + the BOLD.
+def localizer_target(csv_path, task):
+    """Resolve (subj, ses, run_entity) for a motor or auditory CSV.
 
-    Two things a motor source filename cannot be trusted for:
+    Subject and session come from the sourcedata path, the run entity from
+    the BOLD. Two things these source filenames cannot be trusted for:
 
-    * `sessN` counts differently per cohort. The first cohort ran motor only
-      in the final session and their CSVs all say `sess1`; from the
+    * `sessN` counts differently per cohort. The first cohort ran motor and
+      auditory in the final session and their CSVs all say `sess1`; from the
       regularised protocol onward `sessN` already is the BIDS session. The
       sourcedata path carries the BIDS session for both, so it is the
       authority.
     * `runN` is a per-subject counter, not a within-session index. Under the
-      regularised protocol a session's only motor run can be named `run2`,
-      and its BOLD carries no `run` entity at all.
+      regularised protocol a session's only run can be named `run2`, and its
+      BOLD carries no `run` entity at all.
 
     So the run entity is read off whichever BOLD exists, and an absent BOLD is
     an error naming both candidates rather than a guess.
@@ -215,7 +241,7 @@ def motor_target(csv_path):
         )
     ses = ses_from_path(csv_path)
 
-    stem = f"{bids_sub(subj)}_{bids_ses(ses)}_task-motor"
+    stem = f"{bids_sub(subj)}_{bids_ses(ses)}_task-{task}"
     func = os.path.join(BIDS_ROOT, bids_sub(subj), bids_ses(ses), "func")
     without_run = os.path.join(func, f"{stem}_bold.nii.gz")
     with_run = os.path.join(func, f"{stem}_run-{run_in_name:02d}_bold.nii.gz")
@@ -225,25 +251,26 @@ def motor_target(csv_path):
     if os.path.exists(with_run):
         return subj, ses, run_in_name
     raise FileNotFoundError(
-        f"No motor BOLD for sub-{subj:02d} ses-{ses:02d}; looked for\n"
+        f"No {task} BOLD for sub-{subj:02d} ses-{ses:02d}; looked for\n"
         f"  {without_run}\n  {with_run}\n"
         "The BOLD decides whether the events carry a run entity, so run this "
         "after BIDSification or pass an explicit output path."
     )
 
 
-def motor_margin_s(subj, ses, run_entity, events_end_s):
+def design_margin_s(task, subj, ses, run_entity, events_end_s):
     """`nvols x TR - events_end`: the check that would have caught fLoc.
 
-    A whole-TR offset can only hide inside surplus acquisition. Motor has
-    none -- 30 blocks x 20 s exactly fills a 400-volume run, and the measured
-    span overruns it slightly through per-block flip latency -- so a surplus
-    of a TR or more means the task clock does not start at the trigger and
-    must be explained before events are written.
+    A whole-TR offset can only hide inside surplus acquisition. Motor and
+    auditory have none -- motor's 30 blocks x 20 s fill a 400-volume run (the
+    measured span overruns it slightly through per-block flip latency), and
+    the final-session auditory program's 612 s trial window fills a
+    408-volume run -- so a surplus of a TR or more means the task clock does
+    not start at the trigger and must be explained before events are written.
 
     Returns the margin in seconds, or None when the BOLD is absent.
     """
-    stem = f"{bids_sub(subj)}_{bids_ses(ses)}_task-motor"
+    stem = f"{bids_sub(subj)}_{bids_ses(ses)}_task-{task}"
     if run_entity is not None:
         stem += f"_run-{run_entity:02d}"
     bold = os.path.join(BIDS_ROOT, bids_sub(subj), bids_ses(ses), "func",
@@ -253,20 +280,20 @@ def motor_margin_s(subj, ses, run_entity, events_end_s):
         return None
 
     margin = acq - events_end_s
-    if margin >= MOTOR_MARGIN_TOL_S:
+    if margin >= MARGIN_TOL_S:
         raise ValueError(
             f"{stem}: the acquisition ({acq:.3f} s) exceeds the events span "
             f"({events_end_s:.3f} s) by {margin:.3f} s, at or past the "
-            f"{MOTOR_MARGIN_TOL_S:.1f} s acceptance bar. A surplus has to be "
+            f"{MARGIN_TOL_S:.1f} s acceptance bar. A surplus has to be "
             "explained by a named feature of the stimulus program before "
             "these events are trustworthy -- it is the shape of the fLoc "
             "countdown bug. Check the program for a lead-in, then set an "
             "explicit shift here."
         )
-    if margin <= -MOTOR_TR_S:
+    if margin <= -TR_S:
         print(f"  WARNING: {stem} overruns its acquisition by "
               f"{-margin:.3f} s (more than one TR); the scan may have been "
-              "stopped early, which motor has not seen before.")
+              f"stopped early, which {task} has not seen before.")
     return margin
 
 
@@ -274,7 +301,7 @@ def convert_motor(csv_path, output_tsv, dry_run=False):
     """Convert motor localizer timing CSV -> BIDS events TSV.
 
     Subject and session come from the sourcedata path; the run entity comes
-    from `output_tsv`, which `main` builds from the BOLD via `motor_target`.
+    from `output_tsv`, which `main` builds from the BOLD via `localizer_target`.
     Onsets are the measured values verbatim -- the program resets its clock on
     the scanner sync with no lead-in, so the task clock is the scan clock.
     """
@@ -302,7 +329,8 @@ def convert_motor(csv_path, output_tsv, dry_run=False):
         "trial_type": df["task"],
     })
 
-    margin = motor_margin_s(subj, ses, run_entity, float(offset.max()))
+    margin = design_margin_s("motor", subj, ses, run_entity,
+                             float(offset.max()))
 
     write_events_tsv(events, output_tsv, dry_run=dry_run)
 
@@ -492,6 +520,51 @@ SIDECAR_MOTOR = {
 }
 
 
+def auditory_sidecar(csv_path, margin_s):
+    """SIDECAR_AUDITORY plus this run's provenance and its timing check."""
+    sc = dict(SIDECAR_AUDITORY)
+    sc["Description"] = (
+        "Auditory localizer: one continuous spoken-audio stimulus (~561.65 s "
+        "as presented) followed by silence with fixation to the end of the "
+        "612 s trial window. Written from the timing record of the "
+        "final-session program; the early-session program could not write "
+        "one, and runs from it are not converted here."
+    )
+    sc["StimulusPresentation"] = {
+        "SoftwareName": "PsychoPy (hand-coded localizer_auditory.py)",
+    }
+    sc["StimulusFile"] = (
+        "The program loads auditory_localizer_filtered.wav. The data "
+        "collectors confirmed the filtered file for the regularised-protocol "
+        "cohort; for the first cohort this is a code reading, not yet "
+        "confirmed."
+    )
+    sc["PlaybackRate"] = (
+        "Inferred, not recorded: the 44.1 kHz WAV was most likely played "
+        "through a 48 kHz audio device. Every logged stimulus lasts ~561.65 s "
+        "against a 611.32 s file (611.32 x 44.1/48 = 561.65 s), and the tone "
+        "localizer shows the same ratio. Onsets and durations here are the "
+        "logged values and need no correction; any segment timing or "
+        "acoustic feature computed from the WAV must be scaled by 0.91875 "
+        "before it is aligned to these events."
+    )
+    sc["Sources"] = [os.path.relpath(csv_path, os.path.dirname(SOURCE_DIR))]
+    sc["TimingOrigin"] = (
+        "Onsets are the measured values from the source record, unshifted. "
+        "The program starts its clock on the scanner sync; its lead-in and "
+        "lead-out are commented out, so the task clock is the scan clock."
+    )
+    if margin_s is not None:
+        sc["TimingVerification"] = (
+            f"nvols x TR - recorded trial-window end = {margin_s:+.3f} s, "
+            f"inside the {MARGIN_TOL_S:.1f} s acceptance bar, so the events "
+            "are taken to start at the first volume (delta = 0). The 612 s "
+            "trial window fills the 408-volume acquisition exactly, leaving "
+            "no surplus for a whole-TR offset to hide in."
+        )
+    return sc
+
+
 def motor_sidecar(csv_path, margin_s):
     """SIDECAR_MOTOR plus this run's provenance and its timing check."""
     sc = dict(SIDECAR_MOTOR)
@@ -517,7 +590,7 @@ def motor_sidecar(csv_path, margin_s):
     if margin_s is not None:
         sc["TimingVerification"] = (
             f"nvols x TR - events_end = {margin_s:+.3f} s, inside the "
-            f"{MOTOR_MARGIN_TOL_S:.1f} s acceptance bar, so the events are "
+            f"{MARGIN_TOL_S:.1f} s acceptance bar, so the events are "
             "taken to start at the first volume (delta = 0). The design fills "
             "the acquisition exactly, so there is no surplus for a whole-TR "
             "offset to hide in; the small overrun is per-block flip latency "
@@ -542,21 +615,24 @@ SIDECAR_TONE = {
     "ses_num": {
         "Description": (
             "BIDS session number, taken from the source path. The source CSV's "
-            "own `sess_id` counts 1, 2 against BIDS ses-02, ses-03."
+            "own `sess_id` is not used: its meaning differs by cohort (1, 2 "
+            "against BIDS ses-02, ses-03 for the first cohort; equal to the "
+            "BIDS session for later ones)."
         ),
     },
     "run_idx": {
         "Description": (
-            "Run number within the session. One tone run per session for "
-            "sub-03 and sub-04, so always 1; the BIDS filename carries no run "
-            "entity. The source CSV's `run_id` tracks the session number, not "
-            "a within-session counter."
+            "Run number within the session. One tone run per session, so "
+            "always 1; the BIDS filename carries no run entity. The source "
+            "CSV's `run_id` is the operator-entered run number that selects "
+            "the sweep direction (1 low-to-high, 2 high-to-low), not a "
+            "within-session counter."
         ),
     },
     "trial_type": {
         "Description": "Type of event",
         "Levels": {
-            "tone": "Pure-tone sweep (~25.75 s)",
+            "tone": "Pure-tone sweep (~25.75 s as presented; see PlaybackRate)",
             "fixation": "Fixation to the 32 s cycle boundary",
         },
     },
@@ -573,6 +649,17 @@ SIDECAR_TONE = {
             "high_to_low": "pure_tones_high_to_low_filtered.wav",
         },
     },
+    "PlaybackRate": (
+        "Inferred, not recorded: the 44.1 kHz stimulus WAV was most likely "
+        "played through a 48 kHz audio device. Every logged sweep lasts "
+        "~25.75 s against a 28.01 s file (28.01 x 44.1/48 = 25.74 s), and the "
+        "auditory localizer shows the same ratio. If so, presented "
+        "frequencies are 1.088x the file's and the sweep occupies the first "
+        "~25.75 s of each 32 s cycle. Onsets and durations here are the "
+        "logged values and need no correction; any frequency or "
+        "within-sweep timing derived from the WAV must be scaled. The 32 s "
+        "phase period is set by the trial timer and is unaffected."
+    ),
 }
 
 
@@ -624,23 +711,22 @@ def main():
         sub = bids_sub(subj)
         ses = bids_ses(FINAL_SESSION)
 
-        if loc_type == "auditory":
-            fname = f"{sub}_{ses}_task-auditory_events.tsv"
-        elif loc_type == "tone":
-            # One tone acquisition per session for sub-03/04, no run entity.
+        if loc_type == "tone":
+            # One tone acquisition per session, no run entity.
             ses = bids_ses(ses_from_path(args.timing_csv))
             fname = f"{sub}_{ses}_task-tone_events.tsv"
         elif loc_type == "fixation":
             # The BOLD carries no run entity, so the events must not either.
             fname = f"{sub}_{ses}_task-fixation_events.tsv"
         else:
-            # The BOLD decides the run entity: the first cohort ran two motor
-            # runs in one session, later subjects one per session with no
-            # entity at all.
-            subj, ses_num, run_entity = motor_target(args.timing_csv)
+            # Motor and auditory: the BOLD decides the run entity. The first
+            # cohort ran two motor runs in one session, later subjects one
+            # per session with no entity at all.
+            subj, ses_num, run_entity = localizer_target(args.timing_csv,
+                                                         loc_type)
             sub, ses = bids_sub(subj), bids_ses(ses_num)
             run_part = "" if run_entity is None else f"_run-{run_entity:02d}"
-            fname = f"{sub}_{ses}_task-motor{run_part}_events.tsv"
+            fname = f"{sub}_{ses}_task-{loc_type}{run_part}_events.tsv"
 
         output = os.path.join(BIDS_ROOT, sub, ses, "func", fname)
     else:
