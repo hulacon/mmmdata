@@ -190,7 +190,7 @@ def build_scans_row(session_dir: Path, nii_path: Path) -> dict:
 
     # --- Physio channels (only for bold) ---
     if suffix == "bold":
-        for rec in ("cardiac", "pulse", "respiratory"):
+        for rec in ("trigger", "pulse", "respiratory"):
             physio = find_matching_file(
                 session_dir, nii_path, "physio", ".tsv.gz", recording=rec
             )
@@ -201,7 +201,7 @@ def build_scans_row(session_dir: Path, nii_path: Path) -> dict:
         )
         row["eyetracking"] = eye is not None and eye.exists()
     else:
-        for rec in ("cardiac", "pulse", "respiratory"):
+        for rec in ("trigger", "pulse", "respiratory"):
             row[f"physio_{rec}"] = "n/a"
         row["eyetracking"] = "n/a"
 
@@ -242,7 +242,7 @@ COLUMNS = [
     "n_volumes",
     "duration_s",
     "n_events",
-    "physio_cardiac",
+    "physio_trigger",
     "physio_pulse",
     "physio_respiratory",
     "eyetracking",

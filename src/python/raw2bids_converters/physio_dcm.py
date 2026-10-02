@@ -12,7 +12,7 @@ Each PhysioLog DICOM contains 5 concatenated log sections:
   ACQUISITION_INFO (volume/slice timing)
 
 Output per BIDS spec for physio data:
-  - _recording-cardiac_physio.tsv.gz  + .json  (ECG channel 1)
+  - _recording-trigger_physio.tsv.gz  + .json  (ECG channel 1; see RECORDINGS)
   - _recording-pulse_physio.tsv.gz    + .json  (PULS)
   - _recording-respiratory_physio.tsv.gz + .json (RESP)
 
@@ -36,8 +36,11 @@ from common import BIDS_ROOT, SOURCE_DIR
 
 # Sampling rates derived from SampleTime (ms per sample)
 # SampleTime=1 -> 1000 Hz, SampleTime=2 -> 500 Hz, SampleTime=8 -> 125 Hz
+# Named by content, not by PMU section: in this dataset ECG1 carries the
+# scanner volume trigger (a two-level square wave at the TR), never a heartbeat.
+# The cardiac rhythm is the pulse oximeter (PULS).
 RECORDINGS = {
-    "cardiac": {"section": "ECG", "sample_time": 1, "sfreq": 1000.0,
+    "trigger": {"section": "ECG", "sample_time": 1, "sfreq": 1000.0,
                 "channel": "ECG1"},
     "pulse":   {"section": "PULS", "sample_time": 2, "sfreq": 500.0,
                 "channel": "PULS"},
@@ -192,7 +195,7 @@ def convert_file(dicom_dir, output_base, dry_run=False):
         appended: e.g. if output_base is
           sub-03/ses-04/func/sub-03_ses-04_task-CRencoding_run-01
         then output files will be:
-          ..._recording-cardiac_physio.tsv.gz
+          ..._recording-trigger_physio.tsv.gz
           ..._recording-pulse_physio.tsv.gz
           ..._recording-respiratory_physio.tsv.gz
     dry_run : bool
@@ -236,8 +239,16 @@ def convert_file(dicom_dir, output_base, dry_run=False):
     sections, acq_info = parse_pmu_text(text)
 
     # Determine StartTime: time of first BOLD volume in seconds
-    # relative to physio recording start
+    # relative to physio recording start. ACQUISITION_INFO is the clock; a
+    # trigger channel is never used for alignment, so without volume 0 there is
+    # no StartTime to write.
     vol0_tic = acq_info["vol_start_tics"].get(0, None)
+    if vol0_tic is None:
+        raise ValueError(
+            f"{fpath}: ACQUISITION_INFO has no volume-0 start tic, so StartTime "
+            "cannot be computed. Inspect the PhysioLog's ACQUISITION_INFO section; "
+            "do not convert this recording with a guessed StartTime."
+        )
 
     wrote_any = False
     for rec_name, rec_cfg in RECORDINGS.items():
@@ -263,10 +274,7 @@ def convert_file(dicom_dir, output_base, dry_run=False):
             continue
 
         # Compute StartTime relative to first BOLD volume
-        if vol0_tic is not None:
-            start_time = (first_tic - vol0_tic) * 2.5 / 1000  # tics to seconds
-        else:
-            start_time = 0.0
+        start_time = (first_tic - vol0_tic) * 2.5 / 1000  # tics to seconds
 
         # Output paths
         tsv_gz_path = f"{output_base}_recording-{rec_name}_physio.tsv.gz"
@@ -288,7 +296,7 @@ def convert_file(dicom_dir, output_base, dry_run=False):
 
         # Write JSON sidecar
         col_name = {
-            "cardiac": "cardiac",
+            "trigger": "trigger",
             "pulse": "cardiac",  # BIDS: pulse ox measures cardiac rhythm
             "respiratory": "respiratory",
         }[rec_name]

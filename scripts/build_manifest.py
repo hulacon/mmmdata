@@ -713,7 +713,7 @@ def export_summary(conn: sqlite3.Connection, out_path: Path):
 
     # --- Physio coverage ---
     lines.append("## Physio Coverage (bold runs with physio files)\n")
-    lines.append("| Subject | Session | cardiac | pulse | respiratory | eye |")
+    lines.append("| Subject | Session | trigger | pulse | respiratory | eye |")
     lines.append("|---------|---------|---------|-------|-------------|-----|")
 
     for sub in subjects:
@@ -731,7 +731,7 @@ def export_summary(conn: sqlite3.Connection, out_path: Path):
                 continue
 
             counts = {}
-            for rec in ("cardiac", "pulse", "respiratory", "eye"):
+            for rec in ("trigger", "pulse", "respiratory", "eye"):
                 n = cursor.execute(
                     """SELECT COUNT(*) FROM physio_meta pm
                        JOIN files f ON pm.path = f.path
@@ -741,7 +741,7 @@ def export_summary(conn: sqlite3.Connection, out_path: Path):
                 counts[rec] = n
 
             lines.append(
-                f"| {sub} | {ses} | {counts['cardiac']}/{bold_count} "
+                f"| {sub} | {ses} | {counts['trigger']}/{bold_count} "
                 f"| {counts['pulse']}/{bold_count} "
                 f"| {counts['respiratory']}/{bold_count} "
                 f"| {counts['eye']}/{bold_count} |"
