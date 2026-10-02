@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import csv
+import json
 import os
 import re
 import sys
@@ -679,10 +680,39 @@ def _physio_series_to_bids(series_name):
     return None
 
 
-def load_physio_triage(subjects=None, required=True):
+# A PhysioLog is written right after the BOLD it records: its SeriesNumber is
+# the BOLD's + 2 (649 of 681 pairs on 2026-10-02) or + 1 (32). Any other gap is
+# not that BOLD's recording -- an aborted attempt mapping to the same task/run
+# (e.g. -4), or a recording whose BOLD was excluded and never converted.
+PHYSIO_BOLD_SERIES_OFFSETS = (1, 2)
+
+
+def _bold_series_numbers(bids_root, sub, ses):
+    """{(task, run_or_None): SeriesNumber} for the converted BOLD of a session."""
+    out = {}
+    func = Path(bids_root) / sub / ses / "func"
+    for side in func.glob(f"{sub}_{ses}_task-*_bold.json"):
+        m = re.search(r"_task-([A-Za-z0-9]+)(?:_run-(\d+))?_bold\.json$", side.name)
+        if not m:
+            continue
+        with open(side) as f:
+            sn = json.load(f).get("SeriesNumber")
+        if sn is not None:
+            out[(m.group(1), int(m.group(2)) if m.group(2) else None)] = int(sn)
+    return out
+
+
+def load_physio_triage(subjects=None, required=True, bids_root=None):
     """Load physio_triage.csv and generate inventory rows for convertible files.
 
-    Only COMPLETE and PARTIAL files are included.
+    Only COMPLETE and PARTIAL files are included, and only when they pair with a
+    converted BOLD: the run's ``_bold.json`` exists and the PhysioLog's
+    SeriesNumber is that BOLD's + 1 or + 2 (``PHYSIO_BOLD_SERIES_OFFSETS``).
+    Status describes the recording; pairing decides whether it belongs to the
+    tree. Without it an excluded BOLD's recording became an orphan physio file,
+    and an aborted attempt mapping to the same task/run raced the real run for
+    its destination. Unpaired recordings are skipped and printed; two series
+    pairing with one run raise.
 
     The table is generated data, not code, so it is not tracked in git --
     which means "absent" is a normal state on a fresh checkout and must not
@@ -712,6 +742,9 @@ def load_physio_triage(subjects=None, required=True):
             )
         return []
 
+    bids_root = BIDS_ROOT if bids_root is None else bids_root
+    bold_sn = {}
+    unpaired = []
     rows = []
     with open(PHYSIO_TRIAGE_CSV, newline="") as f:
         reader = csv.DictReader(f)
@@ -736,6 +769,21 @@ def load_physio_triage(subjects=None, required=True):
 
             bids_task, run = mapping
 
+            if (sub, ses) not in bold_sn:
+                bold_sn[(sub, ses)] = _bold_series_numbers(bids_root, sub, ses)
+            target = bold_sn[(sub, ses)].get((bids_task, run))
+            if target is None and run == 1 and (bids_task, None) in bold_sn[(sub, ses)]:
+                # The series name says run1, but the task was converted as a
+                # single run with no run entity; physio takes its BOLD's name.
+                run = None
+                target = bold_sn[(sub, ses)][(bids_task, None)]
+            physio_sn = int(re.match(r"Series_(\d+)_", series).group(1))
+            if target is None or physio_sn - target not in PHYSIO_BOLD_SERIES_OFFSETS:
+                why = ("no converted BOLD" if target is None
+                       else f"BOLD is series {target}")
+                unpaired.append(f"{source_path} ({status}): {why}")
+                continue
+
             # Build BIDS base path (without _recording-*_physio suffix)
             if run is not None:
                 bids_base = (
@@ -756,6 +804,19 @@ def load_physio_triage(subjects=None, required=True):
                 "conversion_type": "physio_dcm",
             })
 
+    if unpaired:
+        print(f"physio: {len(unpaired)} recording(s) not paired with a converted "
+              "BOLD, not inventoried:", file=sys.stderr)
+        for line in unpaired:
+            print(f"  {line}", file=sys.stderr)
+    seen = {}
+    for r in rows:
+        if r["bids_destination"] in seen:
+            raise ValueError(
+                f"two PhysioLog series pair with {r['bids_destination']}: "
+                f"{seen[r['bids_destination']]} and {r['source_file']}"
+            )
+        seen[r["bids_destination"]] = r["source_file"]
     return rows
 
 

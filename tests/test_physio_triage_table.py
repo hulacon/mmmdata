@@ -7,6 +7,7 @@ every scanner physio row silently gone.
 """
 
 import csv
+import json
 import sys
 from pathlib import Path
 
@@ -38,6 +39,14 @@ def _row(sub, ses, series, status):
         "expected_dur": "15.0", "rec_dur": "15.0", "ratio": "1.0",
         "sections": "PULS,RESP", "source_path": f"{sub}/{ses}/dicom/{series}",
     }
+
+
+def _bold(bids_root: Path, sub, ses, task_run, series_number):
+    """A converted BOLD's sidecar, which is all the pairing rule reads."""
+    func = bids_root / sub / ses / "func"
+    func.mkdir(parents=True, exist_ok=True)
+    side = func / f"{sub}_{ses}_task-{task_run}_bold.json"
+    side.write_text(json.dumps({"SeriesNumber": series_number}))
 
 
 @pytest.fixture
@@ -87,14 +96,19 @@ def test_present_but_empty_table_is_data_not_absence(table_path):
     assert gi.load_physio_triage() == []
 
 
-def test_status_filter_and_subject_scope(table_path):
+def test_status_filter_and_subject_scope(table_path, tmp_path):
+    bids = tmp_path / "bids"
+    _bold(bids, "sub-aa", "ses-04", "TBencoding_run-01", 8)
+    _bold(bids, "sub-aa", "ses-04", "TBencoding_run-02", 10)
+    _bold(bids, "sub-aa", "ses-04", "TBmath", 12)
+    _bold(bids, "sub-bb", "ses-19", "NATresting", 18)
     _write_table(table_path, [
         _row("sub-aa", "ses-04", "Series_10_cued_recall_encoding_run1_PhysioLog", "COMPLETE"),
         _row("sub-aa", "ses-04", "Series_12_cued_recall_encoding_run2_PhysioLog", "TRUNCATED"),
         _row("sub-aa", "ses-04", "Series_14_cued_recall_math_PhysioLog", "INFO_ONLY"),
         _row("sub-bb", "ses-19", "Series_20_free_recall_resting_PhysioLog", "PARTIAL"),
     ])
-    rows = gi.load_physio_triage()
+    rows = gi.load_physio_triage(bids_root=bids)
     assert [r["source_file"] for r in rows] == [
         "sub-aa/ses-04/dicom/Series_10_cued_recall_encoding_run1_PhysioLog",
         "sub-bb/ses-19/dicom/Series_20_free_recall_resting_PhysioLog",
@@ -107,8 +121,65 @@ def test_status_filter_and_subject_scope(table_path):
     )
     assert {r["conversion_type"] for r in rows} == {"physio_dcm"}
 
-    scoped = gi.load_physio_triage(subjects={"sub-aa"})
+    scoped = gi.load_physio_triage(subjects={"sub-aa"}, bids_root=bids)
     assert [r["source_file"].split("/")[0] for r in scoped] == ["sub-aa"]
+
+
+# ---------------------------------------------------------------------------
+# pairing with the converted BOLD
+# ---------------------------------------------------------------------------
+
+def test_recording_without_a_converted_bold_is_not_inventoried(table_path, tmp_path):
+    """An excluded BOLD's recording would otherwise become an orphan physio file."""
+    _write_table(table_path, [
+        _row("sub-aa", "ses-02", "Series_44_localizer_tone_PhysioLog", "COMPLETE"),
+    ])
+    assert gi.load_physio_triage(bids_root=tmp_path / "bids") == []
+
+
+def test_aborted_attempt_does_not_take_the_real_runs_destination(table_path, tmp_path):
+    """Two series map to floc run 1; only the one written after the kept BOLD pairs."""
+    bids = tmp_path / "bids"
+    _bold(bids, "sub-aa", "ses-02", "floc_run-01", 30)
+    _write_table(table_path, [
+        _row("sub-aa", "ses-02", "Series_26_localizer_floc_run1_PhysioLog", "COMPLETE"),
+        _row("sub-aa", "ses-02", "Series_32_localizer_floc_run1_PhysioLog", "COMPLETE"),
+    ])
+    rows = gi.load_physio_triage(bids_root=bids)
+    assert [r["source_file"].rsplit("/", 1)[1] for r in rows] == [
+        "Series_32_localizer_floc_run1_PhysioLog"
+    ]
+
+
+def test_offset_of_one_pairs(table_path, tmp_path):
+    bids = tmp_path / "bids"
+    _bold(bids, "sub-aa", "ses-11", "TBencoding_run-01", 8)
+    _write_table(table_path, [
+        _row("sub-aa", "ses-11", "Series_09_cued_recall_encoding_run1_PhysioLog", "COMPLETE"),
+    ])
+    assert len(gi.load_physio_triage(bids_root=bids)) == 1
+
+
+def test_run1_series_takes_a_runless_bolds_name(table_path, tmp_path):
+    """A single-run task is converted with no run entity; its physio must match."""
+    bids = tmp_path / "bids"
+    _bold(bids, "sub-aa", "ses-21", "NATretrieval", 30)
+    _write_table(table_path, [
+        _row("sub-aa", "ses-21", "Series_32_free_recall_retrieval_run1_PhysioLog", "COMPLETE"),
+    ])
+    (row,) = gi.load_physio_triage(bids_root=bids)
+    assert row["bids_destination"] == "sub-aa/ses-21/func/sub-aa_ses-21_task-NATretrieval"
+
+
+def test_two_series_pairing_with_one_run_raise(table_path, tmp_path):
+    bids = tmp_path / "bids"
+    _bold(bids, "sub-aa", "ses-04", "TBmath", 12)
+    _write_table(table_path, [
+        _row("sub-aa", "ses-04", "Series_13_cued_recall_math_PhysioLog", "COMPLETE"),
+        _row("sub-aa", "ses-04", "Series_14_cued_recall_math_PhysioLog", "COMPLETE"),
+    ])
+    with pytest.raises(ValueError, match="two PhysioLog series"):
+        gi.load_physio_triage(bids_root=bids)
 
 
 # ---------------------------------------------------------------------------

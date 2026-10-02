@@ -15,7 +15,12 @@ Status is a property of the recording, not a judgement call:
     otherwise                             -> TRUNCATED
 
 where ratio = recorded duration / expected duration, and expected duration
-comes from the volume count and TR recorded in the log's own ACQUISITION_INFO.
+is the number of volumes ACQUISITION_INFO records as actually started, times
+the TR measured from their start tics. Not the log's ``NumVolumes`` header:
+that is the protocol's count, and a run stopped early by hand (free recall:
+protocol 2400 volumes, acquired 778-1092) read as TRUNCATED against it although
+its recording covered the whole run. Both counts are written
+(``num_volumes`` acquired, ``num_volumes_protocol``).
 
 Run with --check to verify the rule reproduces the existing table rather than
 rewriting it; that is what licences trusting it on a new cohort.
@@ -66,8 +71,19 @@ WAVE_SECTIONS = ("ECG", "EXT", "PULS", "RESP")
 COMPLETE_MIN = 0.9
 PARTIAL_MIN = 0.5
 
-FIELDS = ["sub", "ses", "series", "size_mb", "status", "num_volumes", "tr_ms",
-          "expected_dur", "rec_dur", "ratio", "sections", "source_path"]
+FIELDS = ["sub", "ses", "series", "size_mb", "status", "num_volumes",
+          "num_volumes_protocol", "tr_ms", "expected_dur", "rec_dur", "ratio",
+          "sections", "source_path"]
+
+
+def acquired_volumes(acq: dict) -> int:
+    """Volumes the scanner actually started, from ACQUISITION_INFO's slice-0 lines.
+
+    Never ``acq["num_volumes"]``, the protocol's ``NumVolumes`` header (see the
+    module docstring). A volume started and then cut off by a manual stop
+    counts, so this can exceed the BOLD's kept volumes by one.
+    """
+    return len(acq.get("vol_start_tics", {}))
 
 
 def _read_pmu_text(series_dir: str) -> tuple[str | None, float]:
@@ -95,17 +111,18 @@ def triage_series(series_dir: str) -> dict | None:
     # Info.log-only files carry no waveform at all.
     if "Info.log" in text[:500] and _find_section_pos(text, "ECG") < 0:
         return {"size_mb": size_mb, "status": "INFO_ONLY", "num_volumes": "",
-                "tr_ms": "", "expected_dur": "", "rec_dur": 0, "ratio": 0,
+                "num_volumes_protocol": "", "tr_ms": "", "expected_dur": "", "rec_dur": 0, "ratio": 0,
                 "sections": ""}
 
     sections, acq = parse_pmu_text(text)
     present = [s for s in WAVE_SECTIONS if s in sections]
     if not present:
         return {"size_mb": size_mb, "status": "INFO_ONLY", "num_volumes": "",
-                "tr_ms": "", "expected_dur": "", "rec_dur": 0, "ratio": 0,
+                "num_volumes_protocol": "", "tr_ms": "", "expected_dur": "", "rec_dur": 0, "ratio": 0,
                 "sections": ""}
 
-    num_volumes = acq.get("num_volumes", 0)
+    num_volumes_protocol = acq.get("num_volumes", 0)
+    num_volumes = acquired_volumes(acq)
 
     # TR from the spacing of consecutive volume starts, in PMU ticks.
     tics = [acq["vol_start_tics"][k] for k in sorted(acq["vol_start_tics"])]
@@ -131,7 +148,7 @@ def triage_series(series_dir: str) -> dict | None:
         status = "TRUNCATED"
 
     return {"size_mb": size_mb, "status": status, "num_volumes": num_volumes,
-            "tr_ms": tr_ms, "expected_dur": expected_dur, "rec_dur": rec_dur,
+            "num_volumes_protocol": num_volumes_protocol, "tr_ms": tr_ms, "expected_dur": expected_dur, "rec_dur": rec_dur,
             "ratio": ratio, "sections": ",".join(present)}
 
 

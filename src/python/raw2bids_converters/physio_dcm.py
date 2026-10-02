@@ -118,7 +118,11 @@ def parse_pmu_text(text):
     acq_info = {"num_volumes": 0, "num_slices": 0, "vol_start_tics": {}}
     if "ACQUISITION_INFO" in sec_pos:
         acq_start = sec_pos["ACQUISITION_INFO"]
-        acq_chunk = text[acq_start:acq_start + 50000]
+        # The whole section, not a fixed window: it holds one line per slice
+        # per volume (~3.7 MB for a 1000-volume run), and counting acquired
+        # volumes needs all of it. A 50,000-char window saw only the first
+        # ~14 volumes.
+        acq_chunk = text[acq_start:]
         null_idx = acq_chunk.find('\x00')
         if null_idx >= 0:
             acq_chunk = acq_chunk[:null_idx]

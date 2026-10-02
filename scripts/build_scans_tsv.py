@@ -280,6 +280,9 @@ def write_scans_tsv(session_dir: Path, rows: list[dict], dry_run: bool = False):
         writer = csv.DictWriter(
             f, fieldnames=COLUMNS, delimiter="\t",
             extrasaction="ignore",
+            # csv's default terminator is CRLF; every scans.tsv in the tree
+            # is LF, and a rebuild must not rewrite every line.
+            lineterminator="\n",
         )
         writer.writeheader()
         for row in rows:
