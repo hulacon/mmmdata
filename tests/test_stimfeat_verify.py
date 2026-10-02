@@ -177,3 +177,26 @@ def test_family_glob_does_not_reach_a_sibling_cell(campaign, tmp_path):
         json.dumps({"extractor": "word2psy", "models": {"clip_text": {}}}))
     tables = campaign._family_tables(tmp_path / "clip.csv")
     assert [t.name for t in tables] == ["clip.csv"]
+
+
+# ---------------------------------------------------------------------------
+# Group tables are the battery's surface
+# ---------------------------------------------------------------------------
+
+def test_aggregate_skips_models_the_battery_does_not_admit(campaign, tmp_path, monkeypatch):
+    """vgg19 ships in viz2psy's registry but psytwill declines it; a rebuild must not sweep it in."""
+    from types import SimpleNamespace
+
+    src = SimpleNamespace(set_="movies", source="frames", package="viz2psy")
+    unit = SimpleNamespace(out_dir=tmp_path)
+    for model in ("clip", "vgg19"):
+        (tmp_path / f"{model}.csv").write_text(f"stimulus_id,time,{model}_000\nm,0.0,1\n")
+        (tmp_path / f"{model}.meta.json").write_text("{}")
+    monkeypatch.setattr(campaign, "_filtered", lambda args: [(src, unit, "clip"), (src, unit, "vgg19")])
+    monkeypatch.setattr(campaign, "stem_for", lambda s, u, m: tmp_path / f"{m}.csv")
+    monkeypatch.setattr(campaign, "family_tables", lambda s, u, m: {"main": tmp_path / f"{m}.csv"})
+    groups, skipped = campaign.aggregate_groups(None)
+    assert groups == {("movies", "frames", "main"): [tmp_path / "clip.csv"]}
+    assert [p.name for p, _ in skipped] == ["vgg19.csv"]
+    assert "not admitted" in skipped[0][1]
+    assert campaign.not_admitted("viz2psy", "clip") is None

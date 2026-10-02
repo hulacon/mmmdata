@@ -1313,6 +1313,21 @@ def _table_usable(path: Path) -> tuple[bool, str]:
     return True, ""
 
 
+def not_admitted(package: str, model: str) -> str | None:
+    """psytwill's reason a model its extractor ships is kept out of the battery, or None.
+
+    The cell matrix reads models from the live registries, so a model added
+    for one analysis (viz2psy's vgg19, the functional-space CNN control arm)
+    becomes a campaign model the day it ships. Its CSVs are fine where they
+    are; a group table is the battery's surface, and `battery --check`
+    refuses it there (2026-10-02: a frames rebuild swept vgg19 in, 0.9 G ->
+    4.1 G and 60 violations).
+    """
+    from psytwill.battery import NOT_ADMITTED
+
+    return NOT_ADMITTED.get(package, {}).get(model)
+
+
 def aggregate_groups(args) -> tuple[dict[tuple[str, str, str], list[Path]],
                                     list[tuple[Path, str]]]:
     """(set, source, table) -> input CSVs, plus the tables that were skipped."""
@@ -1320,6 +1335,10 @@ def aggregate_groups(args) -> tuple[dict[tuple[str, str, str], list[Path]],
     skipped: list[tuple[Path, str]] = []
     for src, unit, model in _filtered(args):
         if not is_done(stem_for(src, unit, model)):
+            continue
+        reason = not_admitted(src.package, model)
+        if reason:
+            skipped.append((stem_for(src, unit, model), f"not admitted to the psytwill battery: {reason}"))
             continue
         for table, path in family_tables(src, unit, model).items():
             usable, why = _table_usable(path)
