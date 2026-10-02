@@ -4,6 +4,13 @@ Usage::
 
     python -m src.python.dcm2bids_config.cli --subject sub-03 --session ses-06
     python -m src.python.dcm2bids_config.cli --subject sub-03 --session all --dry-run
+    python -m src.python.dcm2bids_config.cli --subject sub-06 --session ses-10 --layout duckbrain
+
+``--layout duckbrain`` writes the same config to where duckbrain reads one,
+``<out-dir>/sub-XX/ses-YY/dcm2bids_config.json`` (default out-dir
+``config/dcm2bids_duckbrain``). It is the bridge that lets duckbrain convert
+MMMData sessions from these session definitions until duckbrain has session
+templates of its own (duckbrain TODO #10), at which point it retires.
 """
 
 from __future__ import annotations
@@ -35,9 +42,24 @@ def _resolve_overrides_path(config_dir: Path, subject: str) -> Path:
     return config_dir / subject / "overrides.toml"
 
 
-def _resolve_output_path(config_dir: Path, subject: str, session: str) -> Path:
-    """Resolve the output config JSON path."""
-    return config_dir / subject / f"{session}_conf.json"
+LAYOUTS = ("mmmdata", "duckbrain")
+
+
+def _resolve_output_path(
+    config_dir: Path, subject: str, session: str, layout: str = "mmmdata"
+) -> Path:
+    """Resolve the output config JSON path.
+
+    ``mmmdata``: ``<dir>/sub-XX/ses-YY_conf.json``, beside ``overrides.toml``,
+    read by ``scripts/run_dcm2bids.py``. ``duckbrain``:
+    ``<dir>/sub-XX/ses-YY/dcm2bids_config.json``, the path duckbrain's
+    ``resolve_dcm2bids_config_path`` reads under ``[paths] dcm2bids_config_dir``.
+    """
+    if layout == "duckbrain":
+        return config_dir / subject / session / "dcm2bids_config.json"
+    if layout == "mmmdata":
+        return config_dir / subject / f"{session}_conf.json"
+    raise ValueError(f"unknown layout {layout!r}; expected one of {LAYOUTS}")
 
 
 def generate_one(
@@ -48,8 +70,13 @@ def generate_one(
     *,
     dry_run: bool = False,
     force: bool = False,
+    layout: str = "mmmdata",
+    out_dir: Path | None = None,
 ) -> dict:
     """Generate a dcm2bids config for a single subject/session.
+
+    Overrides are always read from *config_dir*; the config is written under
+    *out_dir* (default *config_dir*) in *layout* (see ``_resolve_output_path``).
 
     Returns
     -------
@@ -159,7 +186,7 @@ def generate_one(
                         )
 
     # 6. Write or preview
-    output_path = _resolve_output_path(config_dir, subject, session)
+    output_path = _resolve_output_path(out_dir or config_dir, subject, session, layout)
 
     if dry_run:
         result["status"] = "dry_run"
@@ -207,6 +234,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Override config output directory (default: code/dcm2bids_configfiles)",
     )
     parser.add_argument(
+        "--layout", choices=LAYOUTS, default="mmmdata",
+        help="Output layout: mmmdata (sub-XX/ses-YY_conf.json) or duckbrain "
+             "(sub-XX/ses-YY/dcm2bids_config.json)",
+    )
+    parser.add_argument(
+        "--out-dir",
+        help="Where to write configs (default: the overrides dir for "
+             "--layout mmmdata, config/dcm2bids_duckbrain for --layout duckbrain). "
+             "Overrides are still read from --config-dir.",
+    )
+    parser.add_argument(
         "--json", action="store_true", dest="output_json",
         help="Output full config JSON to stdout (for single session)",
     )
@@ -221,6 +259,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         config_dir = Path(cfg["paths"]["code_root"]) / "config" / "dcm2bids_overrides"
 
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+    elif args.layout == "duckbrain":
+        out_dir = Path(cfg["paths"]["code_root"]) / "config" / "dcm2bids_duckbrain"
+    else:
+        out_dir = config_dir
+
     # Determine sessions
     if args.session == "all":
         sessions = sorted(SESSION_SCHEDULE.keys())
@@ -233,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         result = generate_one(
             args.subject, session, source_root, config_dir,
             dry_run=args.dry_run, force=args.force,
+            layout=args.layout, out_dir=out_dir,
         )
         results.append(result)
 
