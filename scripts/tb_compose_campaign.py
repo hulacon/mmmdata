@@ -29,6 +29,15 @@ Usage
     tb_compose_campaign.py run --no-media          # tables only
     tb_compose_campaign.py verify                  # tree vs. the run list
 
+Projection families (`--family NAME`): a family's item tables are composed
+BESIDE the battery tables in the same run root, under the verb's family
+stems (`movies_<NAME>_{frames,audio_frames,transcript_chunks}`), with its own
+comparability table `<dataset>/comparability_<NAME>.tsv`. Tables only: the
+media render belongs to the battery compose.
+
+    tb_compose_campaign.py run --family psytwill_space --subject 03
+    tb_compose_campaign.py verify --family psytwill_space --no-media
+
 Comparability (tb-timelines Settles-when 3): every compose reads the
 per-model labels from `<dataset>/comparability.tsv` (a generated table beside
 the tree, not code; `--comparability` overrides) into each sidecar's
@@ -89,6 +98,16 @@ DEFAULT_STORES = (
     "twp1000_word_audio_frames_features.parquet",
     "twp1000_word_words_features.parquet",
 )
+BATTERY_STEMS = ("movies_frames", "movies_audio_frames", "movies_transcript_words")
+# Projection families and the group tables they compose from: the presented
+# sets only (images, word audio, word text) -- caption tables are not shown.
+FAMILIES = {
+    "psytwill_space": (
+        "shared1000_psytwill_space_features.parquet",
+        "twp1000_psytwill_space_audio_frames_features.parquet",
+        "twp1000_psytwill_space_chunks_features.parquet",
+    ),
+}
 PSYTWILL = STIMFEAT_ENV / "bin" / "psytwill"
 
 _EVENTS_RE = re.compile(
@@ -139,9 +158,18 @@ class Run:
             )
         return lo
 
-    def tables_done(self) -> bool:
+    def table_metas(self, family: str | None = None) -> list[Path]:
+        """Sidecars of the battery tables, or of one family's tables."""
         feat = self.out_dir / "features"
-        return feat.is_dir() and any(feat.glob("movies_*_features.meta.json"))
+        if not feat.is_dir():
+            return []
+        if family is None:
+            return sorted(p for s in BATTERY_STEMS
+                          if (p := feat / f"{s}_features.meta.json").exists())
+        return sorted(feat.glob(f"movies_{family}_*_features.meta.json"))
+
+    def tables_done(self, family: str | None = None) -> bool:
+        return bool(self.table_metas(family))
 
     def media_done(self) -> bool:
         return self.frames_dir.is_dir() and any(self.frames_dir.iterdir())
@@ -232,7 +260,9 @@ def write_dataset_description(stores: list[Path]) -> Path:
 
 
 def comparability_path(args: argparse.Namespace) -> Path:
-    p = args.comparability or (OUT_ROOT / "comparability.tsv")
+    name = ("comparability.tsv" if args.family is None
+            else f"comparability_{args.family}.tsv")
+    p = args.comparability or (OUT_ROOT / name)
     if not p.exists():
         raise SystemExit(
             f"comparability table not found: {p}. It is written by the "
@@ -243,13 +273,15 @@ def comparability_path(args: argparse.Namespace) -> Path:
 
 def compose_cmd(run: Run, stores: list[Path], lead_out: float, *,
                 media: bool, force: bool, sparse: bool,
-                comparability: Path) -> list[str]:
+                comparability: Path, family: str | None = None) -> list[str]:
     cmd = [str(PSYTWILL), "compose", str(run.events),
            "--stores", *map(str, stores),
            "--registry", str(REGISTRY_DIR),
            "--lead-out", f"{lead_out:g}",
            "--comparability", str(comparability),
            "-o", str(run.out_dir), "--json"]
+    if family is not None:
+        cmd += ["--family", family]
     if media:
         cmd += ["--media", "--stimuli-root", str(STIM_DIR)]
     if force:
@@ -272,7 +304,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
             "task": r.task, "run": r.run,
             "scan_end": r.scan_end(), "last_offset": r.last_offset(),
             "lead_out": r.lead_out(),
-            "tables": r.tables_done(), "media": r.media_done(),
+            "tables": r.tables_done(args.family), "media": r.media_done(),
             "out": str(r.out_dir),
         })
     if args.json:
@@ -298,13 +330,14 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     runs = discover_runs(args.subject)
-    stores = resolve_stores(args.stores)
+    stores = resolve_stores(args.stores or list(
+        DEFAULT_STORES if args.family is None else FAMILIES[args.family]))
     comparability = comparability_path(args)
-    media = not args.no_media
+    media = not args.no_media and args.family is None
     if media and shutil.which("ffmpeg") is None:
         raise SystemExit("--media needs ffmpeg on PATH (module load ffmpeg); "
                          "or pass --no-media")
-    if not args.dry_run:
+    if not args.dry_run and args.family is None:
         print(f"dataset_description: {write_dataset_description(stores)}")
     failures = []
     t0 = time.time()
@@ -315,7 +348,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         # they are stale (a relabel or a rule change leaves them in place)
         cmd = compose_cmd(r, stores, lead_out, media=want_media,
                           force=args.force, sparse=args.sparse,
-                          comparability=comparability)
+                          comparability=comparability, family=args.family)
         if args.dry_run:
             print(" ".join(cmd))
             continue
@@ -372,8 +405,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     problems = []
     n_tables = n_media = 0
     for r in runs:
-        metas = sorted((r.out_dir / "features").glob("movies_*_features.meta.json")) \
-            if r.out_dir.is_dir() else []
+        metas = r.table_metas(args.family)
         if not metas:
             problems.append(f"{r.stem}: no composed tables")
             continue
@@ -388,14 +420,17 @@ def cmd_verify(args: argparse.Namespace) -> int:
             if table != str(comparability.resolve()):
                 problems.append(f"{mp.name} ({r.stem}): comparability table "
                                 f"{table} != {comparability}")
+            # an explicit null (a table row with an empty label) carries
+            # its reason as the note; only a model with no row is a gap
             unlabelled = sorted(k for k, v in (m.get("models") or {}).items()
-                                if v.get("comparable") is None)
+                                if v.get("comparable") is None
+                                and not v.get("comparability_note"))
             if unlabelled:
                 problems.append(f"{mp.name} ({r.stem}): no comparable label "
                                 f"for {unlabelled}")
         if r.media_done():
             n_media += 1
-        elif not args.no_media:
+        elif not args.no_media and args.family is None:
             problems.append(f"{r.stem}: no media frames")
     desc = OUT_ROOT / "dataset_description.json"
     if not desc.exists():
@@ -420,7 +455,11 @@ def main(argv: list[str] | None = None) -> int:
                             "path here is how the campaign is smoke-tested")
         p.add_argument("--comparability", type=Path, default=None,
                        help="per-model comparability TSV (default "
-                            "<out-root>/comparability.tsv)")
+                            "<out-root>/comparability.tsv, or "
+                            "comparability_<family>.tsv with --family)")
+        p.add_argument("--family", choices=sorted(FAMILIES), default=None,
+                       help="compose a projection family beside the battery "
+                            "tables (verb's --family; tables only)")
 
     p = sub.add_parser("plan", help="list runs, lead-outs, and state")
     common(p)
@@ -430,8 +469,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("run", help="compose (and render) every run not done")
     common(p)
-    p.add_argument("--stores", nargs="+", default=list(DEFAULT_STORES),
-                   help=f"item stores (names under {STORE_DIR} or paths)")
+    p.add_argument("--stores", nargs="+", default=None,
+                   help=f"item stores (names under {STORE_DIR} or paths; "
+                        "default: the battery's, or the family's)")
     p.add_argument("--no-media", action="store_true")
     p.add_argument("--sparse", action="store_true", help="verb's --sparse")
     p.add_argument("--force", action="store_true")
