@@ -6,35 +6,58 @@ Reads mmm_scanlog.xlsx and merges:
   - scan_questionaire sheet (session-level questionnaire responses)
   - Pipeline exception registry (compiled from plan docs + config JSONs)
 
-Outputs per-subject sessions.tsv files to sourcedata/sub-XX/.
-These become the canonical source of truth for session-level metadata
-and are copied to the BIDS root during BIDSification (with pipeline-only
-columns stripped).
+Outputs per-subject sessions.tsv files to <source_dir>/sub-XX/ (every
+column, every logged session). With --bids, also writes the BIDS-root copy
+<bids_root>/sub-XX/sub-XX_sessions.tsv: pipeline-only columns stripped, and
+only sessions that exist in the BIDS tree (an aborted session the log numbers
+31, with no data, stays out).
+
+The scan log is the lab's live Google Sheet, exported to xlsx; a stale export
+is the failure to watch for, so the latest scan date per subject is printed.
 
 Usage:
-    python generate_sessions_tsv.py
+    python generate_sessions_tsv.py [--scanlog PATH] [--subjects sub-##,...] [--bids]
 """
 
+import argparse
+import re
+import sys
 from pathlib import Path
 
 import pandas as pd
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
-BIDS_ROOT = Path("/gpfs/projects/hulacon/shared/mmmdata")
-SCANLOG = BIDS_ROOT / "sourcedata/shared/scan_logs/mmm_scanlog.xlsx"
-OUTDIR = BIDS_ROOT / "sourcedata"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT / "src" / "python") not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / "src" / "python"))
+from core.config import load_config  # noqa: E402
+
+_PATHS = load_config(config_dir=_REPO_ROOT / "config")["paths"]
+BIDS_ROOT = Path(_PATHS["bids_project_dir"])
+OUTDIR = Path(_PATHS["source_dir"])
+SCANLOG = OUTDIR / "shared" / "scan_logs" / "mmm_scanlog.xlsx"
+
+# Columns that track the pipeline, not the session; kept in the source-side
+# copy, stripped from the BIDS-root copy.
+PIPELINE_COLS = [
+    "dcm2bids_exception",
+    "behavioral_exception",
+    "physio_exception",
+    "exception_verified",
+]
 
 # ── Subject / session mapping ────────────────────────────────────────────────
 
-SUBJECT_MAP = {"mmm_03": "sub-03", "mmm_04": "sub-04", "mmm_05": "sub-05"}
+# BySession writes "mmm_##"; scan_questionaire writes "Sub##". Pilots
+# ("mmm-test_##") and note rows match neither.
+_BYSESSION_ID = re.compile(r"^mmm_(\d+)$")
+_QUESTIONNAIRE_ID = re.compile(r"^Sub(\d+)$")
 
-# scan_questionaire tab uses a different ID format
-QUESTIONNAIRE_SUBJECT_MAP = {
-    "Sub03": "sub-03",
-    "Sub04": "sub-04",
-    "Sub05": "sub-05",
-}
+
+def _map_id(value, pattern: re.Pattern) -> str | None:
+    m = pattern.match(str(value).strip())
+    return f"sub-{int(m.group(1)):02d}" if m else None
 
 # Questionnaire columns: (Excel header substring, TSV column name)
 QUESTIONNAIRE_COLS = [
@@ -331,7 +354,7 @@ def _read_questionnaire(scanlog_path: Path) -> pd.DataFrame:
     qdf = qdf.dropna(subset=[qdf.columns[0]]).copy()
 
     # Map subject IDs
-    qdf["participant_id"] = qdf.iloc[:, 0].map(QUESTIONNAIRE_SUBJECT_MAP)
+    qdf["participant_id"] = qdf.iloc[:, 0].map(lambda v: _map_id(v, _QUESTIONNAIRE_ID))
     qdf = qdf[qdf["participant_id"].notna()].copy()
 
     # Normalize date to date-only for joining
@@ -363,18 +386,53 @@ def _read_questionnaire(scanlog_path: Path) -> pd.DataFrame:
     return qdf[keep]
 
 
-def main() -> None:
+def _default_subjects() -> list[str]:
+    """Subjects with a directory in the BIDS root: excludes pilots and dropped subjects."""
+    return sorted(p.name for p in BIDS_ROOT.glob("sub-*") if p.is_dir())
+
+
+def main(argv=None) -> None:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--scanlog", type=Path, default=SCANLOG,
+                    help=f"xlsx export of the scan log (default: {SCANLOG})")
+    ap.add_argument("--subjects", default=None,
+                    help="Comma-separated, e.g. sub-06,sub-07 (default: every sub-* in the BIDS root)")
+    ap.add_argument("--bids", action="store_true",
+                    help="Also write the BIDS-root copy (pipeline columns stripped, "
+                         "sessions present in the tree only)")
+    ap.add_argument("--out-dir", type=Path, default=None,
+                    help="Write under this directory instead (DIR/sub-XX/ and, with --bids, "
+                         "DIR/bids/sub-XX/) -- for comparing against the live files")
+    args = ap.parse_args(argv)
+    src_out = args.out_dir or OUTDIR
+    bids_out = (args.out_dir / "bids") if args.out_dir else BIDS_ROOT
+    subjects = args.subjects.split(",") if args.subjects else _default_subjects()
+
     # ── Read BySession sheet ─────────────────────────────────────────────
-    df = pd.read_excel(SCANLOG, sheet_name="BySession")
+    df = pd.read_excel(args.scanlog, sheet_name="BySession")
 
-    # Filter to complete subjects, drop protocol-reminder rows
-    df = df[df["Subject ID"].isin(SUBJECT_MAP)].copy()
-
-    # Map subject IDs
-    df["participant_id"] = df["Subject ID"].map(SUBJECT_MAP)
+    # Map subject IDs; drops pilots and protocol-reminder rows
+    df["participant_id"] = df["Subject ID"].map(lambda v: _map_id(v, _BYSESSION_ID))
+    df = df[df["participant_id"].isin(subjects)].copy()
+    missing = sorted(set(subjects) - set(df["participant_id"]))
+    if missing:
+        raise SystemExit(f"{args.scanlog}: no BySession rows for {missing}; is the export stale?")
 
     # Map session IDs
     df["session_id"] = df["Session #"].apply(lambda n: f"ses-{int(n):02d}")
+
+    # One row per (subject, session). The log is typed by hand; a repeated
+    # session number is an entry error to correct at the source, never to
+    # resolve here by picking one.
+    dup = df[df.duplicated(["participant_id", "session_id"], keep=False)]
+    if not dup.empty:
+        raise SystemExit(
+            f"{args.scanlog}: the same session is logged twice -- correct the scan log:\n"
+            + dup[["Subject ID", "Session #", "Scan date", "Scan start time"]].to_string()
+        )
+    latest = df.groupby("participant_id")["Scan date"].max()
+    print("Latest scan date per subject:", ", ".join(
+        f"{s} {pd.Timestamp(d).date()}" for s, d in latest.items()))
 
     # Map session types
     df["session_type"] = df["Scan session name"].map(SESSION_TYPE_MAP)
@@ -407,7 +465,7 @@ def main() -> None:
     )
 
     # ── Merge questionnaire data ─────────────────────────────────────────
-    qdf = _read_questionnaire(SCANLOG)
+    qdf = _read_questionnaire(args.scanlog)
     q_cols = [c for _, c in QUESTIONNAIRE_COLS if c in qdf.columns]
 
     df = df.merge(
@@ -464,10 +522,7 @@ def main() -> None:
         "eyetracking_used",
         *q_cols,
         "scan_note",
-        "dcm2bids_exception",
-        "behavioral_exception",
-        "physio_exception",
-        "exception_verified",
+        *PIPELINE_COLS,
     ]
 
     # Write per-subject TSV files
@@ -477,11 +532,20 @@ def main() -> None:
             .sort_values("session_id")
             .reset_index(drop=True)
         )
-        outpath = OUTDIR / subj / f"{subj}_sessions.tsv"
-        subj_df.to_csv(outpath, sep="\t", index=False)
+        outpath = src_out / subj / f"{subj}_sessions.tsv"
+        outpath.parent.mkdir(parents=True, exist_ok=True)
+        subj_df.to_csv(outpath, sep="\t", index=False, lineterminator="\n")
         print(f"Wrote {outpath} ({len(subj_df)} sessions)")
 
-    print("\nDone. Remember to copy sessions.json sidecar alongside the TSVs.")
+        if args.bids:
+            present = {p.name for p in (BIDS_ROOT / subj).glob("ses-*") if p.is_dir()}
+            bids_df = subj_df[subj_df["session_id"].isin(present)].drop(columns=PIPELINE_COLS)
+            left_out = sorted(set(subj_df["session_id"]) - present)
+            bids_path = bids_out / subj / f"{subj}_sessions.tsv"
+            bids_path.parent.mkdir(parents=True, exist_ok=True)
+            bids_df.to_csv(bids_path, sep="\t", index=False, lineterminator="\n")
+            print(f"Wrote {bids_path} ({len(bids_df)} sessions"
+                  + (f"; not in the tree: {', '.join(left_out)})" if left_out else ")"))
 
 
 if __name__ == "__main__":
