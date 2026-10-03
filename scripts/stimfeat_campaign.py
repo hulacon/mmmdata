@@ -331,7 +331,7 @@ def build_sources() -> list[Source]:
     ))
     S.append(Source(
         "movies", "annot", "word2psy", "annot_", True,
-        "1,726 human SEG-C segment descriptions across 59 movies",
+        "human SEG-C segment descriptions (fine sub-segments, one row per segment)",
         lambda: _text_unit("segc", OUT_ROOT / "movies",
                            INPUT_DIR / "movies_annot_segc.csv",
                            "description", "stimulus_id"),
@@ -340,7 +340,7 @@ def build_sources() -> list[Source]:
     ))
     S.append(Source(
         "movies", "annot_segb", "word2psy", "annotb_", True,
-        "376 human SEG-B event labels across 59 movies",
+        "human SEG-B event labels (coarse events, one row per segment)",
         lambda: _text_unit("segb", OUT_ROOT / "movies",
                            INPUT_DIR / "movies_annot_segb.csv",
                            "description", "stimulus_id"),

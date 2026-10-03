@@ -17,9 +17,22 @@ Three cells in the masters are data-entry errors. They are corrected from
 so every fix stays attributable; a correction whose `old_mss` no longer
 matches the source is refused rather than applied silently.
 
+A segment is any row with both times, whether or not its number cell is
+filled: several masters leave the SEG-C (once, SEG-B) number blank on rows
+that carry their own times and description (three films for nearly the whole
+SEG-C pass). Keying on the number dropped 127 SEG-C rows and one SEG-B row.
+So `seg_number` is the row's position within its level (1..n, in sheet
+order), and `source_number` is what the sheet's number cell says, blank
+included. Corrections cite the sheet, so they match on `source_number`.
+
+`--check` also reads each level on its own: its last offset against the
+registry duration, and every gap or overlap between consecutive segments.
+Checking both levels pooled is what let a SEG-C pass that stops at 7 s pass
+on its SEG-B ending.
+
 Output columns (long, one row per segment):
-    stimulus_id, level (B|C), seg_number, onset, offset, duration,
-    description, annotator, source_file, corrected
+    stimulus_id, level (B|C), seg_number, source_number, onset, offset,
+    duration, description, annotator, source_file, corrected
 
 Usage:
     python parse_movie_annotations.py --check           # validate, write nothing
@@ -39,7 +52,9 @@ from pathlib import Path
 import pandas as pd
 
 try:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "python"))
+    _SRC = str(Path(__file__).resolve().parents[1] / "src" / "python")
+    if _SRC not in sys.path:
+        sys.path.insert(0, _SRC)
     from core.config import load_config
 
     _cfg = load_config()
@@ -136,7 +151,7 @@ def apply_corrections(
         df["corrected"] = False
 
     for _, c in mine.iterrows():
-        hit = (df["level"] == c["level"]) & (df["seg_number"] == int(c["seg_number"]))
+        hit = (df["level"] == c["level"]) & (df["source_number"] == int(c["seg_number"]))
         label = f"{c['level']}{int(c['seg_number'])}.{c['field']}"
         if not hit.any():
             refused.append(f"{label}: no such segment — remove the row or fix seg_number")
@@ -171,20 +186,21 @@ def parse_file(path: Path, stimulus_id: str) -> pd.DataFrame:
         if not all((n_col, s_col, e_col)):
             continue
         sub = raw[[c for c in (n_col, s_col, e_col, d_col) if c]].dropna(how="all")
-        for _, r in sub.iterrows():
-            if pd.isna(r[n_col]):
-                continue
+        position = 0
+        for i, r in sub.iterrows():
             try:
                 onset = parse_mss(r[s_col])
                 offset = parse_mss(r[e_col])
             except ValueError as exc:
-                raise ValueError(f"{path.name} {level}{r[n_col]}: {exc}") from exc
+                raise ValueError(f"{path.name} {level} sheet row {i + 2}: {exc}") from exc
             if onset is None or offset is None:
                 continue
+            position += 1
             rows.append({
                 "stimulus_id": stimulus_id,
                 "level": level,
-                "seg_number": int(r[n_col]),
+                "seg_number": position,
+                "source_number": pd.NA if pd.isna(r[n_col]) else int(r[n_col]),
                 "onset": onset,
                 "offset": offset,
                 "duration": offset - onset,
@@ -193,7 +209,27 @@ def parse_file(path: Path, stimulus_id: str) -> pd.DataFrame:
                 "source_file": path.name,
                 "corrected": False,
             })
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["source_number"] = df["source_number"].astype("Int64")
+    return df
+
+
+def level_problems(df: pd.DataFrame, duration_s: float, tolerance: float) -> list[str]:
+    """Per-level coverage: the last offset against the film, and gaps or overlaps between segments."""
+    out = []
+    for level, g in df.groupby("level"):
+        g = g.sort_values("seg_number")
+        last = g["offset"].max()
+        if abs(last - duration_s) > tolerance:
+            out.append(f"SEG-{level} last offset {last:.0f}s vs registry duration {duration_s:.0f}s "
+                       f"(delta {last - duration_s:+.0f}s)")
+        step = g["onset"].to_numpy()[1:] - g["offset"].to_numpy()[:-1]
+        for k in (abs(step) > tolerance).nonzero()[0]:
+            a, b = g.iloc[k], g.iloc[k + 1]
+            out.append(f"SEG-{level} {'gap' if step[k] > 0 else 'overlap'} of {abs(step[k]):.0f}s between "
+                       f"segments {a['seg_number']} and {b['seg_number']} ({a['offset']:.0f}s -> {b['onset']:.0f}s)")
+    return out
 
 
 def main() -> int:
@@ -232,11 +268,7 @@ def main() -> int:
             problems += [f"{row['stimulus_id']}: REFUSED {r}" for r in refused]
 
         dur = float(row["duration_s"])
-        last = df["offset"].max()
-        if abs(last - dur) > args.tolerance:
-            problems.append(
-                f"{row['stimulus_id']}: last offset {last:.0f}s vs registry "
-                f"duration {dur:.0f}s (delta {last - dur:+.0f}s)")
+        problems += [f"{row['stimulus_id']}: {p}" for p in level_problems(df, dur, args.tolerance)]
         if (df["duration"] < 0).any():
             problems.append(f"{row['stimulus_id']}: negative segment duration")
         frames.append(df)
