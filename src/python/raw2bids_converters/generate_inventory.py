@@ -42,7 +42,7 @@ PHYSIO_TRIAGE_CSV = os.path.join(SCRIPT_DIR, "physio_triage.csv")
 # Default only; --subjects overrides. Kept as a default rather than a constant
 # because a hardcoded cohort meant a new subject's events, beh, physio and
 # eyetracking were all absent from BIDS with nothing reporting a problem.
-DEFAULT_SUBJECTS = [3, 4, 5, 6, 7]
+DEFAULT_SUBJECTS = [3, 4, 5, 6, 7, 9]
 CR_SESSION_OFFSET = 3   # cued recall: source sess N -> BIDS ses-(N+3)
 FR_SESSION_OFFSET = 18  # free recall: source sess N -> BIDS ses-(N+18)
 FINAL_SESSION = 30

@@ -7,6 +7,7 @@ and task filtering.
 
 Usage:
     python run_all.py [--dry-run] [--subjects sub-03,sub-04] [--tasks encoding,math]
+    python run_all.py --subjects sub-06 --sessions ses-10,ses-11
     python run_all.py --validate [--subjects sub-03]
 """
 
@@ -48,8 +49,13 @@ def load_inventory():
         return list(reader)
 
 
-def filter_rows(rows, subjects=None, conversion_types=None):
-    """Filter inventory rows by subject and/or conversion type."""
+def filter_rows(rows, subjects=None, conversion_types=None, sessions=None):
+    """Filter inventory rows by subject, conversion type and/or session.
+
+    Sessions match on the BIDS destination, not the source path: every
+    converter overwrites its output, so the filter has to say exactly which
+    BIDS sessions get written. Rows without a BIDS destination drop out.
+    """
     if subjects:
         sub_patterns = []
         for s in subjects:
@@ -60,6 +66,12 @@ def filter_rows(rows, subjects=None, conversion_types=None):
 
     if conversion_types:
         rows = [r for r in rows if r.get("conversion_type") in conversion_types]
+
+    if sessions:
+        wanted = {"ses-" + s.replace("ses-", "").zfill(2) for s in sessions}
+        rows = [r for r in rows
+                if r["bids_destination"].startswith("sub-")
+                and r["bids_destination"].split("/")[1] in wanted]
 
     return rows
 
@@ -174,6 +186,9 @@ def main():
                         help="Print actions without writing files")
     parser.add_argument("--subjects", default=None,
                         help="Comma-separated subject list (e.g. sub-03,sub-04)")
+    parser.add_argument("--sessions", default=None,
+                        help="Comma-separated BIDS sessions to write (e.g. ses-10,ses-11); "
+                             "matched on the destination, so other sessions are left untouched")
     parser.add_argument("--tasks", default=None,
                         help="Comma-separated conversion types to run")
     parser.add_argument("--validate", action="store_true",
@@ -188,11 +203,13 @@ def main():
     rows = load_inventory()
     subjects = args.subjects.split(",") if args.subjects else None
     conv_types = args.tasks.split(",") if args.tasks else None
+    sessions = args.sessions.split(",") if args.sessions else None
 
     if conv_types is None:
         conv_types = list(PROCESSORS.keys())
 
-    rows = filter_rows(rows, subjects=subjects, conversion_types=conv_types)
+    rows = filter_rows(rows, subjects=subjects, conversion_types=conv_types,
+                       sessions=sessions)
 
     print(f"Processing {len(rows)} files")
     if args.dry_run:
