@@ -97,21 +97,29 @@ def parse_pmu_text(text):
         sample_time = int(st_m.group(1)) if st_m else 0
 
         # Parse data rows: ACQ_TIME_TICS  CHANNEL  VALUE  [SIGNAL]
-        timestamps = []
+        # A row with a SIGNAL (PULS_TRIGGER, RESP_TRIGGER) is the PMU's own
+        # beat/breath detection, not a sample: its VALUE is a fixed marker
+        # (2048) and its tic runs backwards into the samples already logged.
+        # Read as a sample, it puts the marker into the signal and leaves the
+        # tic array unsorted, which np.searchsorted does not define (the
+        # output then depended on the numpy version). Markers are kept apart.
         values = {}
+        markers = {}
         for line in chunk.split('\n'):
-            m = re.match(r'\s+(\d+)\s+(\w+)\s+(\d+)', line)
+            m = re.match(r'\s+(\d+)\s+(\w+)\s+(\d+)(?:\s+(\w+))?\s*$', line)
             if m:
                 tic = int(m.group(1))
                 ch = m.group(2)
                 val = int(m.group(3))
-                if ch not in values:
-                    values[ch] = []
-                values[ch].append((tic, val))
+                if m.group(4):
+                    markers.setdefault(m.group(4), []).append(tic)
+                    continue
+                values.setdefault(ch, []).append((tic, val))
 
         sections[sn] = {
             "sample_time": sample_time,
             "channels": values,
+            "markers": markers,
         }
 
     # Parse ACQUISITION_INFO
@@ -169,6 +177,11 @@ def _resample_channel(tics_values, sample_time_ms):
 
     tics = np.array([t for t, v in tics_values])
     vals = np.array([v for t, v in tics_values])
+    if np.any(np.diff(tics) <= 0):
+        raise ValueError(
+            "PMU sample tics are not strictly increasing; nearest-neighbour "
+            "lookup is undefined on them. A marker row read as a sample?"
+        )
 
     first_tic = int(tics[0])
     last_tic = int(tics[-1])
