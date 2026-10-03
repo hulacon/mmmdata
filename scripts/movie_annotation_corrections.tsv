@@ -20,3 +20,4 @@ chicken-or-egg	C	15	offset	2.38	1.38	verified	bhutch 2026-08-20	digit transposit
 chicken-or-egg	C	16	onset	2.38	1.38	verified	bhutch 2026-08-20	same cell pair as the C15 offset above
 mrs-harris-goes-to-paris	C	27	offset	3.44	3.54	provisional	bhutch 2026-08-20	GUESS - preserves this file's offset -> next-onset+1s chain; revisit against the film
 mrs-harris-goes-to-paris	C	28	onset	3.45	3.55	provisional	bhutch 2026-08-20	GUESS - pairs with the C27 offset above
+home	C	14	offset	3.37	2.37	verified	bhutch 2026-10-03	digit slip; 2.37 gives C14 a 12 s duration and chains exactly to C15 onset 2.37 (found by the per-level overlap check)
