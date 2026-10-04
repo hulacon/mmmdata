@@ -1177,7 +1177,11 @@ class TestScoreRoute:
                             "r": v - (0.2 if (c == "prf" and t == "04" and m == "combined") else 0)}
                            for t in ("03", "04") for d in range(2) for c in ("floc", "prf")
                            for m, v in (("combined", 0.5), ("anatomical", 0.4))])
-        res = {"reject": {"03": {"Vis": True}, "04": {"Vis": True}}}
+        res = {"reject": {"03": {"Vis": True}, "04": {"Vis": True}}, "min_targets": 2}
         out = scr.robustness(res, m3, m1, "combined")
         agree = {c["target"]: c["agrees"] for c in out["cells"]}
-        assert agree == {"03": True, "04": False} and not out["robust"]
+        assert agree == {"03": True, "04": False}
+        assert out["robust_networks"] == [] and not out["robust"] and not out["all_cells_agree"]
+        # Per network: one agreeing target is enough when the go criterion needs only one.
+        out = scr.robustness({**res, "min_targets": 1}, m3, m1, "combined")
+        assert out["robust_networks"] == ["Vis"] and out["robust"] and not out["all_cells_agree"]

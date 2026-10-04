@@ -873,7 +873,9 @@ def load_level_table(derivatives: Path, parts: pd.DataFrame, scenario: str, pct:
 def robustness(result: dict, m3: pd.DataFrame, m1: pd.DataFrame, route: str, reference: str = "anatomical") -> dict:
     """§9: M1 and M3 must agree in sign with M2b. Per rejected (target, network) cell, the sign of the draw-averaged
     M3 gain (all-item foils) and of every read M1 component's gain, route minus fsaverage6 anatomical (the maps and
-    TB betas are surface data, so the MNI baseline has none). ``robust`` = every checked sign is positive."""
+    TB betas are surface data, so the MNI baseline has none). Read per network, as the go criterion is (DECIDED
+    2026-10-04): a network is robust if its rejected-and-agreeing cells alone still reach ``min_targets``;
+    ``robust`` = at least one such network."""
     def gain(df, keys):
         piv = df.pivot_table(index=[*keys, "draw"], columns="model", values=df.attrs["value"])
         return (piv[route] - piv[reference]).groupby(level=list(range(len(keys)))).mean()
@@ -884,7 +886,7 @@ def robustness(result: dict, m3: pd.DataFrame, m1: pd.DataFrame, route: str, ref
     m1.attrs["value"] = "r"
     g3 = gain(m3, ["target", "network"])
     g1 = gain(m1, ["target", "network", "component"])
-    cells, all_pos = [], True
+    cells, agreeing = [], {}
     for t, per in result["reject"].items():
         for net, rej in per.items():
             if not rej:
@@ -892,11 +894,14 @@ def robustness(result: dict, m3: pd.DataFrame, m1: pd.DataFrame, route: str, ref
             comps = {c: float(v) for (tt, nn, c), v in g1.items() if tt == t and nn == net}
             m3g = float(g3.get((t, net), np.nan))
             ok = m3g > 0 and all(v > 0 for v in comps.values())
-            all_pos &= ok
+            agreeing[net] = agreeing.get(net, 0) + ok
             cells.append({"target": t, "network": net, "m3_gain": m3g, "m1_gain": comps, "agrees": bool(ok)})
-    return {"cells": cells, "robust": bool(cells) and all_pos,
-            "rule": "M3 (all-item foils) and every read M1 component gain > 0 in every rejected cell; "
-                    "gains are route minus fsaverage6 anatomical, averaged over draws"}
+    min_targets = result.get("min_targets", 2)
+    robust_networks = sorted(n for n, k in agreeing.items() if k >= min_targets)
+    return {"cells": cells, "robust_networks": robust_networks, "robust": bool(robust_networks),
+            "all_cells_agree": bool(cells) and all(c["agrees"] for c in cells),
+            "rule": f"per network: rejected cells whose M3 (all-item foils) and every read M1 component gain > 0 "
+                    f"number >= {min_targets} targets; gains are route minus fsaverage6 anatomical, averaged over draws"}
 
 
 def run_decide(args: argparse.Namespace, log=print) -> Path:
