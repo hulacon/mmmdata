@@ -23,6 +23,8 @@
 #   sbatch --array=0-479%20 score_route.sbatch
 #   (array index = `partitions.py job --index N`)
 #   sbatch --export=ALL,VERB=mni,TARGET=03 score_route.sbatch
+#   Secondary families + smoothed-anatomical control (after `families.py cache-tb` per subject):
+#   sbatch --array=0-479%20 --export=ALL,VERB=families score_route.sbatch
 #   M4 (0% jobs only; needs the job's score.json) runs on a GPU, so the
 #   resources are given at submission and override the CPU defaults above:
 #   sbatch --partition=gpu --gres=gpu:nvidia_a100_80gb_pcie:1 --cpus-per-task=8 \
@@ -53,6 +55,11 @@ if [[ "${VERB}" == "m4" ]]; then
     export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
     /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/score_route.py" m4 \
         --scenario "${SCENARIO}" --pct "${PCT}" --draw "${DRAW}" --target "${TARGET}"
+elif [[ "${VERB}" == "families" ]]; then
+    : "${PCT:?set PCT}" "${DRAW:?set DRAW}"
+    echo "Job ${SLURM_JOB_ID} families ${SCENARIO} ${PCT}% draw ${DRAW} target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"
+    /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/score_route.py" families \
+        --scenario "${SCENARIO}" --pct "${PCT}" --draw "${DRAW}" --target "${TARGET}" --n-jobs "${SLURM_CPUS_PER_TASK}"
 elif [[ "${VERB}" == "mni" ]]; then
     echo "Job ${SLURM_JOB_ID} MNI baseline target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"
     /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/score_route.py" mni --target "${TARGET}"

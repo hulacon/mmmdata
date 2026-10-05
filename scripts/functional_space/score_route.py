@@ -54,12 +54,16 @@ Verbs:
            scores/anatomical-mni/target-<sub>/
   decide   H1, then H2 only if H1 is a go, from the primary 0% scores ->
            scores/decision.json
+  families one job's §10 secondary families and §6 smoothed-anatomical control ->
+           <the job's score dir>/families/ (m2b.parquet, m2a.tsv, m3.tsv, m1.tsv, smoothing.tsv,
+           families.json); needs `families.py cache-tb` for every subject first
 
 Usage:
     python score_route.py score --pct 0 --draw 0 --target 03 --n-jobs 16
     python score_route.py m4 --pct 0 --draw 0 --target 03
     python score_route.py mni --target 03
     python score_route.py decide
+    python score_route.py families --pct 0 --draw 0 --target 03 --n-jobs 16
 """
 
 from __future__ import annotations
@@ -219,6 +223,19 @@ def load_items(derivatives: Path, subs: list[str], n: int, networks: np.ndarray
     meanvol >= MEANVOL_FRAC x its network's median, median |beta| <= BETA_CAP);
     the item ids; and the triplet-free foil pool (not enCon 3 in any subject).
     """
+    patterns, base, meanvol, items, foils = item_inputs(derivatives, subs, n)
+    return patterns, {s: item_floor(base[s], meanvol[s], networks) for s in subs}, items, foils
+
+
+def item_inputs(derivatives: Path, subs: list[str], n: int, exposures: int = 3, subcortex: pd.DataFrame | None = None
+                ) -> tuple[dict, dict, dict, list[str], np.ndarray]:
+    """Per subject the item patterns, the label-free floor (finite, |beta| cap) and meanvol, per column; the item
+    ids (exactly ``exposures`` exposures in every subject) and the triplet-free foil pool.
+
+    Cortex columns come from the fsaverage6 refit. With ``subcortex`` (the
+    grayordinate table), the subcortical columns come from the cached MNI
+    res-2 fit (``families.load_tb_subcortex``), whose trials are the same.
+    """
     import grayordinates as go
 
     root = Path(derivatives) / "functional_space" / "glmsingle_tb_fsaverage6"
@@ -228,38 +245,55 @@ def load_items(derivatives: Path, subs: list[str], n: int, networks: np.ndarray
         if not t.groupby(["session", "run"], sort=False)["onset"].apply(lambda o: o.is_monotonic_increasing).all():
             raise ValueError(f"sub-{s}: trial_info onsets are not increasing within runs (betas are in time order)")
         trials[s] = t
-    three = [set(c[c == 3].index) for c in (t.groupby("mmmId").size() for t in trials.values())]
-    items = sorted(set.intersection(*three))
+    have = [set(c[c == exposures].index) for c in (t.groupby("mmmId").size() for t in trials.values())]
+    items = sorted(set.intersection(*have))
     triplet = set().union(*(set(t.loc[t["enCon"] == 3, "mmmId"]) for t in trials.values()))
     foils = np.array([i not in triplet for i in items])
-    patterns, floor = {}, {}
+    patterns, base, meanvol = {}, {}, {}
     for s in subs:
         d = root / f"sub-{s}" / "enc"
         fit = np.load(d / "glmsingle_outputs" / "TYPED_FITHRF_GLMDENOISE_RR.npy", allow_pickle=True).item()
         betas = fit["betasmd"].reshape(fit["betasmd"].shape[0], -1)
-        meanvol = fit["meanvol"].reshape(-1)
+        mv = fit["meanvol"].reshape(-1)
         if betas.shape[1] != len(trials[s]):
             raise ValueError(f"sub-{s}: {betas.shape[1]} betas for {len(trials[s])} trials")
         vi = pd.read_csv(d / "vertex_index.tsv", sep="\t")
         if not np.array_equal(vi["row"].to_numpy(), np.arange(len(vi))) or len(vi) != betas.shape[0]:
             raise ValueError(f"sub-{s}: vertex_index does not match the beta rows")
         cols = np.where(vi["hemi"].to_numpy() == "R", go.FSAVERAGE6_N, 0) + vi["vertex"].to_numpy()
+        del fit
+        blocks = [(cols, betas, mv)]
+        if subcortex is not None:
+            import families as fam
+
+            if not trials[s].equals(pd.read_csv(fam.tb_cache_dir(derivatives, s) / "trial_info.csv",
+                                                dtype={"mmmId": str})):
+                raise ValueError(f"sub-{s}: the subcortical cache's trials differ from the fsaverage6 fit's")
+            blocks.append(fam.load_tb_subcortex(derivatives, s, subcortex))
         ids = trials[s]["mmmId"].to_numpy()
         x = np.full((len(items), n), np.nan, dtype=np.float32)
-        x[:, cols] = np.stack([betas[:, ids == i].mean(axis=1) for i in items])
-        patterns[s] = sc.zscore_columns(x).astype(np.float32)
         ok = np.zeros(n, dtype=bool)
-        good = np.isfinite(betas).all(axis=1)
-        with np.errstate(invalid="ignore"):
-            good &= np.nanmedian(np.abs(betas), axis=1) <= BETA_CAP
-        net = networks[cols]
-        for name in sorted(set(net) - {""}):
-            sel = net == name
-            good[sel] &= meanvol[sel] >= MEANVOL_FRAC * np.nanmedian(meanvol[sel])
-        ok[cols] = good
-        floor[s] = ok
-        del betas, fit
-    return patterns, floor, items, foils
+        mvol = np.full(n, np.nan, dtype=np.float64)
+        for c, b, m in blocks:
+            x[:, c] = np.stack([b[:, ids == i].mean(axis=1) for i in items])
+            good = np.isfinite(b).all(axis=1)
+            with np.errstate(invalid="ignore"):
+                good &= np.nanmedian(np.abs(b), axis=1) <= BETA_CAP
+            ok[c] = good
+            mvol[c] = m
+        patterns[s] = sc.zscore_columns(x).astype(np.float32)
+        base[s], meanvol[s] = ok, mvol
+        del betas, blocks
+    return patterns, base, meanvol, items, foils
+
+
+def item_floor(base: np.ndarray, meanvol: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """The M3 floor for one label set: ``base`` and meanvol >= MEANVOL_FRAC x the median of the column's label."""
+    ok = base.copy()
+    for name in sorted(set(labels) - {""}):
+        sel = labels == name
+        ok[sel] &= meanvol[sel] >= MEANVOL_FRAC * np.nanmedian(meanvol[sel])
+    return ok
 
 
 def load_maps(derivatives: Path, subs: list[str], n: int) -> tuple[dict[str, np.ndarray], list[tuple], dict]:
@@ -464,13 +498,16 @@ def srm_models(job: dict, template_subs: list[str], y: dict, n: int) -> tuple[di
 
 def project_all(models: dict, data: dict[str, dict[str, np.ndarray]], template_subs: list[str], target: str
                 ) -> dict[str, dict[str, np.ndarray]]:
-    """``{model: {film: template mean in the target's space}}``; a ``None`` model is identity."""
+    """``{model: {film: template mean in the target's space}}``; a ``None`` model is identity, and a callable
+    model is identity followed by that function of the template mean (the smoothed-anatomical control)."""
     out = {}
     for name, tfs in models.items():
         out[name] = {}
         for k in data[target]:
             if tfs is None:
                 out[name][k] = np.mean([data[s][k] for s in template_subs], axis=0)
+            elif callable(tfs):
+                out[name][k] = tfs(np.mean([data[s][k] for s in template_subs], axis=0))
             else:
                 out[name][k] = sc.project({s: data[s][k] for s in template_subs}, tfs, target).astype(np.float32)
     return out
@@ -507,13 +544,14 @@ def score_items(models: dict, items: dict, floor: dict, foils: np.ndarray, netwo
     proj = project_all(models, data, template_subs, target)
     valid = shared_valid({"items": items[target]}, proj) & np.logical_and.reduce(list(floor.values()))
     nets = {net: cols[valid[cols]] for net, cols in sc.network_columns(networks).items()}
+    nets = {net: c for net, c in nets.items() if c.size}  # an ROI without TB columns (hippocampus) is not scored
     rows = [sc.m3(items[target], d["items"], nets, f).assign(model=name, foils=pool)
             for name, d in proj.items() for pool, f in (("all", None), ("no_triplet", foils))]
     return pd.concat(rows, ignore_index=True), {net: int(c.size) for net, c in nets.items()}
 
 
 def score_maps(models: dict, maps: dict, keys: list[tuple], keep: dict, networks: np.ndarray, hemi: np.ndarray,
-               template_subs: list[str], target: str) -> pd.DataFrame:
+               template_subs: list[str], target: str, read_by_network: dict | None = None) -> pd.DataFrame:
     """M1 for every model: per contrast and the component median (fLoc, motor); pRF angle; ``read`` marks §9's cells.
 
     Per map row, a column is scored where the target's map and every model's
@@ -531,7 +569,7 @@ def score_maps(models: dict, maps: dict, keys: list[tuple], keep: dict, networks
     for name, d in proj.items():
         pm = d["maps"]
         for net, cols in nets.items():
-            read = M1_COMPONENTS.get(net, ())
+            read = (M1_COMPONENTS if read_by_network is None else read_by_network).get(net, ())
             for comp in ("floc", "motor"):
                 rs = []
                 for key in (k for k in keys if k[0] == comp):
@@ -551,6 +589,27 @@ def score_maps(models: dict, maps: dict, keys: list[tuple], keep: dict, networks
             rows.append({"model": name, "network": net, "component": "prf", "contrast": "angle", "r": r,
                          "n_columns": int(c.size), "read": "prf" in read})
     return pd.DataFrame(rows)
+
+
+def build_models(job: dict, template_subs: list[str], n: int, n_jobs: int, cleaned: Path, log=print
+                 ) -> tuple[dict, dict]:
+    """Every model a partition job scores: anatomical, the combined faces, VGG19 tuned alone, SRM/PCA if defined."""
+    import combined as cb
+
+    models: dict = {"anatomical": None}
+    info: dict = {"anatomical": {"source": "fsaverage6 vertex identity"}}
+    faces, face_info = face_models(job, template_subs, n, n_jobs, log)
+    models.update(faces)
+    info.update(face_info)
+    _, y = cb.tuning_rows(job["parts"], job["windows"], job["scenario"], job["pct"], job["draw"], job["target"],
+                          template_subs, cleaned)
+    models["stimulus-vgg19"], info["stimulus-vgg19"] = tuned_alone(job, "vgg19", template_subs, y, n, n_jobs)
+    if "response" in models:  # the target shares films: SRM is defined
+        m, i = srm_models(job, template_subs, y, n)
+        models.update(m)
+        info.update(i)
+    del y
+    return models, info
 
 
 def run_score(args: argparse.Namespace, log=print) -> Path:
@@ -579,18 +638,7 @@ def run_score(args: argparse.Namespace, log=print) -> Path:
     seconds = {}
 
     t1 = time.time()
-    models: dict = {"anatomical": None}
-    info: dict = {"anatomical": {"source": "fsaverage6 vertex identity"}}
-    faces, face_info = face_models(job, template_subs, n, args.n_jobs, log)
-    models.update(faces)
-    info.update(face_info)
-    _, y = cb.tuning_rows(parts, windows, args.scenario, args.pct, args.draw, args.target, template_subs, cleaned)
-    models["stimulus-vgg19"], info["stimulus-vgg19"] = tuned_alone(job, "vgg19", template_subs, y, n, args.n_jobs)
-    if "response" in models:  # the target shares films: SRM is defined
-        m, i = srm_models(job, template_subs, y, n)
-        models.update(m)
-        info.update(i)
-    del y
+    models, info = build_models(job, template_subs, n, args.n_jobs, cleaned, log)
     seconds["models"] = round(time.time() - t1, 1)
     log(f"models: {list(models)} ({seconds['models']:.0f} s)")
 
@@ -646,6 +694,133 @@ def run_score(args: argparse.Namespace, log=print) -> Path:
         "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
     }
     (dest / "score.json").write_text(json.dumps(side, indent=2) + "\n")
+    log(f"wrote {dest} in {seconds['total']:.0f} s")
+    return dest
+
+
+#: Routes whose smoothness the smoothed-anatomical control matches (§6; Bazeille 2021), where the job has them.
+SMOOTH_MATCH = ("combined", "cha", "srm")
+
+
+def families_dir(derivatives: Path, scenario: str, pct: int, draw: int, target: str) -> Path:
+    return out_dir(derivatives, scenario, pct, draw, target) / "families"
+
+
+def run_families(args: argparse.Namespace, log=print) -> Path:
+    """§10 secondary families and the §6 smoothed-anatomical control for one partition job.
+
+    The same models as ``score``, plus one smoothed-anatomical model per route
+    in SMOOTH_MATCH, scored per family: M2b and M2a on both film sets, M3 on
+    the three-exposure and the single-exposure items, M1 on cortical families
+    (read only where §9 reads it, i.e. family A).
+    """
+    import cha
+    import encoding as enc
+    import families as fam
+    import films as fm
+    import grayordinates as go
+    import partitions as pt
+
+    t0 = time.time()
+    paths = enc.Paths()
+    cpaths = cha.Paths()
+    cleaned = cpaths.cleaned
+    parts = pt.load_partitions(paths.derivatives)
+    windows = fm.load_windows(paths.derivatives)
+    subs = sorted(parts.loc[(parts["scenario"] == args.scenario) & (parts["pct"] == args.pct)
+                            & (parts["draw"] == args.draw) & (parts["target"] == args.target), "subject"].unique())
+    if args.target not in subs or len(subs) != 3:
+        raise ValueError(f"job resolves to subjects {subs}; expected the target and two template subjects")
+    template_subs = [s for s in subs if s != args.target]
+    job = {"derivatives": paths.derivatives, "parts": parts, "windows": windows, "scenario": args.scenario,
+           "pct": args.pct, "draw": args.draw, "target": args.target}
+    table = pd.read_csv(go.grayordinates_path(cleaned), sep="\t")
+    n = len(table)
+    labels = fam.family_labels(table, cpaths.atlases)
+    if not np.array_equal(labels["schaefer7n"], network_labels(table, cpaths.atlases)):
+        raise ValueError("family A labels differ from the primary scoring's network labels")
+    edges = fam.mesh_edges(cpaths.freesurfer)
+    smoother = fam.Smoother(edges, n)
+    seconds = {}
+
+    t1 = time.time()
+    models, info = build_models(job, template_subs, n, args.n_jobs, cleaned, log)
+    seconds["models"] = round(time.time() - t1, 1)
+
+    frames_b, frames_a, smooth_rows, n_cols, matched = [], [], [], {}, {}
+    for role, fset in FILM_SETS.items():
+        t1 = time.time()
+        data = load_films(film_rows(windows, subs, role), subs, args.target,
+                          lambda row, cache: fm.film_series(row, cleaned, cache))
+        proj = project_all(models, data, template_subs, args.target)
+        if fset == PRIMARY_SET:  # match smoothness on the primary films, then use the same steps for every set
+            route_r = {m: fam.neighbour_r(proj[m], edges) for m in SMOOTH_MATCH if m in models}
+            grid_r = fam.smoothness_grid(smoother, proj["anatomical"], edges, max(route_r.values()))
+            smooth_rows += [{"model": "anatomical", "steps": k, "neighbour_r": r} for k, r in grid_r.items()]
+            smooth_rows.append({"model": "target", "steps": 0, "neighbour_r": fam.neighbour_r(data[args.target], edges)})
+            for route, r in route_r.items():
+                matched[route] = fam.match_steps(r, grid_r)
+                smooth_rows.append({"model": route, "steps": matched[route], "neighbour_r": r,
+                                    "matched_anatomical_r": grid_r[matched[route]]})
+            log(f"smoothness: routes {route_r}, anatomical grid {grid_r}, matched steps {matched}")
+        smoothed = {f"anatomical-smooth-{r}": (lambda x, k=k: smoother.run(x, [k])[k]) for r, k in matched.items()}
+        proj.update(project_all(smoothed, data, template_subs, args.target))
+        for family, lab in labels.items():
+            b, a, cols = score_set(data[args.target], proj, lab)
+            frames_b.append(b.assign(set=fset, family=family))
+            frames_a.append(a.assign(set=fset, family=family))
+            n_cols[f"{fset}/{family}"] = cols
+        del data, proj
+        seconds[f"score_{fset}"] = round(time.time() - t1, 1)
+        log(f"{fset}: families scored ({seconds[f'score_{fset}']:.0f} s)")
+    all_models = {**models, **{f"anatomical-smooth-{r}": (lambda x, k=k: smoother.run(x, [k])[k])
+                               for r, k in matched.items()}}
+
+    t1 = time.time()
+    m3_frames, m3_meta = [], {}
+    for exposures, item_set in ((3, "three"), (1, "single")):
+        pats, base, meanvol, item_ids, foils = item_inputs(paths.derivatives, subs, n, exposures, subcortex=table)
+        for family, lab in labels.items():
+            floor = {s: item_floor(base[s], meanvol[s], lab) for s in subs}
+            m3, cols = score_items(all_models, pats, floor, foils, lab, template_subs, args.target)
+            if exposures == 1:
+                m3 = m3[m3["foils"] == "all"]  # no single-exposure item is a triplet: one pool
+            m3_frames.append(m3.assign(family=family, items=item_set))
+            m3_meta[f"{item_set}/{family}"] = cols
+        m3_meta[item_set] = {"items": len(item_ids), "triplet_free_foils": int(foils.sum())}
+        del pats
+    seconds["score_m3"] = round(time.time() - t1, 1)
+    log(f"M3: {m3_meta['three']} three-exposure, {m3_meta['single']} single ({seconds['score_m3']:.0f} s)")
+
+    t1 = time.time()
+    maps, map_keys, keep = load_maps(paths.derivatives, subs, n)
+    m1_frames = [score_maps(all_models, maps, map_keys, keep, labels[f], table["hemi"].to_numpy(), template_subs,
+                            args.target, None if f == FAMILY_A else {}).assign(family=f)
+                 for f in ("schaefer7n", "familyB", "familyD")]
+    del maps
+    seconds["score_m1"] = round(time.time() - t1, 1)
+
+    dest = families_dir(paths.derivatives, args.scenario, args.pct, args.draw, args.target)
+    dest.mkdir(parents=True, exist_ok=True)
+    pd.concat(frames_b, ignore_index=True).to_parquet(dest / "m2b.parquet", index=False)
+    pd.concat(frames_a, ignore_index=True).to_csv(dest / "m2a.tsv", sep="\t", index=False, float_format="%.6g")
+    pd.concat(m3_frames, ignore_index=True).to_csv(dest / "m3.tsv", sep="\t", index=False, float_format="%.6g")
+    pd.concat(m1_frames, ignore_index=True).to_csv(dest / "m1.tsv", sep="\t", index=False, float_format="%.6g")
+    pd.DataFrame(smooth_rows).to_csv(dest / "smoothing.tsv", sep="\t", index=False, float_format="%.6g")
+    seconds["total"] = round(time.time() - t0, 1)
+    side = {
+        "description": "functional-space secondary scores for one partition job: every model (as `score`) plus a "
+                       "smoothed-anatomical control per SMOOTH_MATCH route, per §10 family. M2b/M2a per film set, "
+                       "M3 per item set (three-exposure, single-exposure) and foil pool, M1 on cortical families "
+                       "(read only in family A); smoothing.tsv = mesh-neighbour temporal r of each projection",
+        "job": {"scenario": args.scenario, "pct": args.pct, "draw": args.draw, "target": args.target},
+        "template_subjects": template_subs, "families": list(labels), "models": info,
+        "smoothing": {"grid": list(fam.SMOOTH_GRID), "matched_steps": matched,
+                      "rule": "fewest steps whose anatomical neighbour r is closest to the route's, held-out films"},
+        "n_columns": n_cols, "m3": m3_meta, "code_version": sc._code_version(), "seconds": seconds,
+        "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+    }
+    (dest / "families.json").write_text(json.dumps(side, indent=2) + "\n")
     log(f"wrote {dest} in {seconds['total']:.0f} s")
     return dest
 
@@ -967,8 +1142,14 @@ def main() -> None:
     m = sub.add_parser("mni")
     m.add_argument("--target", required=True)
     sub.add_parser("decide")
+    f = sub.add_parser("families")
+    f.add_argument("--scenario", default="primary", choices=("primary", "secondary"))
+    f.add_argument("--pct", type=int, required=True)
+    f.add_argument("--draw", type=int, required=True)
+    f.add_argument("--target", required=True)
+    f.add_argument("--n-jobs", type=int, default=1)
     args = ap.parse_args()
-    {"score": run_score, "m4": run_m4, "mni": run_mni, "decide": run_decide}[args.verb](args)
+    {"score": run_score, "m4": run_m4, "mni": run_mni, "decide": run_decide, "families": run_families}[args.verb](args)
 
 
 if __name__ == "__main__":

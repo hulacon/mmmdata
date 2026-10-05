@@ -1185,3 +1185,88 @@ class TestScoreRoute:
         # Per network: one agreeing target is enough when the go criterion needs only one.
         out = scr.robustness({**res, "min_targets": 1}, m3, m1, "combined")
         assert out["robust_networks"] == ["Vis"] and out["robust"] and not out["all_cells_agree"]
+
+
+# ---------------------------------------------------------------------------
+# secondary families and the smoothed-anatomical control
+# ---------------------------------------------------------------------------
+
+fam = _load("families")
+
+
+class TestFamilies:
+    # A 5-vertex path 0-1-2-3-4 plus an isolated column 5 (stands in for subcortex).
+    EDGES = np.array([[0, 1], [1, 2], [2, 3], [3, 4]])
+
+    def test_smoother_preserves_constants_and_missing(self):
+        sm = fam.Smoother(self.EDGES, 6)
+        x = np.full((2, 6), 3.0)
+        x[0, 2] = np.nan
+        out = sm.run(x, [0, 1, 5])
+        assert np.array_equal(out[0], x.astype(np.float32), equal_nan=True)
+        for k in (1, 5):
+            assert np.isnan(out[k][0, 2])  # missing stays missing
+            assert np.allclose(out[k][np.isfinite(out[k])], 3.0)  # missing entries are not averaged in as 0
+
+    def test_smoother_spreads_on_mesh_only(self):
+        sm = fam.Smoother(self.EDGES, 6)
+        x = np.zeros((1, 6))
+        x[0, 2] = 1.0
+        x[0, 5] = 7.0
+        y = sm.run(x, [1])[1]
+        # One step: x <- (x + mean of neighbours) / 2.
+        assert np.allclose(y[0, :5], [0.0, 0.25, 0.5, 0.25, 0.0])
+        assert y[0, 5] == 7.0  # off the mesh: untouched
+
+    def test_neighbour_r_and_matching(self):
+        rng = np.random.default_rng(0)
+        sm = fam.Smoother(self.EDGES, 6)
+        x = rng.standard_normal((400, 6))
+        r = {k: fam.neighbour_r({"f": y}, self.EDGES) for k, y in sm.run(x, [0, 2, 8]).items()}
+        assert abs(r[0]) < 0.15 and r[0] < r[2] < r[8]  # smoothing raises neighbour correlation
+        assert fam.match_steps(r[2] + 1e-3, r) == 2
+        assert fam.match_steps(-1.0, r) == 0
+
+    def test_item_floor_per_label(self):
+        base = np.array([True, True, True, True, False])
+        meanvol = np.array([100.0, 10.0, 100.0, 100.0, 100.0])
+        labels = np.array(["a", "a", "a", "", "a"], dtype=object)
+        ok = scr.item_floor(base, meanvol, labels)
+        # Label a's median meanvol is 100, so the 10 falls under 0.25 x 100; unlabelled columns keep the base.
+        assert list(ok) == [True, False, True, True, False]
+
+    def test_project_all_callable_model(self):
+        data = {s: {"f": np.arange(6, dtype=float).reshape(1, 6) * (i + 1)} for i, s in enumerate(["A", "B", "T"])}
+        out = scr.project_all({"double": lambda x: 2 * x}, data, ["A", "B"], "T")
+        assert np.allclose(out["double"]["f"], 2 * 1.5 * np.arange(6))
+
+
+summ = _load("summarize")
+
+
+class TestSummarize:
+    def _frame(self, film: bool):
+        rows = []
+        for t in ("03", "04"):
+            for d in range(4):
+                for f in (range(3) if film else [None]):
+                    for m, v in (("anatomical", 0.6), ("cha", 0.7), ("combined", 0.75)):
+                        r = {"scenario": "primary", "pct": 0, "target": t, "draw": d, "network": "Vis", "model": m,
+                             "rank_acc": v + (0.01 * (f or 0))}
+                        if film:
+                            r["film"] = f"f{f}"
+                        rows.append(r)
+        return pd.DataFrame(rows)
+
+    def test_point_estimates_and_gains(self):
+        for film in (True, False):
+            out = summ.summarize_metric(self._frame(film), "rank_acc", ["scenario", "pct", "target"], ["network"],
+                                        "film" if film else None, n_boot=200, seed=0)
+            row = out[(out["target"] == "all") & (out["model"] == "combined")].iloc[0]
+            base = 0.75 + (0.01 if film else 0.0)
+            assert np.isclose(row["mean"], base)
+            assert np.isclose(row["gain_anatomical"], 0.15) and np.isclose(row["gain_cha"], 0.05)
+            # A constant gain has a degenerate interval at the gain.
+            assert np.isclose(row["gain_anatomical_lo"], 0.15) and np.isclose(row["gain_anatomical_hi"], 0.15)
+            assert row["ci_lo"] <= row["mean"] <= row["ci_hi"]
+            assert set(out["target"]) == {"03", "04", "all"}
