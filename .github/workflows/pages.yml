@@ -34,13 +34,13 @@ concurrency:
 jobs:
   # Build job
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: docs
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: true
       - name: Setup Ruby
@@ -51,7 +51,7 @@ jobs:
           cache-version: 0 # Increment this number if you need to re-download cached gems
           working-directory: '${{ github.workspace }}/docs'
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Generate code documentation
@@ -61,7 +61,7 @@ jobs:
         run: bash scripts/update_docs.sh
       - name: Setup Pages
         id: pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
       - name: Build with Jekyll
         # Outputs to the './_site' directory by default
         run: bundle exec jekyll build --baseurl "${{ steps.pages.outputs.base_path }}"
@@ -69,7 +69,7 @@ jobs:
           JEKYLL_ENV: production
       - name: Upload artifact
         # Automatically uploads an artifact from the './_site' directory by default
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs/_site/
   # Deployment job
@@ -77,9 +77,9 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

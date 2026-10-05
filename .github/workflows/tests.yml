@@ -31,20 +31,20 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # docs/doc/shared is the mmmdata-docs submodule; the suite does
           # not read it and a fresh clone leaves it empty.
           submodules: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           # Deliberately no `cache: pip`. That option derives its key from a
@@ -54,7 +54,7 @@ jobs:
 
       # The dependency list lives in this file, so this file is what the
       # cache key hashes: the install changes exactly when it changes.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('.github/workflows/tests.yml') }}

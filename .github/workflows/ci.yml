@@ -19,13 +19,13 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: docs
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: true
       - name: Setup Ruby
@@ -36,7 +36,7 @@ jobs:
           cache-version: 0
           working-directory: '${{ github.workspace }}/docs'
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Generate code documentation
