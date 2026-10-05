@@ -527,13 +527,15 @@ def score_set(target_films: dict[str, np.ndarray], proj: dict[str, dict[str, np.
     """M2b (per segment) and M2a (per film) for every model on the shared column set."""
     valid = shared_valid(target_films, proj)
     nets = {net: cols[valid[cols]] for net, cols in sc.network_columns(networks).items()}
+    empty = {net: 0 for net, c in nets.items() if not c.size}  # recorded in the column counts, not scored
+    nets = {net: c for net, c in nets.items() if c.size}
     m2b, m2a = [], []
     for name, per_film in proj.items():
         m2b.append(sc.m2b(target_films, per_film, nets).assign(model=name))
         for k, x in target_films.items():
             m2a += [{"model": name, "network": net, "film": k, "r": r}
                     for net, r in sc.m2a(x, per_film[k], nets).items()]
-    cols = {net: int(c.size) for net, c in nets.items()}
+    cols = {**{net: int(c.size) for net, c in nets.items()}, **empty}
     return pd.concat(m2b, ignore_index=True), pd.DataFrame(m2a), cols
 
 
