@@ -27,6 +27,8 @@
 #   4. Convert events / beh / physio for the named sessions only (4b: the
 #      early-session localizers, which the inventory does not route). Every
 #      converter overwrites, so --sessions keeps other sessions untouched.
+#      4c: every events stimulus reference in the tree resolves to the
+#      stimulus registry (build_stimulus_registry.py --validate-events).
 #   5. scans.tsv for the named sessions.
 #   6. Report each BOLD run's events and physio, so a gap is printed.
 #
@@ -129,6 +131,12 @@ for SES in ${SES_LIST}; do
         "${STIM_PY}" localizer_events.py "${CSV}" || fail "localizer_events.py ${CSV}"
     done
 done
+
+# Tree-wide, like the deface audit: every stimulus reference in every events
+# file must resolve to the stimulus registry, NAT titles in canonical spelling.
+step "4c. Stimulus references resolve to the registry"
+"${VENV_PY}" "${REPO_ROOT}/scripts/build_stimulus_registry.py" --validate-events \
+    || fail "build_stimulus_registry.py --validate-events"
 
 # --- 5. scans.tsv -----------------------------------------------------------
 step "5. scans.tsv"

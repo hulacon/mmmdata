@@ -160,7 +160,7 @@ def movie_name_to_slug() -> dict[str, str]:
     for _, row in reg.iterrows():
         names = [row["movie_name"]]
         if isinstance(row.get("movie_name_variants"), str):
-            names += [v for v in row["movie_name_variants"].split(";") if v]
+            names += [v for v in row["movie_name_variants"].split("|") if v]
         for name in names:
             lookup[name.strip().lower()] = row["stimulus_id"]
     return lookup

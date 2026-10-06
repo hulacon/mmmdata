@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Shared utilities for raw-to-BIDS behavioral data converters."""
 
+import csv
 import json
 import os
 import sys
@@ -69,6 +70,54 @@ def bids_ses_fr(sess_num):
 def bids_ses_cr(sess_num):
     """Map cued recall session number to BIDS session label."""
     return bids_ses(sess_num + CR_SESSION_OFFSET)
+
+
+# === Movie identity (stimulus registry, constellation contracts §4.2) ===
+# NAT events carry the registry's canonical movie_name and its stimulus_id, so
+# no consumer has to reconcile spellings. The PsychoPy CSVs do not agree on
+# one spelling, which is why the registry declares the variants it accepts.
+def movie_registry_path():
+    return Path(BIDS_ROOT) / "stimuli" / "stimulus_registry" / "movies.tsv"
+
+
+def load_movie_index(path=None):
+    """Casefolded movie_name and every declared variant -> (stimulus_id, movie_name)."""
+    path = Path(path) if path else movie_registry_path()
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Stimulus registry not found: {path}. NAT events need it for "
+            "canonical movie names and stimulus_id; build it with "
+            "scripts/build_stimulus_registry.py.")
+    index = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f, delimiter="\t"):
+            variants = [v for v in row["movie_name_variants"].split("|") if v]
+            for name in (row["movie_name"], *variants):
+                index[name.strip().casefold()] = (row["stimulus_id"], row["movie_name"])
+    return index
+
+
+_MOVIE_INDEX = None
+
+
+def resolve_movie(name, index=None):
+    """A title as the PsychoPy CSV spells it -> (stimulus_id, canonical movie_name).
+
+    Raises on a title the registry does not list as a name or declared variant.
+    """
+    global _MOVIE_INDEX
+    if index is None:
+        if _MOVIE_INDEX is None:
+            _MOVIE_INDEX = load_movie_index()
+        index = _MOVIE_INDEX
+    hit = index.get(str(name).strip().casefold())
+    if hit is None:
+        raise ValueError(
+            f"Movie title {name!r} is neither a movie_name nor a declared variant "
+            f"in {movie_registry_path()}. If it is a new spelling of a known film, "
+            "add it to TITLE_VARIANTS in scripts/build_stimulus_registry.py and "
+            "rebuild the registry; do not edit the events.")
+    return hit
 
 
 def na_value(val):

@@ -31,7 +31,7 @@ import pandas as pd
 
 from common import (
     NA, BIDS_ROOT, FR_SESSION_OFFSET, NAT_EVENTS_RUN,
-    bids_ses_fr, bids_sub, int_or_na,
+    bids_ses_fr, bids_sub, int_or_na, resolve_movie,
     write_events_tsv, write_json_sidecar,
 )
 
@@ -112,6 +112,7 @@ def convert_file(psychopy_csv, output_tsv, dry_run=False):
             "ses_num": bids_ses_num,
             "condition": "",
             "movie_name": "",
+            "stimulus_id": "",
             "movie_length": "",
             "style": "",
             "free_recall_position": "",
@@ -130,6 +131,7 @@ def convert_file(psychopy_csv, output_tsv, dry_run=False):
             "ses_num": bids_ses_num,
             "condition": "",
             "movie_name": "",
+            "stimulus_id": "",
             "movie_length": "",
             "style": "",
             "free_recall_position": "",
@@ -175,7 +177,8 @@ def convert_file(psychopy_csv, output_tsv, dry_run=False):
             cue_dur = 0.0
 
         # Movie metadata (for cue and recall events)
-        movie_name = row["movie_name"] if pd.notna(row["movie_name"]) else ""
+        stimulus_id, movie_name = (resolve_movie(row["movie_name"])
+                                   if pd.notna(row["movie_name"]) else ("", ""))
         condition = int_or_na(row["condition"])
         movie_length = float(row["mov_len"]) if pd.notna(row.get("mov_len")) else ""
         style = row["style"] if pd.notna(row.get("style")) else ""
@@ -191,6 +194,7 @@ def convert_file(psychopy_csv, output_tsv, dry_run=False):
             "ses_num": bids_ses_num,
             "condition": condition,
             "movie_name": movie_name,
+            "stimulus_id": stimulus_id,
             "movie_length": movie_length,
             "style": style,
             "free_recall_position": free_recall_pos,
@@ -216,6 +220,7 @@ def convert_file(psychopy_csv, output_tsv, dry_run=False):
             "ses_num": bids_ses_num,
             "condition": condition,
             "movie_name": movie_name,
+            "stimulus_id": stimulus_id,
             "movie_length": movie_length,
             "style": style,
             "free_recall_position": free_recall_pos,
@@ -238,6 +243,7 @@ def convert_file(psychopy_csv, output_tsv, dry_run=False):
             "ses_num": bids_ses_num,
             "condition": "",
             "movie_name": "",
+            "stimulus_id": "",
             "movie_length": "",
             "style": "",
             "free_recall_position": "",
@@ -289,7 +295,10 @@ SIDECAR = {
         "Description": "Experimental condition for the movie (recall events only)",
     },
     "movie_name": {
-        "Description": "Name of the movie being recalled (recall events only)",
+        "Description": "Name of the movie cued and recalled, as the stimulus registry spells it (cue and recall events; n/a otherwise)",
+    },
+    "stimulus_id": {
+        "Description": "Canonical stimulus_id of the movie in stimuli/stimulus_registry/movies.tsv (cue and recall events; n/a otherwise)",
     },
     "movie_length": {
         "Description": "Duration of the movie in seconds (recall events only)",

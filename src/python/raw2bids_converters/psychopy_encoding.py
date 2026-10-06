@@ -30,7 +30,7 @@ import pandas as pd
 
 from common import (
     BIDS_ROOT, FR_SESSION_OFFSET,
-    bids_ses_fr, bids_sub, int_or_na,
+    bids_ses_fr, bids_sub, int_or_na, resolve_movie,
     write_events_tsv, write_json_sidecar,
 )
 
@@ -109,6 +109,7 @@ def convert_file(psychopy_csv, output_tsv, dry_run=False):
             "run_idx": run,
             "condition": "",
             "movie_name": "",
+            "stimulus_id": "",
             "movie_length": "",
             "style": "",
             "free_recall_position": "",
@@ -132,6 +133,7 @@ def convert_file(psychopy_csv, output_tsv, dry_run=False):
                 "run_idx": run,
                 "condition": "",
                 "movie_name": "",
+                "stimulus_id": "",
                 "movie_length": "",
                 "style": "",
                 "free_recall_position": "",
@@ -140,6 +142,7 @@ def convert_file(psychopy_csv, output_tsv, dry_run=False):
             })
 
         # --- Movie event ---
+        stimulus_id, movie_name = resolve_movie(row["movie_name"])
         movie_start = float(row["movies.started"])
         movie_stop = float(row["movies.stopped"])
         events_list.append({
@@ -151,7 +154,8 @@ def convert_file(psychopy_csv, output_tsv, dry_run=False):
             "ses_num": bids_ses_num,
             "run_idx": run,
             "condition": int_or_na(row["condition"]),
-            "movie_name": row["movie_name"],
+            "movie_name": movie_name,
+            "stimulus_id": stimulus_id,
             "movie_length": float(row["mov_len"]),
             "style": row["style"] if pd.notna(row["style"]) else "",
             "free_recall_position": int_or_na(row["free_recall_position"]),
@@ -173,6 +177,7 @@ def convert_file(psychopy_csv, output_tsv, dry_run=False):
             "run_idx": run,
             "condition": "",
             "movie_name": "",
+            "stimulus_id": "",
             "movie_length": "",
             "style": "",
             "free_recall_position": "",
@@ -231,7 +236,10 @@ SIDECAR = {
         },
     },
     "movie_name": {
-        "Description": "Name of the movie presented (empty for non-movie events)",
+        "Description": "Name of the movie presented, as the stimulus registry spells it (movie events only; n/a otherwise)",
+    },
+    "stimulus_id": {
+        "Description": "Canonical stimulus_id of the movie in stimuli/stimulus_registry/movies.tsv (movie events; n/a otherwise)",
     },
     "movie_length": {
         "Description": "Expected duration of the movie in seconds",

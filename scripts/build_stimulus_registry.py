@@ -43,7 +43,8 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent
 
-sys.path.insert(0, str(_REPO_ROOT / "src" / "python"))
+if str(_REPO_ROOT / "src" / "python") not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / "src" / "python"))
 try:
     from core.config import load_config
     _config = load_config(config_dir=_REPO_ROOT / "config")
@@ -78,6 +79,15 @@ KNOWN_MISSING_ANNOTATIONS: set[str] = set()
 # duration_s exactly, and the 23 SEG-C segments match the annotator's master
 # sheet row for row.
 ANNOTATION_ALIASES = {"finders-fee": "Fargo_annotation_master_SL.xlsx"}
+
+# Every other spelling of a movie title the PsychoPy CSVs use, keyed by the
+# canonical movie_name. This is the closed set behind movie_name_variants: the
+# NAT converters resolve source titles through it and write the canonical name,
+# so events stop carrying variants. It is declared rather than read off the
+# events because, once the converters normalise, the events no longer show
+# which spellings the sources use. A spelling found in events or sources that
+# is not here is an error. Declare it; never edit events to match.
+TITLE_VARIANTS = {"From Dad To Son": ("From Dad to Son",)}
 
 
 def norm_tokens(title: str) -> list[str]:
@@ -190,10 +200,22 @@ def build_movies() -> tuple[list[str], list[list[str]]]:
     for name, n in counts.items():
         by_key[name.lower()].append((n, name))
 
+    declared = {c.lower(): c for c in TITLE_VARIANTS}
     rows = []
     for key in sorted(by_key):
-        variants = sorted(by_key[key], reverse=True)
-        canonical = variants[0][1]
+        spellings = {name for _, name in by_key[key]}
+        canonical = declared.get(key)
+        if canonical is None:
+            if len(spellings) > 1:
+                sys.exit(f"ERROR: events spell one film {len(spellings)} ways: "
+                         f"{sorted(spellings)}. Fix: declare the canonical name "
+                         f"and its variants in TITLE_VARIANTS.")
+            canonical = spellings.pop()
+        else:
+            undeclared = spellings - {canonical, *TITLE_VARIANTS[canonical]}
+            if undeclared:
+                sys.exit(f"ERROR: undeclared spelling(s) of '{canonical}' in events: "
+                         f"{sorted(undeclared)}. Fix: add them to TITLE_VARIANTS.")
         toks = norm_tokens(canonical)
         video = match_file(toks, videos, "video", canonical)
         cue = match_file(toks, cues, "cue", canonical)
@@ -220,7 +242,7 @@ def build_movies() -> tuple[list[str], list[list[str]]]:
             sys.exit(f"ERROR: conflicting movie_length for '{canonical}': {dur}.")
         if key not in styles:
             sys.exit(f"ERROR: '{canonical}' missing from the movies sheet.")
-        rows.append([sid, canonical, "|".join(v for _, v in variants[1:]),
+        rows.append([sid, canonical, "|".join(TITLE_VARIANTS.get(canonical, ())),
                      f"movie_files/{video}", f"movie_cues/{cue}",
                      f"movie_annotations/{annot}" if annot else "",
                      styles[key], f"{dur[0]:g}"])
@@ -336,16 +358,19 @@ def render(header: list[str], rows: list[list[str]]) -> str:
 # Events validation — the charter's settle condition, runnable on demand
 # ---------------------------------------------------------------------------
 
-def validate_events(tables: dict[str, str]) -> None:
-    """Assert every stimulus-bearing events row resolves to a registry row."""
+def validate_events(tables: dict[str, str], root: Path = BIDS_ROOT) -> None:
+    """Assert every stimulus-bearing events row resolves to a registry row.
+
+    NAT rows must carry the canonical movie_name exactly (a declared variant
+    is a converter that skipped the registry), and a stimulus_id, where the
+    file has one, must be that movie's.
+    """
     def col(table, name):
         lines = tables[table].splitlines()
         idx = lines[0].split("\t").index(name)
         return [ln.split("\t")[idx] for ln in lines[1:]]
 
-    movie_names = {n.lower() for n in col("movies", "movie_name")}
-    for variants in col("movies", "movie_name_variants"):
-        movie_names |= {v.lower() for v in variants.split("|") if v}
+    movie_ids = dict(zip(col("movies", "movie_name"), col("movies", "stimulus_id")))
     mmm_ids = set(col("shared1000", "mmmId"))
     words = set(col("twp1000", "stimulus_id"))
 
@@ -355,15 +380,18 @@ def validate_events(tables: dict[str, str]) -> None:
 
     bad = defaultdict(int)
     n_files = n_rows = 0
-    for path in sorted(BIDS_ROOT.glob("sub-*/ses-*/func/*_events.tsv")):
+    for path in sorted(Path(root).glob("sub-*/ses-*/func/*_events.tsv")):
         n_files += 1
         with open(path, newline="") as f:
             for row in csv.DictReader(f, delimiter="\t"):
                 name = cell(row, "movie_name")
                 if name:
                     n_rows += 1
-                    if name.lower() not in movie_names:
-                        bad[f"movie_name '{name}'"] += 1
+                    if name not in movie_ids:
+                        bad[f"movie_name '{name}' (not a canonical movie_name)"] += 1
+                    sid = cell(row, "stimulus_id")
+                    if sid and sid != movie_ids.get(name):
+                        bad[f"stimulus_id '{sid}' for movie_name '{name}'"] += 1
                 mmm = cell(row, "mmmId")
                 if mmm:
                     n_rows += 1
@@ -432,6 +460,9 @@ def main() -> None:
     parser.add_argument("--validate-events", action="store_true",
                         help="assert every events stimulus reference resolves "
                              "against the regenerated tables")
+    parser.add_argument("--events-root", type=Path, default=BIDS_ROOT,
+                        help="tree whose sub-*/ses-*/func events --validate-events "
+                             "reads (default: the BIDS root)")
     args = parser.parse_args()
 
     tables = {}
@@ -443,7 +474,7 @@ def main() -> None:
     outputs["README.md"] = README.format(**counts)
 
     if args.validate_events:
-        validate_events(tables)
+        validate_events(tables, args.events_root)
     if args.check:
         stale = []
         for name, content in outputs.items():
