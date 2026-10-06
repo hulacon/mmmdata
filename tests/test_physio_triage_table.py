@@ -200,3 +200,13 @@ def test_generator_checks_interpreter_before_touching_files(monkeypatch, tmp_pat
     with pytest.raises(SystemExit):
         gpt.main(["--output", str(out)])
     assert not out.exists()
+
+
+@pytest.mark.parametrize("series, expected", [
+    ("Series_56_cued_recall_retrieval_run1_RR_PhysioLog", ("TBretrieval", 1)),
+    ("Series_14_cued_recall_encoding_run2_PhysioLog", ("TBencoding", 2)),
+    ("Series_34_cued_recall_resting_RR_PhysioLog", ("TBresting", None)),
+])
+def test_rerecon_physiolog_maps_to_its_task_and_run(series, expected):
+    """A scanner re-reconstruction ("_RR") is the same task and run."""
+    assert gi._physio_series_to_bids(series) == expected

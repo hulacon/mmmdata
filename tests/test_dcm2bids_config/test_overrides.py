@@ -103,3 +103,22 @@ class TestRunSeriesParsing:
         result = apply_overrides("ses-30", tb_middle, overrides)
         assert result.fmap_info == {"encoding": {"ap": 10, "pa": 11}}
         assert result.run_series["FINretrieval"][2] == {"bold": 45, "sbref": 44}
+
+
+class TestRunDescriptionsParsing:
+    """run_descriptions TOML keys are strings; they must be converted to int."""
+
+    def test_run_descriptions_parsed_with_int_keys(self, tb_middle):
+        overrides = {
+            "ses-07": {
+                "run_descriptions": {
+                    "TBretrieval": {"1": "cued_recall_retrieval_run1_RR"},
+                },
+            },
+        }
+        result = apply_overrides("ses-07", tb_middle, overrides)
+        assert result.run_descriptions == {"TBretrieval": {1: "cued_recall_retrieval_run1_RR"}}
+
+    def test_run_descriptions_none_when_absent(self, tb_middle):
+        result = apply_overrides("ses-06", tb_middle, {"ses-06": {"note": "nothing special"}})
+        assert result.run_descriptions is None

@@ -77,6 +77,7 @@ class OverrideResult:
     fmap_info: dict[str, dict[str, int]] | None = None
     run_protocols: dict[str, dict[int, str]] | None = None
     run_series: dict[str, dict[int, dict[str, int]]] | None = None
+    run_descriptions: dict[str, dict[int, str]] | None = None
     fmap_desc_map: dict[str, str] | None = None
 
 
@@ -196,6 +197,14 @@ def apply_overrides(
             for task_label, runs in ovr["run_series"].items()
         }
 
+    # --- Run SeriesDescription overrides (TOML keys are strings, convert to int) ---
+    run_descriptions = None
+    if "run_descriptions" in ovr:
+        run_descriptions = {
+            task_label: {int(k): v for k, v in runs.items()}
+            for task_label, runs in ovr["run_descriptions"].items()
+        }
+
     # --- Fieldmap description suffix map ---
     fmap_desc_map = ovr.get("fmap_desc_map")
 
@@ -204,5 +213,6 @@ def apply_overrides(
         fmap_info=fmap_info,
         run_protocols=run_protocols,
         run_series=run_series,
+        run_descriptions=run_descriptions,
         fmap_desc_map=fmap_desc_map,
     )

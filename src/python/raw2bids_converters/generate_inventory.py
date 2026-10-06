@@ -636,6 +636,7 @@ def apply_edf_triage(rows, triage):
 RE_PHYSIO_SERIES = re.compile(
     r"Series_\d+_(.+?)_PhysioLog$"
 )
+RE_RERECON_SUFFIX = re.compile(r"_RR$")
 
 # Task patterns: order matters (most specific first)
 PHYSIO_TASK_MAP = [
@@ -668,7 +669,10 @@ def _physio_series_to_bids(series_name):
     m = RE_PHYSIO_SERIES.match(series_name)
     if not m:
         return None
-    task_part = m.group(1)
+    # A scanner re-reconstruction appends "_RR" to the series name; it is the
+    # same task and run (the BOLD side is matched via the dcm2bids
+    # run_descriptions override).
+    task_part = RE_RERECON_SUFFIX.sub("", m.group(1))
 
     for pattern, bids_task, has_run in PHYSIO_TASK_MAP:
         pm = pattern.match(task_part)

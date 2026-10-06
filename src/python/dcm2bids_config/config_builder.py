@@ -29,8 +29,12 @@ def _build_bold_description(
     *,
     series_number: int | None = None,
     protocol_override: str | None = None,
+    series_description: str | None = None,
 ) -> dict:
-    """Build a single BOLD description entry."""
+    """Build a single BOLD description entry.
+
+    ``series_description`` matches a SeriesDescription that differs from the
+    ProtocolName, e.g. a scanner re-reconstruction (``<protocol>_RR``)."""
     protocol = protocol_override if protocol_override else task.protocol_name(run)
     desc: dict = {
         "id": f"task_{task.task_label}"
@@ -45,7 +49,7 @@ def _build_bold_description(
         # all 609 already-converted runs and for the new cohort alike.
         "criteria": {
             "ProtocolName": protocol,
-            "SeriesDescription": protocol,
+            "SeriesDescription": series_description or protocol,
         },
         "sidecar_changes": {
             "TaskName": task.task_label,
@@ -68,9 +72,12 @@ def _build_sbref_description(
     *,
     series_number: int | None = None,
     protocol_override: str | None = None,
+    series_description: str | None = None,
 ) -> dict:
     """Build a single SBRef description entry."""
-    if protocol_override:
+    if series_description:
+        sbref_desc = f"{series_description}_SBRef"
+    elif protocol_override:
         sbref_desc = f"{protocol_override}_SBRef"
     else:
         sbref_desc = task.sbref_description(run)
@@ -186,6 +193,7 @@ def build_config(
     *,
     run_protocols: dict[str, dict[int, str]] | None = None,
     run_series: dict[str, dict[int, dict[str, int]]] | None = None,
+    run_descriptions: dict[str, dict[int, str]] | None = None,
     fmap_desc_map: dict[str, str] | None = None,
 ) -> dict:
     """Build a complete dcm2bids config dict.
@@ -214,6 +222,12 @@ def build_config(
         Per-task, per-run SeriesNumber constraints for BOLD/SBRef.  Example::
 
             {"FINretrieval": {2: {"bold": 45, "sbref": 44}}}
+    run_descriptions : dict, optional
+        Per-task, per-run BOLD SeriesDescription, for a series whose
+        description differs from its ProtocolName (the SBRef is matched as
+        ``<description>_SBRef``).  Example::
+
+            {"TBretrieval": {1: "cued_recall_retrieval_run1_RR"}}
 
     Returns
     -------
@@ -245,12 +259,17 @@ def build_config(
             )
             bold_sn = run_meta.get("bold") if run_meta else None
             sbref_sn = run_meta.get("sbref") if run_meta else None
+            desc_ovr = (
+                run_descriptions.get(task.task_label, {}).get(run)
+                if run_descriptions else None
+            )
 
             descriptions.append(
                 _build_bold_description(
                     task, run, subject, session,
                     series_number=bold_sn,
                     protocol_override=proto_ovr,
+                    series_description=desc_ovr,
                 )
             )
             if task.has_sbref:
@@ -259,6 +278,7 @@ def build_config(
                         task, run, subject, session,
                         series_number=sbref_sn,
                         protocol_override=proto_ovr,
+                        series_description=desc_ovr,
                     )
                 )
 

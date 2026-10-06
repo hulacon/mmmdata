@@ -438,3 +438,43 @@ class TestRunProtocols:
         run1_bold = next(d for d in bolds if "run-1" in d["id"])
         assert run1_bold["criteria"]["ProtocolName"] == "free_recall_retrieval_run1_attempt2"
         assert run1_bold["criteria"]["SeriesNumber"] == "30"
+
+
+class TestRunDescriptions:
+    """run_descriptions matches a SeriesDescription that differs from the
+    ProtocolName (a scanner re-reconstruction, `<protocol>_RR`)."""
+
+    @pytest.fixture()
+    def session_def(self):
+        return SessionDef(
+            session_type="test",
+            tasks=(
+                TaskDef("TBretrieval", "cued_recall_retrieval_run{n}", "retrieval",
+                        runs=(1, 2), has_sbref=True),
+            ),
+            fmap_strategy="none",
+        )
+
+    def _by_suffix(self, config, suffix, run):
+        return next(d for d in config["descriptions"]
+                    if d["suffix"] == suffix and f"run-{run}" in d["id"])
+
+    def test_bold_keeps_protocol_and_matches_new_description(self, session_def):
+        rd = {"TBretrieval": {1: "cued_recall_retrieval_run1_RR"}}
+        config = build_config("sub-09", "ses-07", session_def, run_descriptions=rd)
+        crit = self._by_suffix(config, "bold", 1)["criteria"]
+        assert crit["ProtocolName"] == "cued_recall_retrieval_run1"
+        assert crit["SeriesDescription"] == "cued_recall_retrieval_run1_RR"
+
+    def test_sbref_matches_description_with_sbref_suffix(self, session_def):
+        rd = {"TBretrieval": {1: "cued_recall_retrieval_run1_RR"}}
+        config = build_config("sub-09", "ses-07", session_def, run_descriptions=rd)
+        crit = self._by_suffix(config, "sbref", 1)["criteria"]
+        assert crit["SeriesDescription"] == "cued_recall_retrieval_run1_RR_SBRef"
+
+    def test_only_specified_run_changes(self, session_def):
+        rd = {"TBretrieval": {1: "cued_recall_retrieval_run1_RR"}}
+        with_rd = build_config("sub-09", "ses-07", session_def, run_descriptions=rd)
+        without = build_config("sub-09", "ses-07", session_def)
+        assert self._by_suffix(with_rd, "bold", 2) == self._by_suffix(without, "bold", 2)
+        assert self._by_suffix(with_rd, "sbref", 2) == self._by_suffix(without, "sbref", 2)

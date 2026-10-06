@@ -153,6 +153,7 @@ def generate_one(
             subject, session, session_def, fmap_info,
             run_protocols=ovr_result.run_protocols,
             run_series=ovr_result.run_series,
+            run_descriptions=ovr_result.run_descriptions,
             fmap_desc_map=ovr_result.fmap_desc_map,
         )
     except ValueError as e:
