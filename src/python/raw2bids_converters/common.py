@@ -82,7 +82,9 @@ def write_events_tsv(df, output_path, dry_run=False):
     """Write a BIDS events TSV file.
 
     - Tab-separated, no index column
-    - NaN/missing replaced with 'n/a'
+    - NaN/missing replaced with 'n/a', and so are empty strings: BIDS allows no
+      empty cell, and the PsychoPy converters fill non-applicable columns
+      with "", which fillna does not see
     - Creates parent directories if needed
     """
     if dry_run:
@@ -90,7 +92,7 @@ def write_events_tsv(df, output_path, dry_run=False):
         return
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    df = df.fillna(NA)
+    df = df.replace("", NA).fillna(NA)
     df.to_csv(output_path, sep="\t", index=False)
     print(f"  Wrote {len(df)} rows -> {output_path}")
 
