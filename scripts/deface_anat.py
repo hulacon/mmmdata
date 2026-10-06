@@ -363,21 +363,42 @@ class Legs:
                     tag: str) -> tuple[Path, Path, Path, dict]:
         """Rigid-register `target` (a T2w) to `src_image` (the same session's
         T1w run-01), initialised from the headers, then carry the masks back
-        onto the target grid. Returns (face, brain, t1w_resampled, info)."""
+        onto the target grid. Returns (face, brain, t1w_resampled, info).
+
+        The search window can land on a false optimum on a steeply oblique
+        slab even when the headers align it to within a degree or two. So a
+        searched result that breaches the limits is retried once with
+        `-nosearch` (local refinement from the header alignment), and that
+        retry faces the same limits. `info["flirt_search"]` records which
+        result was used."""
         d = self.work / f"leg_{tag}"
         d.mkdir(parents=True, exist_ok=True)
         t2w2t1w = d / "t2w2t1w.mat"
         t1w2t2w = d / "t1w2t2w.mat"
-        run(["flirt", "-in", target, "-ref", src_image, "-dof", "6", "-cost", "mutualinfo",
-             "-usesqform", "-searchrx", "-20", "20", "-searchry", "-20", "20", "-searchrz", "-20", "20",
-             "-omat", t2w2t1w, "-out", d / "t2w_in_t1w.nii.gz"], self.log)
+
+        def register(search: list[str]) -> tuple[float, float]:
+            run(["flirt", "-in", target, "-ref", src_image, "-dof", "6", "-cost", "mutualinfo",
+                 "-usesqform", *search, "-omat", t2w2t1w, "-out", d / "t2w_in_t1w.nii.gz"], self.log)
+            return fsl_mat_refinement(t2w2t1w, nib.load(target), nib.load(src_image))
+
+        def breached(shift: float, rot: float) -> bool:
+            return shift > FLIRT_MAX_SHIFT_MM or rot > FLIRT_MAX_ROT_DEG
+
+        shift_mm, rot_deg = register(["-searchrx", "-20", "20", "-searchry", "-20", "20", "-searchrz", "-20", "20"])
+        info: dict = {"flirt_search": "searched"}
+        if breached(shift_mm, rot_deg):
+            self.log(f"  searched flirt moved {shift_mm:.1f} mm / {rot_deg:.1f} deg (limits {FLIRT_MAX_SHIFT_MM} / "
+                     f"{FLIRT_MAX_ROT_DEG}); retrying with -nosearch from the header alignment")
+            info = {"flirt_search": "nosearch_fallback",
+                    "searched_refinement_shift_mm": shift_mm, "searched_refinement_rot_deg": rot_deg}
+            shift_mm, rot_deg = register(["-nosearch"])
+            if breached(shift_mm, rot_deg):
+                raise RuntimeError(f"flirt refinement for {target.name} moved {info['searched_refinement_shift_mm']:.1f} mm / "
+                                   f"{info['searched_refinement_rot_deg']:.1f} deg searched and {shift_mm:.1f} mm / "
+                                   f"{rot_deg:.1f} deg without search, from the header alignment (limits "
+                                   f"{FLIRT_MAX_SHIFT_MM} / {FLIRT_MAX_ROT_DEG}); registration is not trusted")
+        info.update(refinement_shift_mm=shift_mm, refinement_rot_deg=rot_deg)
         run(["convert_xfm", "-omat", t1w2t2w, "-inverse", t2w2t1w], self.log)
-        shift_mm, rot_deg = fsl_mat_refinement(t2w2t1w, nib.load(target), nib.load(src_image))
-        info = {"refinement_shift_mm": shift_mm, "refinement_rot_deg": rot_deg}
-        if shift_mm > FLIRT_MAX_SHIFT_MM or rot_deg > FLIRT_MAX_ROT_DEG:
-            raise RuntimeError(f"flirt refinement for {target.name} moved {shift_mm:.1f} mm / {rot_deg:.1f} deg "
-                               f"from the header alignment (limits {FLIRT_MAX_SHIFT_MM} / {FLIRT_MAX_ROT_DEG}); "
-                               f"registration is not trusted")
         face = d / "facemask.nii.gz"
         brain = d / "brainmask.nii.gz"
         t1 = d / "t1w_resampled.nii.gz"

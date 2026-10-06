@@ -207,6 +207,47 @@ def test_fsl_flip_convention_for_neurological_grids(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# flirt leg: the -nosearch fallback                                           #
+# --------------------------------------------------------------------------- #
+def _flirt_leg(tmp_path, monkeypatch, refinements):
+    """A Legs whose `run` only records commands and whose refinement measure
+    returns `refinements` in order, one per flirt registration."""
+    for name in ("t2w.nii.gz", "t1w.nii.gz", "face.nii.gz", "brain.nii.gz"):
+        nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), np.float32), np.eye(4)), tmp_path / name)
+    calls = []
+    monkeypatch.setattr(da, "run", lambda cmd, log=print: calls.append([str(c) for c in cmd]))
+    queue = list(refinements)
+    monkeypatch.setattr(da, "fsl_mat_refinement", lambda mat, a, b: queue.pop(0))
+    legs = da.Legs(None, tmp_path / "work", log=lambda *a: None)
+    go = lambda: legs.carry_flirt(tmp_path / "face.nii.gz", tmp_path / "brain.nii.gz",
+                                  tmp_path / "t1w.nii.gz", tmp_path / "t2w.nii.gz", "leg")
+    return go, calls
+
+
+def test_flirt_within_limits_uses_the_searched_result(tmp_path, monkeypatch):
+    go, calls = _flirt_leg(tmp_path, monkeypatch, [(1.3, 0.4)])
+    *_, info = go()
+    assert info == {"flirt_search": "searched", "refinement_shift_mm": 1.3, "refinement_rot_deg": 0.4}
+    assert not any("-nosearch" in c for c in calls)
+
+
+def test_flirt_false_optimum_falls_back_to_nosearch(tmp_path, monkeypatch):
+    go, calls = _flirt_leg(tmp_path, monkeypatch, [(5.0, 15.1), (1.6, 0.56)])
+    *_, info = go()
+    assert info["flirt_search"] == "nosearch_fallback"
+    assert (info["searched_refinement_shift_mm"], info["searched_refinement_rot_deg"]) == (5.0, 15.1)
+    assert (info["refinement_shift_mm"], info["refinement_rot_deg"]) == (1.6, 0.56)
+    registrations = [c for c in calls if c[0] == "flirt" and "-omat" in c]
+    assert "-searchrx" in registrations[0] and "-nosearch" in registrations[1]
+
+
+def test_flirt_breaching_both_ways_is_refused(tmp_path, monkeypatch):
+    go, _ = _flirt_leg(tmp_path, monkeypatch, [(5.0, 15.1), (2.0, 16.0)])
+    with pytest.raises(RuntimeError, match="not trusted"):
+        go()
+
+
+# --------------------------------------------------------------------------- #
 # discovery on a synthetic tree                                               #
 # --------------------------------------------------------------------------- #
 def _fake_tree(tmp_path, subject="01", mismatch_orig=False):
