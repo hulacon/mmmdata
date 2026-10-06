@@ -129,3 +129,21 @@ pa = 12
 [ses-03.fmap_series.second]
 ap = 24
 pa = 26
+
+# =============================================================================
+# ses-07: Trial-based — retrieval runs exist only as scanner re-reconstructions
+# =============================================================================
+# Scan log: the retrieval runs "didn't save originally ... because reconstruction
+# wasn't working", so all four were re-reconstructed at the scanner. Their
+# SeriesDescription carries an "_RR" suffix (SBRef: "_RR_SBRef") while the
+# ProtocolName is unchanged, so the default criteria (SeriesDescription ==
+# ProtocolName) match nothing. Each is complete (150 volumes, as in ses-06/08).
+# Load-bearing real series names: the generic form cannot match them.
+[ses-07]
+note = "TBretrieval runs 1-4 only as _RR re-reconstructions"
+
+[ses-07.run_descriptions.TBretrieval]
+1 = "cued_recall_retrieval_run1_RR"
+2 = "cued_recall_retrieval_run2_RR"
+3 = "cued_recall_retrieval_run3_RR"
+4 = "cued_recall_retrieval_run4_RR"

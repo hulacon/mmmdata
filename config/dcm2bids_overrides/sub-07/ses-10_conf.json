@@ -11,7 +11,7 @@
       },
       "sidecar_changes": {
         "TaskName": "TBencoding",
-        "B0FieldSource": "B0map_encoding_sub09_ses07"
+        "B0FieldSource": "B0map_encoding_sub07_ses10"
       }
     },
     {
@@ -24,7 +24,7 @@
       },
       "sidecar_changes": {
         "TaskName": "TBencoding",
-        "B0FieldSource": "B0map_encoding_sub09_ses07"
+        "B0FieldSource": "B0map_encoding_sub07_ses10"
       }
     },
     {
@@ -38,7 +38,7 @@
       },
       "sidecar_changes": {
         "TaskName": "TBencoding",
-        "B0FieldSource": "B0map_encoding_sub09_ses07"
+        "B0FieldSource": "B0map_encoding_sub07_ses10"
       }
     },
     {
@@ -51,7 +51,7 @@
       },
       "sidecar_changes": {
         "TaskName": "TBencoding",
-        "B0FieldSource": "B0map_encoding_sub09_ses07"
+        "B0FieldSource": "B0map_encoding_sub07_ses10"
       }
     },
     {
@@ -65,7 +65,7 @@
       },
       "sidecar_changes": {
         "TaskName": "TBencoding",
-        "B0FieldSource": "B0map_encoding_sub09_ses07"
+        "B0FieldSource": "B0map_encoding_sub07_ses10"
       }
     },
     {
@@ -78,7 +78,7 @@
       },
       "sidecar_changes": {
         "TaskName": "TBencoding",
-        "B0FieldSource": "B0map_encoding_sub09_ses07"
+        "B0FieldSource": "B0map_encoding_sub07_ses10"
       }
     },
     {
@@ -92,7 +92,7 @@
       },
       "sidecar_changes": {
         "TaskName": "TBmath",
-        "B0FieldSource": "B0map_encoding_sub09_ses07"
+        "B0FieldSource": "B0map_encoding_sub07_ses10"
       }
     },
     {
@@ -105,7 +105,7 @@
       },
       "sidecar_changes": {
         "TaskName": "TBmath",
-        "B0FieldSource": "B0map_encoding_sub09_ses07"
+        "B0FieldSource": "B0map_encoding_sub07_ses10"
       }
     },
     {
@@ -119,7 +119,7 @@
       },
       "sidecar_changes": {
         "TaskName": "TBresting",
-        "B0FieldSource": "B0map_retrieval_sub09_ses07"
+        "B0FieldSource": "B0map_retrieval_sub07_ses10"
       }
     },
     {
@@ -132,7 +132,7 @@
       },
       "sidecar_changes": {
         "TaskName": "TBresting",
-        "B0FieldSource": "B0map_retrieval_sub09_ses07"
+        "B0FieldSource": "B0map_retrieval_sub07_ses10"
       }
     },
     {
@@ -142,11 +142,11 @@
       "custom_entities": "task-TBretrieval",
       "criteria": {
         "ProtocolName": "cued_recall_retrieval_run1",
-        "SeriesDescription": "cued_recall_retrieval_run1_RR"
+        "SeriesDescription": "cued_recall_retrieval_run1"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
-        "B0FieldSource": "B0map_retrieval_sub09_ses07"
+        "B0FieldSource": "B0map_retrieval_sub07_ses10"
       }
     },
     {
@@ -155,11 +155,11 @@
       "suffix": "sbref",
       "custom_entities": "task-TBretrieval",
       "criteria": {
-        "SeriesDescription": "cued_recall_retrieval_run1_RR_SBRef"
+        "SeriesDescription": "cued_recall_retrieval_run1_SBRef"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
-        "B0FieldSource": "B0map_retrieval_sub09_ses07"
+        "B0FieldSource": "B0map_retrieval_sub07_ses10"
       }
     },
     {
@@ -169,11 +169,11 @@
       "custom_entities": "task-TBretrieval",
       "criteria": {
         "ProtocolName": "cued_recall_retrieval_run2",
-        "SeriesDescription": "cued_recall_retrieval_run2_RR"
+        "SeriesDescription": "cued_recall_retrieval_run2"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
-        "B0FieldSource": "B0map_retrieval_sub09_ses07"
+        "B0FieldSource": "B0map_retrieval_sub07_ses10"
       }
     },
     {
@@ -182,11 +182,11 @@
       "suffix": "sbref",
       "custom_entities": "task-TBretrieval",
       "criteria": {
-        "SeriesDescription": "cued_recall_retrieval_run2_RR_SBRef"
+        "SeriesDescription": "cued_recall_retrieval_run2_SBRef"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
-        "B0FieldSource": "B0map_retrieval_sub09_ses07"
+        "B0FieldSource": "B0map_retrieval_sub07_ses10"
       }
     },
     {
@@ -196,11 +196,11 @@
       "custom_entities": "task-TBretrieval",
       "criteria": {
         "ProtocolName": "cued_recall_retrieval_run3",
-        "SeriesDescription": "cued_recall_retrieval_run3_RR"
+        "SeriesDescription": "cued_recall_retrieval_run3"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
-        "B0FieldSource": "B0map_retrieval_sub09_ses07"
+        "B0FieldSource": "B0map_retrieval_sub07_ses10"
       }
     },
     {
@@ -209,11 +209,11 @@
       "suffix": "sbref",
       "custom_entities": "task-TBretrieval",
       "criteria": {
-        "SeriesDescription": "cued_recall_retrieval_run3_RR_SBRef"
+        "SeriesDescription": "cued_recall_retrieval_run3_SBRef"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
-        "B0FieldSource": "B0map_retrieval_sub09_ses07"
+        "B0FieldSource": "B0map_retrieval_sub07_ses10"
       }
     },
     {
@@ -223,11 +223,11 @@
       "custom_entities": "task-TBretrieval",
       "criteria": {
         "ProtocolName": "cued_recall_retrieval_run4",
-        "SeriesDescription": "cued_recall_retrieval_run4_RR"
+        "SeriesDescription": "cued_recall_retrieval_run4"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
-        "B0FieldSource": "B0map_retrieval_sub09_ses07"
+        "B0FieldSource": "B0map_retrieval_sub07_ses10"
       }
     },
     {
@@ -236,11 +236,11 @@
       "suffix": "sbref",
       "custom_entities": "task-TBretrieval",
       "criteria": {
-        "SeriesDescription": "cued_recall_retrieval_run4_RR_SBRef"
+        "SeriesDescription": "cued_recall_retrieval_run4_SBRef"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
-        "B0FieldSource": "B0map_retrieval_sub09_ses07"
+        "B0FieldSource": "B0map_retrieval_sub07_ses10"
       }
     },
     {
@@ -249,10 +249,10 @@
       "custom_entities": "dir-AP",
       "criteria": {
         "SeriesDescription": "se_epi_ap*",
-        "SeriesNumber": "9"
+        "SeriesNumber": "5"
       },
       "sidecar_changes": {
-        "B0FieldIdentifier": "B0map_encoding_sub09_ses07"
+        "B0FieldIdentifier": "B0map_encoding_sub07_ses10"
       }
     },
     {
@@ -261,10 +261,10 @@
       "custom_entities": "dir-PA",
       "criteria": {
         "SeriesDescription": "se_epi_pa*",
-        "SeriesNumber": "10"
+        "SeriesNumber": "6"
       },
       "sidecar_changes": {
-        "B0FieldIdentifier": "B0map_encoding_sub09_ses07"
+        "B0FieldIdentifier": "B0map_encoding_sub07_ses10"
       }
     },
     {
@@ -273,10 +273,10 @@
       "custom_entities": "dir-AP",
       "criteria": {
         "SeriesDescription": "se_epi_ap*",
-        "SeriesNumber": "27"
+        "SeriesNumber": "24"
       },
       "sidecar_changes": {
-        "B0FieldIdentifier": "B0map_retrieval_sub09_ses07"
+        "B0FieldIdentifier": "B0map_retrieval_sub07_ses10"
       }
     },
     {
@@ -285,10 +285,10 @@
       "custom_entities": "dir-PA",
       "criteria": {
         "SeriesDescription": "se_epi_pa*",
-        "SeriesNumber": "29"
+        "SeriesNumber": "26"
       },
       "sidecar_changes": {
-        "B0FieldIdentifier": "B0map_retrieval_sub09_ses07"
+        "B0FieldIdentifier": "B0map_retrieval_sub07_ses10"
       }
     }
   ]

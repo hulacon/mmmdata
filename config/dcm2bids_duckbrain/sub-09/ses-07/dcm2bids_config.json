@@ -142,7 +142,7 @@
       "custom_entities": "task-TBretrieval",
       "criteria": {
         "ProtocolName": "cued_recall_retrieval_run1",
-        "SeriesDescription": "cued_recall_retrieval_run1"
+        "SeriesDescription": "cued_recall_retrieval_run1_RR"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
@@ -155,7 +155,7 @@
       "suffix": "sbref",
       "custom_entities": "task-TBretrieval",
       "criteria": {
-        "SeriesDescription": "cued_recall_retrieval_run1_SBRef"
+        "SeriesDescription": "cued_recall_retrieval_run1_RR_SBRef"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
@@ -169,7 +169,7 @@
       "custom_entities": "task-TBretrieval",
       "criteria": {
         "ProtocolName": "cued_recall_retrieval_run2",
-        "SeriesDescription": "cued_recall_retrieval_run2"
+        "SeriesDescription": "cued_recall_retrieval_run2_RR"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
@@ -182,7 +182,7 @@
       "suffix": "sbref",
       "custom_entities": "task-TBretrieval",
       "criteria": {
-        "SeriesDescription": "cued_recall_retrieval_run2_SBRef"
+        "SeriesDescription": "cued_recall_retrieval_run2_RR_SBRef"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
@@ -196,7 +196,7 @@
       "custom_entities": "task-TBretrieval",
       "criteria": {
         "ProtocolName": "cued_recall_retrieval_run3",
-        "SeriesDescription": "cued_recall_retrieval_run3"
+        "SeriesDescription": "cued_recall_retrieval_run3_RR"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
@@ -209,7 +209,7 @@
       "suffix": "sbref",
       "custom_entities": "task-TBretrieval",
       "criteria": {
-        "SeriesDescription": "cued_recall_retrieval_run3_SBRef"
+        "SeriesDescription": "cued_recall_retrieval_run3_RR_SBRef"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
@@ -223,7 +223,7 @@
       "custom_entities": "task-TBretrieval",
       "criteria": {
         "ProtocolName": "cued_recall_retrieval_run4",
-        "SeriesDescription": "cued_recall_retrieval_run4"
+        "SeriesDescription": "cued_recall_retrieval_run4_RR"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
@@ -236,7 +236,7 @@
       "suffix": "sbref",
       "custom_entities": "task-TBretrieval",
       "criteria": {
-        "SeriesDescription": "cued_recall_retrieval_run4_SBRef"
+        "SeriesDescription": "cued_recall_retrieval_run4_RR_SBRef"
       },
       "sidecar_changes": {
         "TaskName": "TBretrieval",
