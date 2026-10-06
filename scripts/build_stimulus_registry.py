@@ -15,11 +15,12 @@ stimulus_id conventions (ratified 2026-08-17, workbench/stimulus-registry):
               §4.1 extractor default
 - twp1000:    the word itself; voice is a reserved column on events/features
 
-events→id rules (verified against all sub-03/04/05 events, 2026-08-17):
+events→id rules (verified against all sub-03/04/05 events, 2026-08-17; NAT rule revised 2026-10-06):
 - TB/FIN image trials:  events.mmmId  → shared1000.tsv mmmId
 - TB/FIN word trials:   (events.word, events.voice) → twp1000.tsv + voice
-- NAT trials:           case-insensitive events.movie_name → movies.tsv
-                        movie_name / movie_name_variants (closed set)
+- NAT trials:           events.stimulus_id → movies.tsv; events.movie_name is
+                        the canonical spelling (the converters resolve source
+                        titles through the declared TITLE_VARIANTS)
 
 Usage:
     python build_stimulus_registry.py                # write all three TSVs
@@ -142,6 +143,12 @@ def match_file(name_toks: list[str], pool: dict[str, list[str]], kind: str,
 # Per-set builders — each returns (header, rows) with rows fully validated
 # ---------------------------------------------------------------------------
 
+def _present(value) -> str:
+    """A cell's value, or "" when it is empty or BIDS n/a."""
+    v = (value or "").strip()
+    return "" if v.lower() in {"n/a", "nan"} else v
+
+
 def scan_nat_events() -> tuple[Counter, dict]:
     """Collect movie_name spellings (with counts) and movie_length values."""
     counts = Counter()
@@ -153,11 +160,11 @@ def scan_nat_events() -> tuple[Counter, dict]:
     for path in events:
         with open(path, newline="") as f:
             for row in csv.DictReader(f, delimiter="\t"):
-                name = (row.get("movie_name") or "").strip()
+                name = _present(row.get("movie_name"))
                 if not name:
                     continue
                 counts[name] += 1
-                length = (row.get("movie_length") or "").strip()
+                length = _present(row.get("movie_length"))
                 if length:
                     durations[name.lower()].add(float(length))
     return counts, durations
@@ -431,14 +438,15 @@ asserts every events reference resolves).
 
 File-path columns are relative to the set's directory under `stimuli/`.
 
-## events→id rules (verified against all sub-03/04/05 events, 2026-08-17)
+## events→id rules (verified against all sub-03/04/05 events, 2026-08-17; NAT rule revised 2026-10-06)
 
 - **TB/FIN image trials:** `events.mmmId` → `shared1000.tsv` `mmmId`.
 - **TB/FIN word trials:** `(events.word, events.voice)` → `twp1000.tsv` row
   + voice column; `events.itmno` is a redundant join check.
-- **NAT trials:** case-insensitive `events.movie_name` →
-  `movies.tsv` `movie_name` or `movie_name_variants` (a closed set of every
-  spelling observed in events; matching must not assume exact case).
+- **NAT trials:** `events.stimulus_id` → `movies.tsv`; `events.movie_name`
+  is the canonical spelling. `movie_name_variants` lists the declared source
+  spellings the converters accept (`TITLE_VARIANTS` in the generator);
+  consumers should not need it.
 
 ## Known gaps
 

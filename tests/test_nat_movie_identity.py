@@ -130,3 +130,19 @@ def test_validate_events_rejects_noncanonical_rows(tmp_path, row):
     _events(tmp_path, [row])
     with pytest.raises(SystemExit):
         bsr.validate_events(_tables(), tmp_path)
+
+
+def test_registry_scan_reads_na_as_missing(tmp_path, monkeypatch):
+    """The builder reads the live events with the csv module, so BIDS n/a is
+    a string there, not NaN. It must count as missing, not as a film."""
+    _events(tmp_path, [
+        {"onset": 1, "trial_type": "title", "movie_name": "n/a", "movie_length": "n/a"},
+        {"onset": 2, "trial_type": "movie", "movie_name": "Film One", "movie_length": 100.0},
+    ])
+    (tmp_path / "sub-##" / "ses-##" / "func" /
+     "sub-##_ses-##_task-NATencoding_run-01_events.tsv").rename(
+        tmp_path / "sub-##" / "ses-##" / "func" / "sub-##_ses-##_task-NATx_events.tsv")
+    monkeypatch.setattr(bsr, "BIDS_ROOT", tmp_path)
+    counts, durations = bsr.scan_nat_events()
+    assert counts == {"Film One": 1}
+    assert durations == {"film one": {100.0}}
