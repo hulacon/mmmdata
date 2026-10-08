@@ -29,6 +29,15 @@ Columns (DECIDED #2). Per job and film set, every model is scored on one
 column set: the columns finite in the target's data and in every model's
 projection over every film.
 
+Arms (``--arm`` on ``score`` and ``m4``). ``ebind`` (default) is the
+pre-registered run above. ``psytwill`` (DECIDED 2026-10-07) is the later arm,
+psytwill-space in place of EBind: anatomical, every face of the
+combined-psytwill job (its combined faces named ``combined-psytwill*``), and
+the combined-EBind job's full model and stimulus face as ``combined-ebind``
+and ``stimulus-ebind``, all on one column set so psytwill and EBind pair on
+identical columns. No VGG19 or SRM/PCA. Written under
+``scores/psytwill-arm/``; M4 there covers psytwill only.
+
 Film sets (§3.2): ``heldout``, the 12 unique films of ses-23 and ses-26
 (primary); ``repeat``, the repeated films' held-out showings, scored
 separately. Every subject's window is paired to the target's grid by nearest
@@ -61,6 +70,7 @@ Verbs:
 Usage:
     python score_route.py score --pct 0 --draw 0 --target 03 --n-jobs 16
     python score_route.py m4 --pct 0 --draw 0 --target 03
+    python score_route.py score --arm psytwill --pct 0 --draw 0 --target 03 --n-jobs 16
     python score_route.py mni --target 03
     python score_route.py decide
     python score_route.py families --pct 0 --draw 0 --target 03 --n-jobs 16
@@ -104,12 +114,20 @@ PRF_R2_FLOOR = 10.0  # percent (DECIDED 2026-09-29)
 MEANVOL_FRAC, BETA_CAP = 0.25, 100.0
 
 
-def scores_root(derivatives: Path) -> Path:
-    return Path(derivatives) / "functional_space" / "scores"
+#: Scoring arms. ``ebind`` is the pre-registered run (§6, combined = CHA + EBind + response). ``psytwill`` is
+#: the later arm (DECIDED 2026-10-07): psytwill-space replaces EBind in the combined model, and EBind's
+#: combined model and stimulus route are scored beside it on the same columns; its own tree.
+ARMS = ("ebind", "psytwill")
+M4_SPACES_BY_ARM = {"ebind": ("ebind", "vgg19"), "psytwill": ("psytwill",)}
 
 
-def out_dir(derivatives: Path, scenario: str, pct: int, draw: int, target: str) -> Path:
-    return scores_root(derivatives) / scenario / f"pct-{pct:03d}" / f"draw-{draw:02d}" / f"target-{target}"
+def scores_root(derivatives: Path, arm: str = "ebind") -> Path:
+    root = Path(derivatives) / "functional_space" / "scores"
+    return root if arm == "ebind" else root / f"{arm}-arm"
+
+
+def out_dir(derivatives: Path, scenario: str, pct: int, draw: int, target: str, arm: str = "ebind") -> Path:
+    return scores_root(derivatives, arm) / scenario / f"pct-{pct:03d}" / f"draw-{draw:02d}" / f"target-{target}"
 
 
 def mni_dir(derivatives: Path, target: str) -> Path:
@@ -360,16 +378,21 @@ def face_name(face: str, names: list[str], space: str) -> str:
     return "combined-minus-" + "+".join(b for b in names if b not in blocks)
 
 
-def face_models(job: dict, template_subs: list[str], n: int, n_jobs: int, log=print) -> tuple[dict, dict]:
-    """Every face of the combined job's tuning table, refitted from the Grams at its (w, λ)."""
+def face_models(job: dict, template_subs: list[str], n: int, n_jobs: int, log=print, space: str = SPACE,
+                only: tuple[str, ...] | None = None, rename=None) -> tuple[dict, dict]:
+    """Faces of the combined job's tuning table (combined-<space>), refitted from the Grams at its (w, λ).
+
+    ``only`` keeps the named faces (model names as ``face_name`` gives them);
+    ``rename(name)`` gives the name a face is scored under.
+    """
     import combined as cb
     import stimulus_route as sr
     from joblib import Parallel, delayed
 
     target = job["target"]
-    cdir = cb.out_dir(job["derivatives"], SPACE, job["scenario"], job["pct"], job["draw"], target)
+    cdir = cb.out_dir(job["derivatives"], space, job["scenario"], job["pct"], job["draw"], target)
     side = json.loads((cdir / "combined.json").read_text())
-    specs = cb.job_blocks(job["derivatives"], job["parts"], job["windows"], SPACE, job["scenario"], job["pct"],
+    specs = cb.job_blocks(job["derivatives"], job["parts"], job["windows"], space, job["scenario"], job["pct"],
                           job["draw"], target)
     names = [nm for nm, _, _ in specs]
     if names != list(side["blocks"]):
@@ -387,6 +410,9 @@ def face_models(job: dict, template_subs: list[str], n: int, n_jobs: int, log=pr
     subs = [*template_subs, target]
     models, info = {}, {}
     for face, spec in side["selection"].items():
+        name = face_name(face, names, space)
+        if only is not None and name not in only:
+            continue
         w = [spec["weights"][nm] * c for nm, c in zip(names, coefs)]
         fitted = Parallel(n_jobs=n_jobs)(
             delayed(cb.fit_piece)([{pair: b.tpl[pair][lab] for pair in b.tpl} for b in blocks],
@@ -396,13 +422,18 @@ def face_models(job: dict, template_subs: list[str], n: int, n_jobs: int, log=pr
             for lab in labs)
         crosses = {s: sr.as_cross({lab: f[s] for lab, f in zip(labs, fitted) if s in f},
                                   tcols if s == target else common.template) for s in subs}
-        name = face_name(face, names, SPACE)
+        name = rename(name) if rename else name
         models[name] = {s: pr.transform_from_cross(crosses[s], n, spec["lam"]) for s in subs}
         info[name] = {"source": "combined face", "face": face, "weights": spec["weights"], "lam": spec["lam"],
                       "objective": spec["objective"]}
+        if space != SPACE:
+            info[name]["combined_job"] = f"combined-{space}"
         if face == side["full_model"]:
             info[name]["reproduces_saved_crosses"] = _check_full(crosses, cdir, subs)
-    log(f"combined faces: {sorted(models)} ({len(common.template)} pieces)")
+    if only is not None and set(only) - {face_name(f, names, space) for f in side["selection"]}:
+        raise ValueError(f"combined-{space} has no face {sorted(set(only) - set(models))}")
+    label = "combined" if space == SPACE else f"combined-{space}"
+    log(f"{label} faces: {sorted(models)} ({len(common.template)} pieces)")
     return models, info
 
 
@@ -593,13 +624,35 @@ def score_maps(models: dict, maps: dict, keys: list[tuple], keep: dict, networks
     return pd.DataFrame(rows)
 
 
-def build_models(job: dict, template_subs: list[str], n: int, n_jobs: int, cleaned: Path, log=print
-                 ) -> tuple[dict, dict]:
-    """Every model a partition job scores: anatomical, the combined faces, VGG19 tuned alone, SRM/PCA if defined."""
+def arm_name(name: str, space: str) -> str:
+    """A combined-<space> face's name in the psytwill arm: combined faces carry their space."""
+    return name.replace("combined", f"combined-{space}", 1) if name.startswith("combined") else name
+
+
+def build_models(job: dict, template_subs: list[str], n: int, n_jobs: int, cleaned: Path, log=print,
+                 arm: str = "ebind") -> tuple[dict, dict]:
+    """Every model a partition job scores.
+
+    ebind arm: anatomical, the combined faces, VGG19 tuned alone, SRM/PCA if defined.
+    psytwill arm: anatomical, every combined-psytwill face (combined ones renamed
+    combined-psytwill*), and combined-EBind's full model and stimulus face as
+    ``combined-ebind`` / ``stimulus-ebind``, refitted exactly as the ebind arm does.
+    """
     import combined as cb
 
     models: dict = {"anatomical": None}
     info: dict = {"anatomical": {"source": "fsaverage6 vertex identity"}}
+    if arm == "psytwill":
+        faces, face_info = face_models(job, template_subs, n, n_jobs, log, space="psytwill",
+                                       rename=lambda nm: arm_name(nm, "psytwill"))
+        models.update(faces)
+        info.update(face_info)
+        faces, face_info = face_models(job, template_subs, n, n_jobs, log, space="ebind",
+                                       only=("combined", "stimulus-ebind"),
+                                       rename=lambda nm: arm_name(nm, "ebind"))
+        models.update(faces)
+        info.update(face_info)
+        return models, info
     faces, face_info = face_models(job, template_subs, n, n_jobs, log)
     models.update(faces)
     info.update(face_info)
@@ -640,7 +693,7 @@ def run_score(args: argparse.Namespace, log=print) -> Path:
     seconds = {}
 
     t1 = time.time()
-    models, info = build_models(job, template_subs, n, args.n_jobs, cleaned, log)
+    models, info = build_models(job, template_subs, n, args.n_jobs, cleaned, log, arm=args.arm)
     seconds["models"] = round(time.time() - t1, 1)
     log(f"models: {list(models)} ({seconds['models']:.0f} s)")
 
@@ -673,7 +726,7 @@ def run_score(args: argparse.Namespace, log=print) -> Path:
     seconds["score_m1"] = round(time.time() - t1, 1)
     log(f"M1: {len(map_keys)} maps ({seconds['score_m1']:.0f} s)")
 
-    dest = out_dir(paths.derivatives, args.scenario, args.pct, args.draw, args.target)
+    dest = out_dir(paths.derivatives, args.scenario, args.pct, args.draw, args.target, args.arm)
     dest.mkdir(parents=True, exist_ok=True)
     pd.concat(frames_b, ignore_index=True).to_parquet(dest / "m2b.parquet", index=False)
     pd.concat(frames_a, ignore_index=True).to_csv(dest / "m2a.tsv", sep="\t", index=False, float_format="%.6g")
@@ -686,6 +739,7 @@ def run_score(args: argparse.Namespace, log=print) -> Path:
                        "M1 per map and component median (m1.tsv); template side = mean of the template subjects "
                        "carried into the target's space",
         "job": {"scenario": args.scenario, "pct": args.pct, "draw": args.draw, "target": args.target},
+        **({} if args.arm == "ebind" else {"arm": args.arm}),
         "template_subjects": template_subs, "models": info, "n_columns": n_cols,
         "m3": {"items": len(item_ids), "triplet_free_foils": int(foils.sum()), "n_columns": m3_cols,
                "floor": {"meanvol_frac": MEANVOL_FRAC, "beta_cap": BETA_CAP}},
@@ -827,7 +881,6 @@ def run_families(args: argparse.Namespace, log=print) -> Path:
     return dest
 
 
-M4_SPACES = ("ebind", "vgg19")
 M4_LEVEL = 0  # DECIDED 2026-09-30 #4: the stimulus routes at 0% only (primary and secondary)
 
 
@@ -861,14 +914,15 @@ def m4_residuals(job: dict, subs: list[str], space: str, backend: str, log=print
 
 
 def m4_route(job: dict, space: str, subs: list[str], n: int) -> tuple[dict, float]:
-    """The stimulus route at its tuned λ: EBind's from the combined table's one-block face, VGG19's from its scoring."""
+    """The stimulus route at its tuned λ: EBind's and psytwill's from their combined table's one-block face,
+    VGG19's from its scoring."""
     import cha
     import combined as cb
     import stimulus_route as sr
 
     target = job["target"]
-    if space == SPACE:
-        side = json.loads((cb.out_dir(job["derivatives"], SPACE, job["scenario"], job["pct"], job["draw"], target)
+    if space in (SPACE, "psytwill"):
+        side = json.loads((cb.out_dir(job["derivatives"], space, job["scenario"], job["pct"], job["draw"], target)
                            / "combined.json").read_text())
         lam = float(side["selection"]["stimulus"]["lam"])
     else:
@@ -909,7 +963,7 @@ def run_m4(args: argparse.Namespace, log=print) -> Path:
     raw = load_films(rows, subs, args.target, lambda row, cache: fm.film_series(row, cleaned, cache))
 
     frames, info = [], {}
-    for space in M4_SPACES:
+    for space in M4_SPACES_BY_ARM[args.arm]:
         res, diag = m4_residuals(job, subs, space, args.backend, log)
         resid = {s: {k: sc.zscore_columns(res[s][k][slices[k][s]]).astype(np.float32) for k in keys} for s in subs}
         tfs, lam = m4_route(job, space, subs, n)
@@ -921,7 +975,7 @@ def run_m4(args: argparse.Namespace, log=print) -> Path:
         info[space] = {"lam": lam, "encoders": diag, "n_columns": cols}
         del res, resid
 
-    dest = out_dir(paths.derivatives, args.scenario, args.pct, args.draw, args.target)
+    dest = out_dir(paths.derivatives, args.scenario, args.pct, args.draw, args.target, args.arm)
     dest.mkdir(parents=True, exist_ok=True)
     pd.concat(frames, ignore_index=True).to_csv(dest / "m4.tsv", sep="\t", index=False, float_format="%.6g")
     side = {"description": "M4 raw-residual check (§9; scope DECIDED 2026-09-30 #4): M2a per held-out film for "
@@ -929,6 +983,7 @@ def run_m4(args: argparse.Namespace, log=print) -> Path:
                            "subject's own refitted encoder prediction is removed from its own series; one shared "
                            "column set per (space, kind)",
             "job": {"scenario": args.scenario, "pct": args.pct, "draw": args.draw, "target": args.target},
+            **({} if args.arm == "ebind" else {"arm": args.arm}),
             "template_subjects": template_subs, "spaces": info, "backend": args.backend,
             "code_version": sc._code_version(), "seconds": round(time.time() - t0, 1),
             "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")}
@@ -1135,12 +1190,14 @@ def main() -> None:
     s.add_argument("--draw", type=int, required=True)
     s.add_argument("--target", required=True)
     s.add_argument("--n-jobs", type=int, default=1)
+    s.add_argument("--arm", default="ebind", choices=ARMS)
     g = sub.add_parser("m4")
     g.add_argument("--scenario", default="primary", choices=("primary", "secondary"))
     g.add_argument("--pct", type=int, required=True)
     g.add_argument("--draw", type=int, required=True)
     g.add_argument("--target", required=True)
     g.add_argument("--backend", default="torch_cuda")
+    g.add_argument("--arm", default="ebind", choices=ARMS)
     m = sub.add_parser("mni")
     m.add_argument("--target", required=True)
     sub.add_parser("decide")

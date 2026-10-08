@@ -1130,6 +1130,21 @@ class TestScoreRoute:
         assert scr.face_name("cha", ["cha", "stimulus"], "ebind") == "cha"
         assert scr.face_name("cha+stimulus", ["cha", "stimulus"], "ebind") == "combined"
 
+    def test_psytwill_arm_names_and_tree(self):
+        """The psytwill arm names every combined face by its space and writes beside, not into, the ebind tree."""
+        three = ["cha", "stimulus", "response"]
+        names = {scr.arm_name(scr.face_name(f, three, "psytwill"), "psytwill")
+                 for f in ("cha+stimulus+response", "cha+response", "stimulus", "cha", "response")}
+        assert names == {"combined-psytwill", "combined-psytwill-minus-stimulus", "stimulus-psytwill", "cha",
+                         "response"}
+        assert scr.arm_name(scr.face_name("stimulus", three, "ebind"), "ebind") == "stimulus-ebind"
+        assert scr.arm_name("combined", "ebind") == "combined-ebind"
+        base = scr.out_dir(Path("/d"), "primary", 0, 3, "04")
+        assert base == Path("/d/functional_space/scores/primary/pct-000/draw-03/target-04")
+        assert scr.out_dir(Path("/d"), "primary", 0, 3, "04", "psytwill") == \
+            Path("/d/functional_space/scores/psytwill-arm/primary/pct-000/draw-03/target-04")
+        assert scr.M4_SPACES_BY_ARM["psytwill"] == ("psytwill",)
+
     def test_mni_network_labels(self):
         vox = pd.DataFrame({"schaefer7n": ["7Networks_LH_Vis_1", "7Networks_RH_Default_PFCm_3", np.nan, ""]})
         assert list(scr.mni_network_labels(vox)) == ["Vis", "Default", "", ""]

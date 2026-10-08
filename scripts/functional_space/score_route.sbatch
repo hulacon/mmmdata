@@ -23,6 +23,7 @@
 #   sbatch --array=0-479%20 score_route.sbatch
 #   (array index = `partitions.py job --index N`)
 #   sbatch --export=ALL,VERB=mni,TARGET=03 score_route.sbatch
+#   psytwill arm (scores/psytwill-arm/): add ARM=psytwill to --export, for score or m4
 #   Secondary families + smoothed-anatomical control (after `families.py cache-tb` per subject):
 #   sbatch --array=0-479%20 --export=ALL,VERB=families score_route.sbatch
 #   M4 (0% jobs only; needs the job's score.json) runs on a GPU, so the
@@ -40,6 +41,7 @@ set -euo pipefail
 REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
 PY="/gpfs/projects/hulacon/shared/envs/functional-space/bin/python"
 VERB="${VERB:-score}"
+ARM="${ARM:-ebind}"  # psytwill: the later arm, written under scores/psytwill-arm/
 if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then  # array task: the job comes from the partition table
     read -r SCENARIO PCT DRAW TARGET < <("${PY}" "${REPO_ROOT}/scripts/functional_space/partitions.py" \
         job --index "${SLURM_ARRAY_TASK_ID}")
@@ -50,11 +52,11 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 
 if [[ "${VERB}" == "m4" ]]; then
     : "${PCT:?set PCT}" "${DRAW:?set DRAW}"
-    echo "Job ${SLURM_JOB_ID} M4 ${SCENARIO} ${PCT}% draw ${DRAW} target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"
+    echo "Job ${SLURM_JOB_ID} M4 (${ARM} arm) ${SCENARIO} ${PCT}% draw ${DRAW} target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"
     nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
     export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
     /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/score_route.py" m4 \
-        --scenario "${SCENARIO}" --pct "${PCT}" --draw "${DRAW}" --target "${TARGET}"
+        --scenario "${SCENARIO}" --pct "${PCT}" --draw "${DRAW}" --target "${TARGET}" --arm "${ARM}"
 elif [[ "${VERB}" == "families" ]]; then
     : "${PCT:?set PCT}" "${DRAW:?set DRAW}"
     echo "Job ${SLURM_JOB_ID} families ${SCENARIO} ${PCT}% draw ${DRAW} target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"
@@ -65,8 +67,9 @@ elif [[ "${VERB}" == "mni" ]]; then
     /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/score_route.py" mni --target "${TARGET}"
 else
     : "${PCT:?set PCT}" "${DRAW:?set DRAW}"
-    echo "Job ${SLURM_JOB_ID} score ${SCENARIO} ${PCT}% draw ${DRAW} target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"
+    echo "Job ${SLURM_JOB_ID} score (${ARM} arm) ${SCENARIO} ${PCT}% draw ${DRAW} target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"
     /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/score_route.py" score \
-        --scenario "${SCENARIO}" --pct "${PCT}" --draw "${DRAW}" --target "${TARGET}" --n-jobs "${SLURM_CPUS_PER_TASK}"
+        --scenario "${SCENARIO}" --pct "${PCT}" --draw "${DRAW}" --target "${TARGET}" --n-jobs "${SLURM_CPUS_PER_TASK}" \
+        --arm "${ARM}"
 fi
 echo "End $(date)"
