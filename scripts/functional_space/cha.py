@@ -2,7 +2,7 @@
 """Connectivity hyperalignment (CHA): the zero-overlap comparator route.
 
 Pre-registration §6 (CHA row), §8 (3 densification levels); targets DECIDED
-2026-09-29 in mmmdata-agents ``docs/workbench/functional-space/``. One job per
+2026-09-29 in mmmdata-agents ``docs/archive/workbench/functional-space/``. One job per
 target subject; the template is built from the other two and frozen before the
 target enters, and the target's transform comes from its own data only (§2).
 

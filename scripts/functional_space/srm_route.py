@@ -3,7 +3,7 @@
 
 Pre-registration §6 (SRM row, controls) and §8 (k grid); the scope and
 implementation were DECIDED 2026-09-30 in mmmdata-agents
-``docs/workbench/functional-space/``:
+``docs/archive/workbench/functional-space/``:
 
 - **Piecewise**, on the same pieces and columns as every other route. Per
   piece ``k_eff = min(k, smallest subject's column count in the piece)``, so

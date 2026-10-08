@@ -6,7 +6,7 @@ One CIFTI-2 dtseries per run: fsaverage6 cortex + unfolded hippocampus (2 mm)
 data-quality library (``neuroimaging.confounds.regime_design`` +
 ``neuroimaging.data_quality.clean``; nothing re-implemented). Geometry and the
 loader live in ``grayordinates.py``; the design record is mmmdata-agents
-``docs/workbench/functional-space/``.
+``docs/archive/workbench/functional-space/``.
 
 Verbs (idempotent; state is on disk):
 

@@ -2,7 +2,7 @@
 """Response route: classic hyperalignment on the films the subjects share.
 
 Pre-registration §6 (response row), handoff 2026-09-29 in mmmdata-agents
-``docs/workbench/functional-space/``. One job per (scenario, level, draw,
+``docs/archive/workbench/functional-space/``. One job per (scenario, level, draw,
 target). Rows are **measured** series on the job's shared alignment films
 (``use == "align_shared"``); nothing is predicted. The template is built from
 the two template subjects and frozen before the target enters; the target's

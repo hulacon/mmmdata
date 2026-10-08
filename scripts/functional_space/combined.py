@@ -3,7 +3,7 @@
 
 Pre-registration §6 (combined row), §8 (block weights on a 0.25 simplex, λ
 grid), §3.4 (tuning); design DECIDED 2026-09-30 in mmmdata-agents
-``docs/workbench/functional-space/``. One job per (space, scenario, level,
+``docs/archive/workbench/functional-space/``. One job per (space, scenario, level,
 draw, target). Nothing is refitted: the job reads the per-piece Grams each
 route saved (``--save-grams``) and stacks them.
 

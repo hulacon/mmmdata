@@ -2,7 +2,7 @@
 """Place the stimulus route's films and probe clips in a psytwill-space release.
 
 The psytwill arm of the stimulus route (mmmdata-agents
-``docs/workbench/functional-space/``, DECIDED 2026-10-07) encodes with the
+``docs/archive/workbench/functional-space/``, DECIDED 2026-10-07) encodes with the
 release's V and A blocks and the V side of the VL relation, on the 0.5 s
 frame grid. The films already have release families (``space release
 project``) under ``<derivatives>/stimuli_features/psytwill/``. The probe clips

@@ -2,7 +2,7 @@
 """Secondary ROI families, the smoothed-anatomical control, and the subcortical TB cache.
 
 Pre-registration §10 (families) and §6 (controls), in mmmdata-agents
-``docs/workbench/functional-space/``. ``score_route.py families`` uses this
+``docs/archive/workbench/functional-space/``. ``score_route.py families`` uses this
 module to score each partition job's models over every family, not only
 family A.
 

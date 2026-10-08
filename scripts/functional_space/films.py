@@ -4,7 +4,7 @@
 Every NATencoding film showing of the target subjects gets a role and a window
 of cleaned-series volumes. The routes read films only through this table, so
 the trimming rule lives in one place. The design record is mmmdata-agents
-``docs/workbench/functional-space/`` (pre-registration §3.1, §6).
+``docs/archive/workbench/functional-space/`` (pre-registration §3.1, §6).
 
 Roles:
 

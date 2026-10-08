@@ -2,7 +2,7 @@
 """Stimulus route: measured responses paired with encoder predictions (Wasserman 2026).
 
 Pre-registration §6 (stimulus rows), handoff 2026-09-29 in mmmdata-agents
-``docs/workbench/functional-space/``. One job per (space, scenario, level,
+``docs/archive/workbench/functional-space/``. One job per (space, scenario, level,
 draw, target). Every subject's encoder (``encoding.py``) is fit on that
 subject's own alignment films; the template is built from the two template
 subjects and frozen before the target enters; the target's transform comes

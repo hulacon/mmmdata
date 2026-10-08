@@ -2,7 +2,7 @@
 
 Both are one label per grayordinate, in the row order of the cleaned tree's
 ``grayordinates.tsv``, so every route indexes columns the same way. The design
-record is mmmdata-agents ``docs/workbench/functional-space/`` (pre-registration
+record is mmmdata-agents ``docs/archive/workbench/functional-space/`` (pre-registration
 §5; CHA targets DECIDED 2026-09-29).
 
 Pieces (piecewise alignment):

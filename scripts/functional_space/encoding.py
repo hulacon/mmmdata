@@ -3,7 +3,7 @@
 
 Pre-registration §6 (stimulus rows), §8 (encoding ridge); FIR delays and the
 virtual probe set DECIDED 2026-09-29 in mmmdata-agents
-``docs/workbench/functional-space/``. Per draw, each subject's encoder is fit
+``docs/archive/workbench/functional-space/``. Per draw, each subject's encoder is fit
 on that subject's own alignment films and predicts responses to any film or
 probe clip; the stimulus route pairs measured with predicted responses.
 

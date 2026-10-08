@@ -2,7 +2,7 @@
 """Scoring for the functional-space study: metrics M1–M4, gains, and the H1/H2 decision rule.
 
 Pre-registration §9; M2b and M4 details DECIDED 2026-09-30 in mmmdata-agents
-``docs/workbench/functional-space/``. **Before the freeze this module runs on
+``docs/archive/workbench/functional-space/``. **Before the freeze this module runs on
 synthetic data only** (§11.6): nothing here reads the held-out sessions, TB
 betas or localizer maps, and the ``selftest`` verb plants its own data.
 

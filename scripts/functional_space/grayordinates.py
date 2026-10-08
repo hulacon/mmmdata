@@ -2,7 +2,7 @@
 
 The functional-space template is a cortical-coordinate object built from three
 pieces of the same fMRIPrep runs (mmmdata-agents
-``docs/workbench/functional-space/out/preregistration.md`` §5):
+``docs/archive/workbench/functional-space/out/preregistration.md`` §5):
 
 * **cortex** -- fMRIPrep ``space-fsaverage6`` surface BOLD, all 40,962 vertices
   per hemisphere. The medial wall (label 0 of the CBIG Schaefer-400 fsaverage6

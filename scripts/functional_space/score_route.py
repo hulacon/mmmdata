@@ -3,7 +3,7 @@
 
 Pre-registration §9 (metrics, inference), §3.2 (test data), §6 (routes);
 scoring choices DECIDED 2026-09-30 in mmmdata-agents
-``docs/workbench/functional-space/``. The metrics themselves are
+``docs/archive/workbench/functional-space/``. The metrics themselves are
 ``scoring.py``'s; this module loads data, builds each job's models and runs
 them.
 
