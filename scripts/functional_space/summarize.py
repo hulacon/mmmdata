@@ -42,18 +42,28 @@ for p in (REPO_ROOT / "src" / "python", HERE):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-#: Reference models a gain is reported against, where the level has them.
-REFERENCES = ("anatomical", "cha")
+#: Reference models a gain is reported against, where the level has them. The psytwill arm adds EBind's
+#: routes, scored in the same jobs on the same columns, so a gain over them is the paired psytwill - EBind
+#: difference (P1-P4, DECIDED 2026-10-07).
+REFERENCES_BY_ARM = {"ebind": ("anatomical", "cha"),
+                     "psytwill": ("anatomical", "cha", "stimulus-ebind", "combined-ebind")}
+REFERENCES = REFERENCES_BY_ARM["ebind"]
 CI = (2.5, 97.5)
 
 
-def job_dirs(derivatives: Path, parts: pd.DataFrame, families: bool) -> list[tuple[dict, Path]]:
+def job_dirs(derivatives: Path, parts: pd.DataFrame, families: bool, arm: str = "ebind",
+             scenario: str | None = None, pct: int | None = None) -> list[tuple[dict, Path]]:
     import partitions as pt
     import score_route as scr
 
     out, missing = [], []
-    for j in pt.job_list(parts).itertuples(index=False):
-        d = scr.out_dir(derivatives, j.scenario, int(j.pct), int(j.draw), j.target)
+    jobs = pt.job_list(parts)
+    if scenario is not None:
+        jobs = jobs[jobs["scenario"] == scenario]
+    if pct is not None:
+        jobs = jobs[jobs["pct"] == pct]
+    for j in jobs.itertuples(index=False):
+        d = scr.out_dir(derivatives, j.scenario, int(j.pct), int(j.draw), j.target, arm)
         if families:
             d = d / "families"
         if not d.is_dir():
@@ -91,7 +101,7 @@ def replicate_means(cube: np.ndarray, d: np.ndarray, f: np.ndarray | None) -> np
 
 
 def summarize_metric(df: pd.DataFrame, value: str, group: list[str], unit: list[str], film: str | None,
-                     n_boot: int, seed: int) -> pd.DataFrame:
+                     n_boot: int, seed: int, references: tuple[str, ...] = REFERENCES) -> pd.DataFrame:
     """Draw-averaged ``value`` and gains over REFERENCES, with bootstrap intervals, per ``group`` x ROI x model.
 
     ``unit`` names the ROI column(s). ``film`` is the per-film column; None
@@ -125,7 +135,7 @@ def summarize_metric(df: pd.DataFrame, value: str, group: list[str], unit: list[
             frame = pd.DataFrame(list(r["index"]), columns=[*unit, "model"])
             lo, hi = np.nanpercentile(r["reps"], CI, axis=1)
             out = frame.assign(**gkey, target=t, mean=r["point"], ci_lo=lo, ci_hi=hi)
-            for ref in REFERENCES:
+            for ref in references:
                 gm = np.full(len(frame), np.nan)
                 glo, ghi = gm.copy(), gm.copy()
                 pos = {tuple(v): i for i, v in enumerate(frame[[*unit, "model"]].itertuples(index=False, name=None))}
@@ -157,12 +167,17 @@ def main() -> None:
     ap.add_argument("--n-boot", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--arm", default="ebind", choices=tuple(REFERENCES_BY_ARM))
+    ap.add_argument("--scenario", default=None, help="only this scenario's jobs (default: every job)")
+    ap.add_argument("--pct", type=int, default=None, help="only this overlap level's jobs (default: every level)")
     args = ap.parse_args()
+    refs = REFERENCES_BY_ARM[args.arm]
 
     paths = enc.Paths()
     parts = pt.load_partitions(paths.derivatives)
-    jobs = job_dirs(paths.derivatives, parts, args.families)
-    dest = args.out or scr.scores_root(paths.derivatives) / "summary" / ("families" if args.families else "primary")
+    jobs = job_dirs(paths.derivatives, parts, args.families, args.arm, args.scenario, args.pct)
+    dest = args.out or (scr.scores_root(paths.derivatives, args.arm) / "summary"
+                        / ("families" if args.families else "primary"))
     dest.mkdir(parents=True, exist_ok=True)
     level = ["scenario", "pct", "target"]
     fam = ["family"] if args.families else []
@@ -171,21 +186,24 @@ def main() -> None:
     m2b = read_all(jobs, "m2b.parquet")
     m2b = m2b.groupby([*level, "draw", "set", *fam, "network", "model", "film"], as_index=False)[["rank_acc", "top1"]].mean()
     for value in ("rank_acc", "top1"):
-        t = summarize_metric(m2b, value, [*level, "set", *fam], ["network"], "film", args.n_boot, args.seed)
+        t = summarize_metric(m2b, value, [*level, "set", *fam], ["network"], "film",
+                             args.n_boot, args.seed, references=refs)
         t.to_csv(dest / f"m2b_{value}.tsv", sep="\t", index=False, float_format="%.5g")
         written[f"m2b_{value}"] = len(t)
     m2a = read_all(jobs, "m2a.tsv")
-    t = summarize_metric(m2a, "r", [*level, "set", *fam], ["network"], "film", args.n_boot, args.seed)
+    t = summarize_metric(m2a, "r", [*level, "set", *fam], ["network"], "film",
+                         args.n_boot, args.seed, references=refs)
     t.to_csv(dest / "m2a.tsv", sep="\t", index=False, float_format="%.5g")
     written["m2a"] = len(t)
     m3 = read_all(jobs, "m3.tsv")
     m3_group = [*level, "foils", *fam, *(["items"] if args.families else [])]
-    t = summarize_metric(m3, "rank_acc", m3_group, ["network"], None, args.n_boot, args.seed)
+    t = summarize_metric(m3, "rank_acc", m3_group, ["network"], None, args.n_boot, args.seed, references=refs)
     t.to_csv(dest / "m3.tsv", sep="\t", index=False, float_format="%.5g")
     written["m3"] = len(t)
     m1 = read_all(jobs, "m1.tsv")
     m1 = m1[m1["contrast"].isin(["median", "angle"])]
-    t = summarize_metric(m1, "r", [*level, *fam], ["network", "component", "read"], None, args.n_boot, args.seed)
+    t = summarize_metric(m1, "r", [*level, *fam], ["network", "component", "read"], None,
+                         args.n_boot, args.seed, references=refs)
     t.to_csv(dest / "m1.tsv", sep="\t", index=False, float_format="%.5g")
     written["m1"] = len(t)
     if args.families:
@@ -197,14 +215,16 @@ def main() -> None:
     else:
         m4_jobs = [(k, d) for k, d in jobs if (d / "m4.tsv").exists()]
         m4 = read_all(m4_jobs, "m4.tsv")
-        t = summarize_metric(m4, "r", level, ["network", "space", "kind"], "film", args.n_boot, args.seed)
+        t = summarize_metric(m4, "r", level, ["network", "space", "kind"], "film",
+                             args.n_boot, args.seed, references=refs)
         t.to_csv(dest / "m4.tsv", sep="\t", index=False, float_format="%.5g")
         written["m4"] = len(t)
     (dest / "summary.json").write_text(json.dumps({
         "description": "Descriptive functional-space summaries with hierarchical-bootstrap intervals (draws, then "
                        "films within draw; draws only for per-job metrics); gains are model minus reference, "
                        "computed within each bootstrap replicate; target 'all' = mean over targets",
-        "n_boot": args.n_boot, "seed": args.seed, "ci": list(CI), "references": list(REFERENCES),
+        "n_boot": args.n_boot, "seed": args.seed, "ci": list(CI), "references": list(refs), "arm": args.arm,
+        "jobs": {"scenario": args.scenario or "all", "pct": "all" if args.pct is None else args.pct},
         "families": args.families, "rows": written, "code_version": sc._code_version(),
         "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
     }, indent=2) + "\n")

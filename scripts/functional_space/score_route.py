@@ -758,8 +758,8 @@ def run_score(args: argparse.Namespace, log=print) -> Path:
 SMOOTH_MATCH = ("combined", "cha", "srm")
 
 
-def families_dir(derivatives: Path, scenario: str, pct: int, draw: int, target: str) -> Path:
-    return out_dir(derivatives, scenario, pct, draw, target) / "families"
+def families_dir(derivatives: Path, scenario: str, pct: int, draw: int, target: str, arm: str = "ebind") -> Path:
+    return out_dir(derivatives, scenario, pct, draw, target, arm) / "families"
 
 
 def run_families(args: argparse.Namespace, log=print) -> Path:
@@ -800,7 +800,7 @@ def run_families(args: argparse.Namespace, log=print) -> Path:
     seconds = {}
 
     t1 = time.time()
-    models, info = build_models(job, template_subs, n, args.n_jobs, cleaned, log)
+    models, info = build_models(job, template_subs, n, args.n_jobs, cleaned, log, arm=args.arm)
     seconds["models"] = round(time.time() - t1, 1)
 
     frames_b, frames_a, smooth_rows, n_cols, matched = [], [], [], {}, {}
@@ -856,7 +856,7 @@ def run_families(args: argparse.Namespace, log=print) -> Path:
     del maps
     seconds["score_m1"] = round(time.time() - t1, 1)
 
-    dest = families_dir(paths.derivatives, args.scenario, args.pct, args.draw, args.target)
+    dest = families_dir(paths.derivatives, args.scenario, args.pct, args.draw, args.target, args.arm)
     dest.mkdir(parents=True, exist_ok=True)
     pd.concat(frames_b, ignore_index=True).to_parquet(dest / "m2b.parquet", index=False)
     pd.concat(frames_a, ignore_index=True).to_csv(dest / "m2a.tsv", sep="\t", index=False, float_format="%.6g")
@@ -870,6 +870,7 @@ def run_families(args: argparse.Namespace, log=print) -> Path:
                        "M3 per item set (three-exposure, single-exposure) and foil pool, M1 on cortical families "
                        "(read only in family A); smoothing.tsv = mesh-neighbour temporal r of each projection",
         "job": {"scenario": args.scenario, "pct": args.pct, "draw": args.draw, "target": args.target},
+        **({} if args.arm == "ebind" else {"arm": args.arm}),
         "template_subjects": template_subs, "families": list(labels), "models": info,
         "smoothing": {"grid": list(fam.SMOOTH_GRID), "matched_steps": matched,
                       "rule": "fewest steps whose anatomical neighbour r is closest to the route's, held-out films"},
@@ -1035,8 +1036,8 @@ def run_mni(args: argparse.Namespace, log=print) -> Path:
 # decision
 # ---------------------------------------------------------------------------
 
-def load_level(derivatives: Path, parts: pd.DataFrame, scenario: str, pct: int, fset: str = PRIMARY_SET
-               ) -> pd.DataFrame:
+def load_level(derivatives: Path, parts: pd.DataFrame, scenario: str, pct: int, fset: str = PRIMARY_SET,
+               arm: str = "ebind") -> pd.DataFrame:
     """Per-film M2b (segment means) of every job at one level: target, draw, model, network, film, rank_acc.
 
     Every job the partition table lists must have been scored; a missing one is an error.
@@ -1047,7 +1048,7 @@ def load_level(derivatives: Path, parts: pd.DataFrame, scenario: str, pct: int, 
     jobs = jobs[(jobs["scenario"] == scenario) & (jobs["pct"] == pct)]
     frames, missing = [], []
     for j in jobs.itertuples(index=False):
-        path = out_dir(derivatives, scenario, pct, int(j.draw), j.target) / "m2b.parquet"
+        path = out_dir(derivatives, scenario, pct, int(j.draw), j.target, arm) / "m2b.parquet"
         if not path.exists():
             missing.append(str(path))
             continue
@@ -1087,7 +1088,8 @@ def mc_error(level: pd.DataFrame, model: str, reference: pd.DataFrame, fs6_model
     return {"median": float(se.median()), "max": float(se.max()), "n_cells": int(se.size)}
 
 
-def load_level_table(derivatives: Path, parts: pd.DataFrame, scenario: str, pct: int, name: str) -> pd.DataFrame:
+def load_level_table(derivatives: Path, parts: pd.DataFrame, scenario: str, pct: int, name: str,
+                     arm: str = "ebind") -> pd.DataFrame:
     """One per-job TSV (``m3.tsv``, ``m1.tsv``) over every job at a level, with target and draw; none may be missing."""
     import partitions as pt
 
@@ -1095,7 +1097,7 @@ def load_level_table(derivatives: Path, parts: pd.DataFrame, scenario: str, pct:
     jobs = jobs[(jobs["scenario"] == scenario) & (jobs["pct"] == pct)]
     frames = []
     for j in jobs.itertuples(index=False):
-        path = out_dir(derivatives, scenario, pct, int(j.draw), j.target) / name
+        path = out_dir(derivatives, scenario, pct, int(j.draw), j.target, arm) / name
         if not path.exists():
             raise FileNotFoundError(f"{path} is missing")
         frames.append(pd.read_csv(path, sep="\t").assign(target=j.target, draw=int(j.draw)))
@@ -1143,7 +1145,8 @@ def run_decide(args: argparse.Namespace, log=print) -> Path:
     paths = enc.Paths()
     parts = pt.load_partitions(paths.derivatives)
     scenario, pct = H1_JOBS
-    level = load_level(paths.derivatives, parts, scenario, pct)
+    route = "combined" if args.arm == "ebind" else f"combined-{args.arm}"
+    level = load_level(paths.derivatives, parts, scenario, pct, arm=args.arm)
     targets = sorted(level["target"].unique())
     mni = []
     for t in targets:
@@ -1152,30 +1155,31 @@ def run_decide(args: argparse.Namespace, log=print) -> Path:
         mni.append(df.groupby(["network", "film"], as_index=False)["rank_acc"].mean().assign(target=t))
     baselines = {"fsaverage6": draw_average(level, "anatomical"), "mni": pd.concat(mni, ignore_index=True)}
     reference = sc.reference_scores(baselines)
-    combined = draw_average(level, "combined")
+    combined = draw_average(level, route)
     h1 = sc.decide(sc.film_gains(combined, reference))
     h1["reference_choice"] = (reference.groupby(["target", "network"])["baseline"].first()
                               .unstack().to_dict(orient="index"))
-    h1["mc_error"] = mc_error(level, "combined", reference)
-    m3 = load_level_table(paths.derivatives, parts, scenario, pct, "m3.tsv")
-    m1 = load_level_table(paths.derivatives, parts, scenario, pct, "m1.tsv")
-    h1["robustness"] = robustness(h1, m3, m1, "combined")
+    h1["mc_error"] = mc_error(level, route, reference)
+    m3 = load_level_table(paths.derivatives, parts, scenario, pct, "m3.tsv", args.arm)
+    m1 = load_level_table(paths.derivatives, parts, scenario, pct, "m1.tsv", args.arm)
+    h1["robustness"] = robustness(h1, m3, m1, route)
     out = {"description": "Functional-space H1 (combined vs the stronger anatomical baseline) and, if H1 is a go, "
                           "H2 (combined vs CHA): M2b rank accuracy, film means averaged over draws, exact one-sided "
                           "sign-flip per target x network, Holm across networks within target, go if a network "
                           "survives in >= 2 targets (pre-registration §9)",
+           **({} if args.arm == "ebind" else {"arm": args.arm, "route": route}),
            "scenario": scenario, "pct": pct, "film_set": PRIMARY_SET,
            "n_draws": level.groupby("target")["draw"].nunique().to_dict(), "H1": h1}
     cha = draw_average(level, "cha")
     if h1["go"]:
         out["H2"] = sc.decide(sc.film_gains(combined, cha))
-        out["H2"]["robustness"] = robustness(out["H2"], m3, m1, "combined", reference="cha")
+        out["H2"]["robustness"] = robustness(out["H2"], m3, m1, route, reference="cha")
     else:
         out["H2"] = "not tested: H1 is a no-go (fixed sequence, §1)"
         out["exploratory_cha_vs_anatomical"] = sc.decide(sc.film_gains(cha, reference))
     out["code_version"] = sc._code_version()
     out["created"] = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
-    dest = scores_root(paths.derivatives) / "decision.json"
+    dest = scores_root(paths.derivatives, args.arm) / "decision.json"
     dest.write_text(json.dumps(out, indent=2) + "\n")
     log(f"H1 {'GO' if h1['go'] else 'NO-GO'}: networks counted {h1['networks_counted']}; wrote {dest}")
     return dest
@@ -1200,13 +1204,15 @@ def main() -> None:
     g.add_argument("--arm", default="ebind", choices=ARMS)
     m = sub.add_parser("mni")
     m.add_argument("--target", required=True)
-    sub.add_parser("decide")
+    d = sub.add_parser("decide")
+    d.add_argument("--arm", default="ebind", choices=ARMS)
     f = sub.add_parser("families")
     f.add_argument("--scenario", default="primary", choices=("primary", "secondary"))
     f.add_argument("--pct", type=int, required=True)
     f.add_argument("--draw", type=int, required=True)
     f.add_argument("--target", required=True)
     f.add_argument("--n-jobs", type=int, default=1)
+    f.add_argument("--arm", default="ebind", choices=ARMS)
     args = ap.parse_args()
     {"score": run_score, "m4": run_m4, "mni": run_mni, "decide": run_decide, "families": run_families}[args.verb](args)
 
