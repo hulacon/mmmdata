@@ -400,6 +400,67 @@ class TestEncoderDesign:
         out = enc.binned(f, np.array([0.0, 1.5, 3.0]), 1.5)
         assert np.allclose(out[1], f.x[3:6].mean(0))
 
+    def test_undefined_frames_drop_out_of_the_mean(self):
+        """A NaN frame (extractor left it undefined) is left out of its column only."""
+        f = _frames(30.0)
+        f.x[4, 0] = np.nan
+        out = enc.binned(f, np.array([0.0, 1.5, 3.0]), 1.5)
+        assert out[1, 0] == pytest.approx(f.x[[3, 5], 0].mean())
+        assert out[1, 1] == pytest.approx(f.x[3:6, 1].mean())
+        assert np.isfinite(out).all()
+
+    def test_all_finite_frames_bin_as_before(self):
+        f = _frames(30.0)
+        starts = np.arange(0.0, 27.0, 1.5)
+        csum = np.vstack([np.zeros((1, 3)), np.cumsum(f.x, axis=0, dtype=np.float64)])
+        lo, hi = (starts / enc.FRAME_S).astype(int), (starts / enc.FRAME_S).astype(int) + 3
+        assert np.array_equal(enc.binned(f, starts, 1.5), ((csum[hi] - csum[lo]) / 3.0).astype(np.float32))
+
+    def test_span_with_no_defined_frame_is_an_error(self):
+        f = _frames(30.0)
+        f.x[3:6, 2] = np.nan
+        with pytest.raises(ValueError, match="no defined frame"):
+            enc.binned(f, np.array([1.5]), 1.5)
+
+    def test_projection_features_stack_bands_per_stimulus(self):
+        import pandas as pd
+
+        t = np.arange(0.0, 3.0, 0.5)
+        v = pd.DataFrame({"stimulus_id": ["s"] * 6, "time": t, "V_000": 1.0, "V_001": 2.0})
+        a = pd.DataFrame({"stimulus_id": ["s"] * 6, "time": t[::-1], "A_000": np.r_[np.nan, np.arange(5.0)]})
+        (f,) = enc.projection_features({"V": v, "A": a})
+        assert f.bands == {"V": slice(0, 2), "A": slice(2, 3)}
+        assert np.allclose(f.times, t) and np.isnan(f.x[-1, 2]) and f.x[0, 2] == 4.0
+
+    def test_frames_a_later_band_omits_are_undefined(self):
+        """`space project` drops a frame its block cannot place; the release keeps it as NaN."""
+        import pandas as pd
+
+        v = pd.DataFrame({"stimulus_id": ["s"] * 4, "time": [0.0, 0.5, 1.0, 1.5], "V_000": 1.0})
+        a = pd.DataFrame({"stimulus_id": ["s"] * 3, "time": [0.0, 0.5, 1.0], "A_000": 2.0})
+        (f,) = enc.projection_features({"V": v, "A": a})
+        assert np.array_equal(np.isnan(f.x[:, 1]), [False, False, False, True])
+
+    def test_projection_features_refuse_frames_off_the_first_band(self):
+        import pandas as pd
+
+        v = pd.DataFrame({"stimulus_id": ["s"] * 3, "time": [0.0, 0.5, 1.0], "V_000": 1.0})
+        a = pd.DataFrame({"stimulus_id": ["s"] * 2, "time": [1.0, 1.5], "A_000": 1.0})
+        with pytest.raises(ValueError, match="frames differ"):
+            enc.projection_features({"V": v, "A": a})
+        w = pd.DataFrame({"stimulus_id": ["s"] * 2, "time": [0.25, 0.75], "V_000": 1.0})
+        with pytest.raises(ValueError, match="bin starts"):
+            enc.projection_features({"V": w})
+
+    def test_string_times_sort_as_numbers(self):
+        """`psytwill space project` writes time as a string; "10.0" must not sort before "2.0"."""
+        import pandas as pd
+
+        t = [str(x) for x in np.arange(0.0, 12.0, 0.5)]
+        v = pd.DataFrame({"stimulus_id": "s", "time": t[::-1], "V_000": np.arange(24.0)[::-1]})
+        (f,) = enc.projection_features({"V": v})
+        assert np.array_equal(f.times, np.arange(0.0, 12.0, 0.5)) and np.array_equal(f.x[:, 0], np.arange(24.0))
+
     def test_span_outside_the_stimulus_is_an_error(self):
         f = _frames(30.0)
         with pytest.raises(ValueError):

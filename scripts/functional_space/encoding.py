@@ -13,6 +13,12 @@ Feature spaces (frames on the extractors' 0.5 s grid):
   vgg19  four bands: VGG19 post-ReLU ``conv1_2``, ``conv2_2``, ``conv3_3``,
          ``conv4_3`` at 112 px, each channel averaged over space (Wasserman
          2026's blocks; DECIDED 2026-09-28)
+  psytwill three bands from psytwill-space 0.1.0: the V block (336), the A
+         block (64) and the V side of the VL relation (60), placed by
+         ``psytwill_projection.py`` (DECIDED 2026-10-07; L has no value over
+         silence or in films without dialogue, so it is not a band). A's last
+         frame is undefined in some films; a span's value is the mean of its
+         defined frames
 
 Design: for a volume spanning ``[a, a + TR)`` in film time and a delay of
 ``d`` TRs, the feature is the mean of the frames whose timestamps fall in
@@ -82,7 +88,15 @@ FEATURE_SPACES = {
     "ebind": {"file": "ebind.csv", "bands": {"ebind": r"^ebind_\d{4}$"}},
     "vgg19": {"file": "vgg19.csv",
               "bands": {b: rf"^vgg19_{b}_relu112_\d{{4}}$" for b in _VGG_BLOCKS}},
+    # band -> table written by psytwill_projection.py (every column but the key)
+    "psytwill": {"tables": {"V": "V", "A": "A", "VL": "VL"}},
 }
+PROJECTION_CORPORA = ("movies",) + PROBE_CORPORA
+
+
+def space_bands(space: str) -> list[str]:
+    spec = FEATURE_SPACES[space]
+    return list(spec.get("tables") or spec["bands"])
 
 
 class Paths:
@@ -92,6 +106,7 @@ class Paths:
         self.films = self.derivatives / "stimuli_features" / "movies"
         self.fit_corpora = Path(cfg["fit_corpora_dir"])
         self.cache = self.derivatives / "functional_space" / "features"
+        self.projection = self.derivatives / "functional_space" / "psytwill_projection"
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +145,48 @@ def read_feature_csv(path: Path, space: str) -> Features:
     times = np.asarray(table.column("time"), dtype=np.float64)
     x = np.column_stack([np.asarray(table.column(c), dtype=np.float32) for c in cols])
     return Features(sid, times, x, bands)
+
+
+def projection_features(tables: dict[str, "pd.DataFrame"]) -> list[Features]:
+    """One ``Features`` per stimulus from band tables keyed on (stimulus_id, time).
+
+    Bands are stacked in the given order, and the first band's frames are the
+    stimulus's frames. ``psytwill space project`` omits a frame its block
+    cannot place (a release family keeps it as an undefined, all-NaN row), so
+    a later band may lack some of those frames: they are NaN here, as in the
+    release. A frame that is not among the first band's is an error. Times
+    must be bin starts on the 0.5 s grid (psytwill ``--window`` output).
+    """
+    # `psytwill space project` writes time as a string: cast before sorting
+    tables = {b: t.assign(time=t["time"].astype(np.float64)) for b, t in tables.items()}
+    per_band = {b: dict(tuple(t.sort_values(["stimulus_id", "time"]).groupby("stimulus_id", sort=True)))
+                for b, t in tables.items()}
+    ids = [sorted(d) for d in per_band.values()]
+    if any(i != ids[0] for i in ids):
+        raise ValueError("band tables cover different stimuli")
+    out = []
+    for sid in ids[0]:
+        xs, bands, at, times = [], {}, 0, None
+        for b, d in per_band.items():
+            g = d[sid]
+            t = g["time"].to_numpy(np.float64)
+            x = g.drop(columns=["stimulus_id", "time"]).to_numpy(np.float32)
+            if times is None:
+                times = t
+            elif t.shape != times.shape or not np.allclose(t, times):
+                row = np.searchsorted(times, t)
+                if np.any(row >= times.size) or not np.allclose(times[np.minimum(row, times.size - 1)], t):
+                    raise ValueError(f"{sid}: band {b} frames differ from band {next(iter(per_band))}")
+                full = np.full((times.size, x.shape[1]), np.nan, np.float32)
+                full[row] = x
+                x = full
+            bands[b] = slice(at, at + x.shape[1])
+            at += x.shape[1]
+            xs.append(x)
+        if np.any(np.abs(times / FRAME_S - np.round(times / FRAME_S)) > 1e-6):
+            raise ValueError(f"{sid}: times are not bin starts on the {FRAME_S} s grid")
+        out.append(Features(sid, times, np.hstack(xs), bands))
+    return out
 
 
 def save_features(f: Features, path: Path) -> None:
@@ -171,7 +228,9 @@ def binned(f: Features, span_starts: np.ndarray, tr: float, end: float | None = 
 
     Every span must lie inside ``[0, end]`` (``end`` defaults to the last
     frame's end; for a film it is the played length) and hold a frame; a span
-    that does not is an error.
+    that does not is an error. A NaN frame (a feature the extractor left
+    undefined) is left out of its column's mean, so the value is still a mean
+    of emitted frames; a span with no defined frame in some column is an error.
     """
     t = f.times
     end = t[-1] + FRAME_S if end is None else end
@@ -181,8 +240,16 @@ def binned(f: Features, span_starts: np.ndarray, tr: float, end: float | None = 
     hi = np.searchsorted(t, span_starts + tr - 1e-6, side="left")
     if np.any(hi <= lo) or np.any(span_starts < -1e-6) or np.any(span_starts + tr > end + 1e-6):
         raise ValueError(f"{f.stimulus_id}: a volume/delay span has no frames inside the stimulus")
-    csum = np.vstack([np.zeros((1, f.x.shape[1]), np.float64), np.cumsum(f.x, axis=0, dtype=np.float64)])
-    return ((csum[hi] - csum[lo]) / (hi - lo)[:, None]).astype(np.float32)
+    defined = np.isfinite(f.x)
+    zero = np.zeros((1, f.x.shape[1]), np.float64)
+    csum = np.vstack([zero, np.cumsum(np.where(defined, f.x, 0.0), axis=0, dtype=np.float64)])
+    if defined.all():
+        return ((csum[hi] - csum[lo]) / (hi - lo)[:, None]).astype(np.float32)
+    ccount = np.vstack([zero, np.cumsum(defined, axis=0, dtype=np.float64)])
+    count = ccount[hi] - ccount[lo]
+    if np.any(count == 0):
+        raise ValueError(f"{f.stimulus_id}: a volume/delay span has no defined frame in some feature")
+    return ((csum[hi] - csum[lo]) / count).astype(np.float32)
 
 
 def delayed(f: Features, volume_starts: np.ndarray, tr: float, delays=DELAYS_TR, end: float | None = None
@@ -440,6 +507,8 @@ def cmd_cache(args: argparse.Namespace) -> None:
 
     paths = Paths()
     windows = fm.load_windows(paths.derivatives)
+    if "tables" in FEATURE_SPACES[args.space]:
+        return cache_projection(args, paths, sorted(windows["stimulus_id"].unique()))
     fname = FEATURE_SPACES[args.space]["file"]
     sources = [paths.films / sid / fname for sid in sorted(windows["stimulus_id"].unique())]
     sources += probe_sources(paths.fit_corpora, args.space)
@@ -462,6 +531,62 @@ def cmd_cache(args: argparse.Namespace) -> None:
             "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")}
     (paths.cache / args.space / "cache.json").write_text(json.dumps(side, indent=2) + "\n")
     print(f"{args.space}: {done} written, {len(sources) - done} already cached, {len(sources)} total")
+
+
+def cache_projection(args: argparse.Namespace, paths: Paths, film_ids: list[str]) -> None:
+    """Cache a space whose bands are psytwill_projection.py tables (films + probe clips).
+
+    Refuses unless that driver's ``check`` passed (the films' tables equal their
+    release families), and unless the probe clips are exactly the virtual probe
+    set the other spaces use (every clip with an ``ebind.csv``).
+    """
+    import pandas as pd
+
+    check = paths.projection / "check.json"
+    if not check.exists() or not json.loads(check.read_text()).get("pass"):
+        sys.exit(f"{check} is missing or failed; run `psytwill_projection.py check` first")
+    tables = FEATURE_SPACES[args.space]["tables"]
+    expected_probe = sorted(f"ext-{p.parents[2].name}-{p.parent.name}"
+                            for p in probe_sources(paths.fit_corpora, "ebind"))
+    feats: list[Features] = []
+    for corpus in PROJECTION_CORPORA:
+        srcs = {b: paths.projection / f"{corpus}_{t}.parquet" for b, t in tables.items()}
+        missing = [s for s in srcs.values() if not s.exists()]
+        if missing:
+            sys.exit(f"{missing[0]} is missing; run psytwill_projection.sbatch")
+        got = projection_features({b: pd.read_parquet(s) for b, s in srcs.items()})
+        if corpus == "movies":
+            have = {f.stimulus_id for f in got}
+            lost = sorted(set(film_ids) - have)
+            if lost:
+                sys.exit(f"{len(lost)} window films have no projection, e.g. {lost[0]}")
+            got = [f for f in got if f.stimulus_id in set(film_ids)]
+        feats += got
+    probe = sorted(f.stimulus_id for f in feats if f.stimulus_id.startswith("ext-"))
+    if probe != expected_probe:
+        sys.exit(f"probe clips differ from the virtual probe set: "
+                 f"{sorted(set(expected_probe) ^ set(probe))[:5]}")
+    undefined = {b: 0 for b in tables}
+    done = 0
+    for f in feats:
+        if np.isinf(f.x).any():
+            sys.exit(f"{f.stimulus_id}: infinite features")
+        for b, sl in f.bands.items():
+            undefined[b] += int((~np.isfinite(f.x[:, sl])).any(axis=1).sum())
+        dest = cache_path(paths.cache, args.space, f.stimulus_id)
+        if dest.exists() and not args.force:
+            continue
+        save_features(f, dest)
+        done += 1
+    side = {"space": args.space, "bands": {b: int(sl.stop - sl.start) for b, sl in feats[0].bands.items()},
+            "n_stimuli": len(feats), "n_films": len(film_ids), "n_probe": len(probe), "frame_s": FRAME_S,
+            "undefined_frames": undefined,
+            "undefined_rule": "a span's value is the mean of its defined frames; a span with none is an error",
+            "sources": {"projection": str(paths.projection), "check": json.loads(check.read_text())},
+            "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")}
+    (paths.cache / args.space / "cache.json").write_text(json.dumps(side, indent=2) + "\n")
+    print(f"{args.space}: {done} written, {len(feats) - done} already cached, {len(feats)} total; "
+          f"undefined frames {undefined}")
 
 
 def cmd_plan(args: argparse.Namespace) -> None:

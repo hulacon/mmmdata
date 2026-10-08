@@ -481,7 +481,7 @@ def main() -> None:
     sub = ap.add_subparsers(dest="verb", required=True)
     for verb in ("plan", "fit"):
         p = sub.add_parser(verb)
-        p.add_argument("--space", default="ebind", choices=("ebind", "vgg19"))
+        p.add_argument("--space", default="ebind", choices=("ebind", "vgg19", "psytwill"))
         p.add_argument("--scenario", default="primary", choices=("primary", "secondary"))
         p.add_argument("--pct", type=int, required=True)
         p.add_argument("--draw", type=int, required=True)

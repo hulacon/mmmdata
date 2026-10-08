@@ -39,7 +39,7 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then  # array task: the job comes from t
     read -r SCENARIO PCT DRAW TARGET < <("${PY}" "${REPO_ROOT}/scripts/functional_space/partitions.py" \
         job --index "${SLURM_ARRAY_TASK_ID}")
 fi
-: "${SPACE:?set SPACE (ebind|vgg19)}" "${PCT:?set PCT}" "${DRAW:?set DRAW}" "${TARGET:?set TARGET}"
+: "${SPACE:?set SPACE (ebind|vgg19|psytwill)}" "${PCT:?set PCT}" "${DRAW:?set DRAW}" "${TARGET:?set TARGET}"
 SCENARIO="${SCENARIO:-primary}"
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 

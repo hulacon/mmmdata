@@ -27,7 +27,7 @@
 
 set -euo pipefail
 
-: "${SPACE:?set SPACE (ebind|vgg19)}"
+: "${SPACE:?set SPACE (ebind|vgg19|psytwill)}"
 PCT="${PCT:-0}" DRAW="${DRAW:-0}" TARGET="${TARGET:-03}" SUBS="${SUBS:-03 04 05}"
 REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
 PY="/gpfs/projects/hulacon/shared/envs/functional-space/bin/python"
