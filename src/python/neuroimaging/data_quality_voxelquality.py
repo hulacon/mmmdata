@@ -183,8 +183,10 @@ class voxelmaps:  # noqa: N801
     def write(tables: dict[str, pd.DataFrame], dest: Path, provenance: dict) -> list[Path]:
         return _write(tables, dest, provenance, {"drop_floor": dqv.DROP_FLOOR, "consensus": dqv.CONSENSUS,
                                                  "examine_multiple": dqv.EXAMINE_MULTIPLE,
+                                                 "examine_floor": dqv.EXAMINE_FLOOR,
                                                  "ribbon_floor": dqv.RIBBON_FLOOR, "parcel_lost": PARCEL_LOST,
-                                                 "surface_adequate": "0.9 <= median ratio <= 1.1 and rho_sampled >= 0.9"})
+                                                 "surface_adequate": "median ratio and every depth_*_rel in "
+                                                 f"{list(dqv.ADEQUATE_BAND)}, rho_parcel_ribbon >= {dqv.ADEQUATE_RHO}"})
 
     @staticmethod
     def diff(a: Path, b: Path) -> list[str]:

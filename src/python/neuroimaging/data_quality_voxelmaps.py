@@ -80,8 +80,15 @@ DEPTHS: tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 DROP_FLOOR = 0.8
 #: The subject's consensus mask: voxels inside this fraction of its runs' brain masks.
 CONSENSUS = 0.9
-#: A session is examined when its dropped fraction exceeds this multiple of the subject median.
+#: A session is examined when its lost fraction exceeds this multiple of the subject median
+#: and is at least EXAMINE_FLOOR of the domain. The floor keeps a clean subject's sub-1 %
+#: wobble from being flagged (DECIDED 2026-10-09).
 EXAMINE_MULTIPLE = 2.0
+EXAMINE_FLOOR = 0.01
+#: Surface adequacy band, applied to the surface ÷ sampled-volume ratio and to every depth of
+#: the white→pial profile, with ribbon-voxel parcel ρ at or above ADEQUATE_RHO (DECIDED 2026-10-09).
+ADEQUATE_BAND = (0.9, 1.1)
+ADEQUATE_RHO = 0.9
 #: Ribbon in-mask fraction below which a vertex is mapped as under-covered (RATIFIED 2026-10-09).
 RIBBON_FLOOR = 0.8
 
@@ -143,12 +150,24 @@ def dropout_summary(rel_mean: np.ndarray, domain: np.ndarray, floor: float = DRO
     }
 
 
-def examine_flags(frac: pd.Series, multiple: float = EXAMINE_MULTIPLE) -> pd.Series:
-    """True where a session's fraction exceeds ``multiple`` × the subject median (median 0: any > 0)."""
+def examine_flags(frac: pd.Series, multiple: float = EXAMINE_MULTIPLE, floor: float = EXAMINE_FLOOR) -> pd.Series:
+    """True where a session's fraction exceeds ``multiple`` × the subject median and is at least ``floor``."""
     med = float(np.nanmedian(frac)) if len(frac) else np.nan
     if not np.isfinite(med):
         return pd.Series(False, index=frac.index)
-    return frac > (multiple * med if med > 0 else 0.0)
+    return (frac > multiple * med) & (frac >= floor)
+
+
+def surface_adequate(ratio_median: float, rho_ribbon: float, depth_profile: list[float]) -> bool:
+    """The surface captures the volume: ratio and every depth inside ADEQUATE_BAND, ribbon ρ ≥ ADEQUATE_RHO.
+
+    The ratio alone is ~1 by construction (both sides resample the same BOLD with the same surfaces),
+    so it only catches a broken projection; ribbon ρ and the depth profile carry the placement test.
+    """
+    lo, hi = ADEQUATE_BAND
+    vals = [ratio_median, *depth_profile]
+    return bool(all(np.isfinite(v) and lo <= v <= hi for v in vals)
+                and np.isfinite(rho_ribbon) and rho_ribbon >= ADEQUATE_RHO)
 
 
 def ribbon_points(white: np.ndarray, pial: np.ndarray, depths: tuple[float, ...] = DEPTHS) -> np.ndarray:
@@ -800,7 +819,7 @@ def build_subject_cell(tree_root: Path, fmriprep_tree: Path, atlases_dir: Path, 
             "rho_parcel_ribbon": rho_ribbon, "n_parcel_ribbon": n_ribbon,
             "ribbon_inmask_median": float(np.nanmedian(inm)),
             "frac_ribbon_below_floor": float(np.mean(inm < RIBBON_FLOOR)),
-            "adequate": bool(0.9 <= float(np.nanmedian(ratio)) <= 1.1 and np.isfinite(rho_sampled) and rho_sampled >= 0.9),
+            "adequate": surface_adequate(float(np.nanmedian(ratio)), rho_ribbon, list(prof.values())),
             **prof,
         })
         for pidx, pname, sv, vv, sp in zip(idx, names, surf_par, vol_par, samp_par):
@@ -874,7 +893,8 @@ def build_subject_cell(tree_root: Path, fmriprep_tree: Path, atlases_dir: Path, 
             "n_runs": len(runs), "n_sessions": len(sess_vol), "grid_shape": list(shape),
             "grid_affine": np.round(ref_affine, 6).tolist(), "off_grid_runs": off_grid,
             "consensus_fraction": CONSENSUS, "consensus_n_voxels": int(consensus.sum()),
-            "drop_floor": DROP_FLOOR, "examine_multiple": EXAMINE_MULTIPLE, "ribbon_floor": RIBBON_FLOOR,
+            "drop_floor": DROP_FLOOR, "examine_multiple": EXAMINE_MULTIPLE, "examine_floor": EXAMINE_FLOOR,
+            "adequate_band": list(ADEQUATE_BAND), "adequate_rho": ADEQUATE_RHO, "ribbon_floor": RIBBON_FLOOR,
             "depths": list(DEPTHS), "sampled_regime": SAMPLED_REGIME, "regimes": list(REGIMES),
             "runs": run_rows, "input_keys": keys, "inputs": {k: str(p) for k, p in anat.items()},
             **provenance, "created": _now()}

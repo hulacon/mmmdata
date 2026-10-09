@@ -45,11 +45,22 @@ def test_dropout_summary_separates_dropped_and_uncovered():
     assert dqv.dropout_summary(rel, np.zeros(5, bool))["n"] == 0
 
 
-def test_examine_flags_against_subject_median():
+def test_examine_flags_against_subject_median_and_floor():
     frac = pd.Series([0.01, 0.01, 0.02, 0.05])
     assert dqv.examine_flags(frac).tolist() == [False, False, False, True]
-    # A subject median of zero flags any session with a loss at all.
-    assert dqv.examine_flags(pd.Series([0.0, 0.0, 0.0, 0.001])).tolist() == [False, False, False, True]
+    # Above 2x the median but under the 1 % floor: not examined.
+    assert dqv.examine_flags(pd.Series([0.0007, 0.0007, 0.0007, 0.0036])).tolist() == [False] * 4
+    # A median of zero flags any session at or above the floor.
+    assert dqv.examine_flags(pd.Series([0.0, 0.0, 0.0, 0.001, 0.02])).tolist() == [False] * 4 + [True]
+
+
+def test_surface_adequate_needs_ratio_depths_and_ribbon_rho():
+    flat = [0.97, 0.99, 1.01, 1.01, 1.01, 1.0]
+    assert dqv.surface_adequate(1.0, 0.95, flat)
+    assert not dqv.surface_adequate(1.0, 0.85, flat)                      # ribbon rho low
+    assert not dqv.surface_adequate(1.0, 0.95, flat[:-1] + [1.2])         # pial rise (CSF)
+    assert not dqv.surface_adequate(1.15, 0.95, flat)                     # broken projection
+    assert not dqv.surface_adequate(1.0, float("nan"), flat)
 
 
 def test_run_scale_uses_domain_and_refuses_empty():
