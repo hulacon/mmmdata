@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tier 2 of the data-quality collection, rebuilt from tier-1 caches.
 
-Five parts, each in its own directory under <tree>/tier2/:
+Seven parts, each in its own directory under <tree>/tier2/:
 
   naturalistic   LOO-ISFC and the audio-envelope lag scan for every film's
                  first viewing (registry T2.2, T2.4); repeat reliability of
@@ -20,6 +20,11 @@ Five parts, each in its own directory under <tree>/tier2/:
                  and NSD noise ceiling (T2.12) per subject x arm x beta type,
                  by network, from tier1_glmsingle*.tsv; the retrieval-modeling
                  6-cell benchmark joined verbatim (T2.10)
+  alignment      inter-session alignment per run / session / subject, from
+                 tier1_alignment.tsv (`tier1.py alignment`; voxel-quality)
+  voxelmaps      dropout per session (T1w, fsnative), parcels lost, surface vs
+                 volume and the per-subject verdict, from tier1_voxelmaps_*.tsv
+                 (`tier1.py voxelmaps-subject`; voxel-quality)
 
 Verbs (idempotent; state is on disk, never in this process):
 
@@ -66,6 +71,7 @@ from neuroimaging import data_quality_snr as dqs  # noqa: E402
 from neuroimaging import data_quality_tier2 as t2  # noqa: E402
 from neuroimaging import data_quality_univariate as dqu  # noqa: E402
 from neuroimaging import data_quality_views as dqv  # noqa: E402
+from neuroimaging import data_quality_voxelquality as dqvq  # noqa: E402
 from neuroimaging.io import find_events_file  # noqa: E402
 
 
@@ -81,7 +87,7 @@ class Paths:
         self.benchmark_root = Path(getattr(args, "benchmark_root", None) or output_dir / dqgs.BENCHMARK_TREE)
 
 
-PARTS = ("naturalistic", "connectivity", "snr", "univariate", "glmsingle")
+PARTS = ("naturalistic", "connectivity", "snr", "univariate", "glmsingle") + tuple(dqvq.PARTS)
 
 
 def _csv(value: Optional[str]) -> list[str]:
@@ -97,13 +103,18 @@ def _parts(args: argparse.Namespace) -> list[str]:
 
 
 def write_views(part: str, dest: Path) -> None:
+    if part not in dqv.BUILDERS:
+        print(f"{part}: no views defined yet")
+        return
     specs = dqv.write_views(part, dest)
     print(f"{part} views {dest}: {len(specs)} charts -> mmmview {dest}")
 
 
 def cmd_views(args: argparse.Namespace) -> None:
     root = Path(args.out_dir) if args.out_dir else Path(Paths(args).tree_root) / "tier2"
-    for part in _parts(args):
+    # Without --parts: every part that has views (the voxel-quality parts have none yet).
+    parts = _parts(args) if args.parts else [p for p in PARTS if p in dqv.BUILDERS]
+    for part in parts:
         if not (root / part).is_dir():
             sys.exit(f"No tier-2 part at {root / part}; run `tier2.py build --parts {part}` first")
         write_views(part, root / part)
@@ -122,6 +133,9 @@ def cmd_build(args: argparse.Namespace) -> None:
         build_univariate(args, root / "univariate" if root else None)
     if "glmsingle" in parts:
         build_glmsingle(args, root / "glmsingle" if root else None)
+    for part in dqvq.PARTS:
+        if part in parts:
+            build_voxelquality(args, part, root / part if root else None)
     tier2_root = root or Path(Paths(args).tree_root) / "tier2"
     for part in parts:
         write_views(part, tier2_root / part)
@@ -192,6 +206,25 @@ def build_connectivity(args: argparse.Namespace, dest: Optional[Path]) -> None:
           f"{len(result.skipped)} skipped in {time.time() - t0:.0f} s")
     for s in result.skipped:
         print(f"  skipped: {s}")
+
+
+def build_voxelquality(args: argparse.Namespace, part: str, dest: Optional[Path]) -> None:
+    t0 = time.time()
+    paths = Paths(args)
+    module = dqvq.PARTS[part]
+    provisional = [s.removeprefix("sub-") for s in _csv(args.provisional_subjects)]
+    tables = module.compute(paths.tree_root, provisional)
+    dest = dest or dqvq.out_dir(paths.tree_root, part)
+    provenance = {
+        "created": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "code_version": dq.code_version(REPO_ROOT),
+        "inputs": {name: {"path": str(paths.tree_root / name), "sha256": t2.file_sha256(paths.tree_root / name)}
+                   for name in module.INPUTS if (paths.tree_root / name).exists()},
+        "provisional_subjects": provisional,
+    }
+    written = module.write(tables, dest, provenance)
+    print(f"{part} {dest}: {len(written)} files; " + ", ".join(f"{k} {len(v)} rows" for k, v in tables.items())
+          + f" in {time.time() - t0:.0f} s")
 
 
 def build_snr(args: argparse.Namespace, dest: Optional[Path]) -> None:
@@ -303,7 +336,8 @@ def build_naturalistic(args: argparse.Namespace, dest: Optional[Path]) -> None:
 
 def cmd_diff(args: argparse.Namespace) -> None:
     a, b = Path(args.a), Path(args.b)
-    modules = {"naturalistic": t2, "connectivity": dqc, "snr": dqs, "univariate": dqu, "glmsingle": dqgs}
+    modules = {"naturalistic": t2, "connectivity": dqc, "snr": dqs, "univariate": dqu, "glmsingle": dqgs,
+               **dqvq.PARTS}
     problems = []
     for part, module in modules.items():
         pa, pb = a / part, b / part

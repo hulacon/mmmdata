@@ -201,3 +201,34 @@ def test_loso_template_excludes_the_left_out_session():
     assert m.tolist() == [True, True, True, False]
     with pytest.raises(ValueError):
         dqa.loso_template({"01": means["01"]}, {"01": masks["01"]}, "01")
+
+
+# ---------------------------------------------------------------------------
+# Tier 2
+# ---------------------------------------------------------------------------
+
+from neuroimaging import data_quality_voxelquality as dqvq  # noqa: E402
+
+
+def test_parcel_sessions_counts_sessions_mostly_lost():
+    parcels = pd.DataFrame({
+        "sub": ["04"] * 4, "ses": ["01", "02", "03", None], "space": ["T1w"] * 4, "hemi": [None] * 4,
+        "atlas": ["HOSPA"] * 4, "parcel": ["Left Amygdala"] * 4, "frac_lost": [0.1, 0.6, 0.9, np.nan]})
+    out = dqvq.parcel_sessions(parcels)
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["n_sessions"] == 3 and row["n_sessions_lost"] == 2
+    assert row["sessions_lost"] == "02,03"
+
+
+def test_verdict_reads_adequacy_and_examined_sessions():
+    sessions = pd.DataFrame({"sub": ["04"] * 3, "ses": ["01", "02", "01"], "space": ["T1w", "T1w", "fsnative"],
+                             "hemi": [None, None, "L"], "frac_lost": [0.01, 0.2, 0.0],
+                             "examine": [False, True, False]})
+    surfvol = pd.DataFrame({"sub": ["04", "04"], "hemi": ["L", "R"], "surfvol_mean_median": [1.0, 1.02],
+                            "rho_parcel_sampled": [0.97, 0.95], "rho_parcel_ribbon": [0.9, 0.9],
+                            "frac_ribbon_below_floor": [0.01, 0.02], "adequate": [True, False]})
+    v = dqvq.verdict(sessions, surfvol, None).iloc[0]
+    assert v["sessions_examine_T1w"] == "02"
+    assert v["sessions_examine_fsnative"] == "n/a"
+    assert not v["surface_adequate"]
