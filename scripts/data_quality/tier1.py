@@ -31,6 +31,14 @@ Verbs (all idempotent; state is on disk, never in this process):
             R² summarised on fsnative cortex, the T1w fit mask and warped
             Schaefer/HOSPA parcels; needs antsApplyTransforms on PATH
             (`module load ants/2.5.2` before the venv); skips current cells
+  voxelmaps-plan  list space-T1w runs whose voxelmaps cell is missing (or stale
+            with --check-hashes); optionally write a units file
+  voxelmaps ONE run: T1w + fsnative temporal mean and tSNR under none, drift,
+            reference (sbatch VERB=voxelmaps)
+  voxelmaps-subject  one subject: session/subject maps, relative maps, dropout,
+            surface vs volume, MNI warps; needs ANTs on PATH
+  alignment one subject: inter-session alignment of every run's T1w boldref
+            against a leave-own-session-out template; needs ANTs on PATH
 
 Provisional regimes (not yet confirmed by whoever defined them) are excluded
 from every verb unless --include-provisional is given.
@@ -47,6 +55,10 @@ Usage:
     python tier1.py glmsingle-plan --units gs_units.txt
     python tier1.py glmsingle --units gs_units.txt --index 1  # tier1_glmsingle.sbatch
     python tier1.py prf
+    python tier1.py voxelmaps-plan --units vm_units.txt
+    python tier1.py voxelmaps --units vm_units.txt --index 7   # sbatch array, VERB=voxelmaps
+    python tier1.py voxelmaps-subject --sub 04
+    python tier1.py alignment --sub 04 --jobs 8
 
 Library: src/python/neuroimaging/{confounds,data_quality,data_quality_glm,data_quality_glmsingle,
 data_quality_prf}.py. Design record:
@@ -69,7 +81,9 @@ from core.config import load_config  # noqa: E402
 from neuroimaging import data_quality as dq  # noqa: E402
 from neuroimaging import data_quality_glm as dqg  # noqa: E402
 from neuroimaging import data_quality_glmsingle as dqgs  # noqa: E402
+from neuroimaging import data_quality_alignment as dqa  # noqa: E402
 from neuroimaging import data_quality_prf as dqp  # noqa: E402
+from neuroimaging import data_quality_voxelmaps as dqv  # noqa: E402
 from neuroimaging.confounds import (  # noqa: E402
     RegimeNotApplicable,
     confirmed_regimes,
@@ -525,13 +539,106 @@ def cmd_prf(args: argparse.Namespace) -> None:
             print(f"sub-{s}: {time.time() - t0:.0f} s", flush=True)
 
 
+def t1w_runs(args: argparse.Namespace, paths: Paths) -> list[FmriprepRun]:
+    runs = find_fmriprep_runs(
+        subject=args.sub, session=getattr(args, "ses", None), task=getattr(args, "task", None),
+        run=getattr(args, "run", None), variant=paths.variant, space=dqv.VOLUME_SPACE,
+        bids_root=paths.bids_root, allow_mixed_designs=True,
+    )
+    return [r for r in runs if r.bold is not None and r.mask is not None and r.confounds is not None]
+
+
+def voxelmaps_regimes() -> dict:
+    registry = load_regimes()
+    return {name: registry[name] for name in dqv.REGIMES}
+
+
+def cmd_voxelmaps_plan(args: argparse.Namespace) -> None:
+    paths = Paths(args)
+    regimes = voxelmaps_regimes()
+    versions = dqv.regime_versions(regimes)
+    runs = t1w_runs(args, paths)
+    stale = []
+    for run in runs:
+        keys = ({k: dq.file_sha256(p) for k, p in sorted(dqv.run_files(run).items())}
+                if args.check_hashes else None)
+        if not dqv.run_is_current(paths.tree_root, run, keys, versions):
+            stale.append(run)
+    print(f"space-{dqv.VOLUME_SPACE} runs: {len(runs)}  voxelmaps cells missing/stale: {len(stale)}"
+          + ("" if args.check_hashes else "  (existence only; --check-hashes compares input hashes)"))
+    if args.units:
+        Path(args.units).write_text("".join(unit_line(r) + "\n" for r in stale))
+        print(f"wrote {len(stale)} units to {args.units}")
+
+
+def cmd_voxelmaps(args: argparse.Namespace) -> None:
+    paths = Paths(args)
+    regimes = voxelmaps_regimes()
+    if args.units:
+        if args.index is None:
+            sys.exit("--units needs --index (1-based line number, e.g. $SLURM_ARRAY_TASK_ID)")
+        lines = [ln for ln in Path(args.units).read_text().splitlines() if ln.strip()]
+        if not 1 <= args.index <= len(lines):
+            sys.exit(f"--index {args.index} is outside 1..{len(lines)} for {args.units}")
+        sub, ses, task, run = (lines[args.index - 1].split("\t") + [""])[:4]
+        args.sub, args.ses, args.task, args.run = sub, ses, task, run or None
+    if not (args.sub and args.ses and args.task):
+        sys.exit("voxelmaps needs --sub, --ses and --task (and --run for multi-run tasks), or --units/--index")
+    runs = [r for r in t1w_runs(args, paths) if (r.run or "") == (args.run or "")]
+    if len(runs) != 1:
+        sys.exit(f"{len(runs)} space-{dqv.VOLUME_SPACE} runs match; expected 1")
+    fmriprep_version = dq.pipeline_version(paths.fmriprep_tree)
+    code_sha = dq.code_version(REPO_ROOT)
+    dq.ensure_dataset_description(paths.tree_root, paths.fmriprep_tree, fmriprep_version, code_sha)
+    t0 = time.time()
+    dqv.build_run_cell(paths.tree_root, runs[0], regimes,
+                       {"fmriprep_version": fmriprep_version, "code_version": code_sha},
+                       force=args.force, log=lambda m: print(m, flush=True))
+    print(f"{runs[0].entity_prefix}: {time.time() - t0:.0f} s")
+
+
+def _subjects(args: argparse.Namespace, paths: Paths) -> list[str]:
+    if args.sub:
+        return [args.sub]
+    return sorted({r.subject for r in t1w_runs(args, paths)})
+
+
+def cmd_voxelmaps_subject(args: argparse.Namespace) -> None:
+    paths = Paths(args)
+    fmriprep_version = dq.pipeline_version(paths.fmriprep_tree)
+    code_sha = dq.code_version(REPO_ROOT)
+    for s in _subjects(args, paths):
+        t0 = time.time()
+        runs = t1w_runs(argparse.Namespace(sub=s), paths)
+        dqv.build_subject_cell(paths.tree_root, paths.fmriprep_tree, paths.atlases_dir, s, runs,
+                               {"fmriprep_version": fmriprep_version, "code_version": code_sha},
+                               force=args.force, log=lambda m: print(m, flush=True))
+        print(f"sub-{s}: {time.time() - t0:.0f} s", flush=True)
+
+
+def cmd_alignment(args: argparse.Namespace) -> None:
+    paths = Paths(args)
+    fmriprep_version = dq.pipeline_version(paths.fmriprep_tree)
+    code_sha = dq.code_version(REPO_ROOT)
+    for s in _subjects(args, paths):
+        t0 = time.time()
+        runs = [r for r in t1w_runs(argparse.Namespace(sub=s), paths) if r.boldref is not None]
+        dqa.build_cell(paths.tree_root, paths.fmriprep_tree, s, runs,
+                       {"fmriprep_version": fmriprep_version, "code_version": code_sha},
+                       n_jobs=args.jobs, force=args.force, log=lambda m: print(m, flush=True))
+        print(f"sub-{s}: {time.time() - t0:.0f} s", flush=True)
+
+
 def cmd_collect(args: argparse.Namespace) -> None:
     paths = Paths(args)
     runs, parcels = dq.collect(paths.tree_root)
     glm, glm_parcels = dqg.collect(paths.tree_root)
     gs, gs_parcels = dqgs.collect(paths.tree_root)
     prf, prf_parcels = dqp.collect(paths.tree_root)
-    if runs.empty and glm.empty and gs.empty and prf.empty:
+    vm = dqv.collect_runs(paths.tree_root)
+    vm_subject = dqv.collect_subjects(paths.tree_root)
+    align = dqa.collect(paths.tree_root)
+    if runs.empty and glm.empty and gs.empty and prf.empty and vm.empty and align.empty:
         sys.exit(f"No tier-1 sidecars under {paths.tree_root}; run `tier1.py run` or `tier1.py glm` first")
     if not runs.empty:
         runs_path = paths.tree_root / "tier1_runs.tsv"
@@ -563,6 +670,19 @@ def cmd_collect(args: argparse.Namespace) -> None:
         prf_parcels.to_csv(prf_parcels_path, sep="\t", index=False, na_rep="n/a", float_format="%.6g")
         print(f"{prf_path}: {len(prf)} subject x polarity x domain rows")
         print(f"{prf_parcels_path}: {len(prf_parcels)} parcel rows")
+    if not vm.empty:
+        vm_path = paths.tree_root / f"{dqv.RUNS_TABLE}.tsv"
+        vm.to_csv(vm_path, sep="\t", index=False, na_rep="n/a", float_format="%.6g")
+        print(f"{vm_path}: {len(vm)} run x space x measure rows")
+    for name, table in vm_subject.items():
+        if not table.empty:
+            p = paths.tree_root / f"{name}.tsv"
+            table.to_csv(p, sep="\t", index=False, na_rep="n/a", float_format="%.6g")
+            print(f"{p}: {len(table)} rows")
+    if not align.empty:
+        p = paths.tree_root / f"{dqa.TABLE_NAME}.tsv"
+        align.to_csv(p, sep="\t", index=False, na_rep="n/a", float_format="%.6g")
+        print(f"{p}: {len(align)} runs ({int(align['flag'].sum())} flagged)")
 
 
 # ---------------------------------------------------------------------------
@@ -651,6 +771,32 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--prf-root", help="override <output_dir>/prf")
     p.add_argument("--force", action="store_true", help="rebuild a current cell")
     p.set_defaults(func=cmd_prf)
+
+    p = sub.add_parser("voxelmaps-plan", help="list space-T1w runs whose voxelmaps cell is missing or stale")
+    _common(p); _entities(p)
+    p.add_argument("--units", help="write one line per run to (re)build here")
+    p.add_argument("--check-hashes", action="store_true", help="compare input hashes, not just existence")
+    p.set_defaults(func=cmd_voxelmaps_plan)
+
+    p = sub.add_parser("voxelmaps", help="one run: T1w + fsnative mean and tSNR maps")
+    _common(p); _entities(p)
+    p.add_argument("--units", help="units file written by voxelmaps-plan")
+    p.add_argument("--index", type=int, help="1-based line in --units")
+    p.add_argument("--force", action="store_true", help="rebuild a current cell")
+    p.set_defaults(func=cmd_voxelmaps)
+
+    p = sub.add_parser("voxelmaps-subject", help="one subject: session/subject maps, dropout, surface vs volume")
+    _common(p)
+    p.add_argument("--sub", help="bare label, e.g. 03 (default: every subject)")
+    p.add_argument("--force", action="store_true", help="rebuild a current cell")
+    p.set_defaults(func=cmd_voxelmaps_subject)
+
+    p = sub.add_parser("alignment", help="one subject: inter-session alignment of every run's T1w boldref")
+    _common(p)
+    p.add_argument("--sub", help="bare label, e.g. 03 (default: every subject)")
+    p.add_argument("--jobs", type=int, default=1, help="registrations in parallel")
+    p.add_argument("--force", action="store_true", help="rebuild a current cell")
+    p.set_defaults(func=cmd_alignment)
 
     p = sub.add_parser("collect", help="flatten sidecars into the tier-1 tables")
     _common(p)

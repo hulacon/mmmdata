@@ -622,6 +622,8 @@ def collect(tree_root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     runs, parcels = [], []
     for js in sorted(tree_root.glob("sub-*/ses-*/func/*_tsnr.json")):
         rec = json.loads(js.read_text())
+        if rec.get("cell") is not None:
+            continue  # another cell's tSNR map (T1w/fsnative voxelmaps): not a cleaning-grid row
         rec = {k: v for k, v in rec.items() if k != "regime_columns"}
         runs.append({**rec, "absent": False})
     # Declared-absent cells get a row too (measures n/a), so the table stays a full grid.

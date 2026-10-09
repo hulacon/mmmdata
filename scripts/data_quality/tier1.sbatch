@@ -30,6 +30,8 @@
 # 3. Optional: EXTRA="--include-provisional" or EXTRA="--regimes none,drift"
 # 4. GLM cells (T1.5/T1.6): units from `tier1.py glm-plan --units ...`, and
 #    --export=ALL,UNITS=glm_units.txt,VERB=glm
+# 5. T1w + fsnative voxel maps (voxel-quality): units from
+#    `tier1.py voxelmaps-plan --units ...`, and VERB=voxelmaps
 #
 # Do not `module load` anything after the venv is activated: it replaces
 # `python` with the module's interpreter.
@@ -40,7 +42,7 @@ set -euo pipefail
 : "${UNITS:?set UNITS (path to the units file from `tier1.py plan --units`) via --export}"
 EXTRA="${EXTRA:-}"
 VERB="${VERB:-run}"
-case "${VERB}" in run|glm) ;; *) echo "VERB must be run or glm, got ${VERB}" >&2; exit 2 ;; esac
+case "${VERB}" in run|glm|voxelmaps) ;; *) echo "VERB must be run, glm or voxelmaps, got ${VERB}" >&2; exit 2 ;; esac
 
 echo "=========================================="
 echo "data-quality tier 1 — SLURM Job Info"
