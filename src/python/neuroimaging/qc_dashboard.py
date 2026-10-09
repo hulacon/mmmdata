@@ -45,7 +45,11 @@ AUTOMATED_REVIEWERS = {"auto-stub", "auto", "automated", ""}
 # Subset of key IQMs to display in the dashboard table (keep it scannable)
 _DASHBOARD_BOLD_COLS = ["fd_mean", "fd_perc", "tsnr", "dvars_std", "efc", "fber"]
 _DASHBOARD_ANAT_COLS = ["cnr", "cjv", "efc", "fber", "snr_total", "qi_1", "wm2max"]
-_DASHBOARD_DWI_COLS = ["fd_mean", "fd_perc", "efc", "fber", "snr"]
+# b0 SNR, highest reported diffusion-shell SNR, b0 EFC/FBER, FA degeneracy;
+# see qc.DWI_KEY_IQMS for the shell numbering.
+_DASHBOARD_DWI_COLS = [
+    "snr_cc_shell0", "snr_cc_shell3_worst", "efc_shell01", "fber_shell01", "fa_degenerate",
+]
 
 _DASHBOARD_COLS: dict[str, list[str]] = {
     "bold": _DASHBOARD_BOLD_COLS,
@@ -939,7 +943,7 @@ def _render_header_cells(headers: Sequence[str]) -> str:
             continue
         cells.append(
             f'<th data-col="{h}" class="th-documented" title="{_escape(g.tooltip())}">'
-            f'{h}<a class="g-marker" href="#guidance-{h}" '
+            f'{h}<a class="g-marker" href="#guidance-{g.key}" '
             f'aria-label="Guidance for {h}">&#9432;</a></th>'
         )
     return "".join(cells)
@@ -1204,7 +1208,7 @@ def _render_outlier_detail(runs: list[dict], mriqc_dir: Path) -> str:
             if g is not None:
                 hint = (
                     f'<div class="flag-hint"><em>Check:</em> {_escape(g.look_for)} '
-                    f'<a href="#guidance-{m}">guidance</a></div>'
+                    f'<a href="#guidance-{g.key}">guidance</a></div>'
                 )
             metric_items.append(
                 f"<li><strong>{m}</strong>: {val} ({direction}, threshold: {threshold})"

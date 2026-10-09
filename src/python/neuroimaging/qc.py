@@ -103,9 +103,25 @@ T1W_KEY_IQMS: list[str] = [
 # T2w uses the same metrics as T1w
 T2W_KEY_IQMS: list[str] = T1W_KEY_IQMS
 
+# Diffusion IQMs are per shell, and the keys follow the acquisition. These are
+# for a b0 + three-shell protocol (b = 1000/2000/3000); a protocol with more
+# shells needs more entries.
+#
+# * ``efc_shellNN`` / ``fber_shellNN``: shell01 is the b0, shell02-04 the
+#   diffusion shells in ascending b.
+# * ``snr_cc_shell0`` is b0 SNR in the corpus callosum. MRIQC 24.x numbers the
+#   diffusion-shell SNR one off: its shell list starts with the b0 while its
+#   b-value list does not, so ``snr_cc_shell1_*`` is the b0 again (best ==
+#   worst), ``shell2`` is b = 1000, ``shell3`` is b = 2000, and the highest
+#   shell is never reported. Only the two real diffusion shells are listed.
+#
+# Deliberately absent: ``fd_*`` and ``ndc`` (see :data:`INVALID_IQMS`), and
+# ``snr``/``fwhm_avg``/``gsr_*``, which MRIQC writes only for other modalities.
 DWI_KEY_IQMS: list[str] = [
-    "fd_mean", "fd_num", "fd_perc", "efc", "fber", "snr",
-    "fwhm_avg", "gsr_x", "gsr_y",
+    "snr_cc_shell0", "snr_cc_shell2_worst", "snr_cc_shell3_worst",
+    "efc_shell01", "efc_shell02", "efc_shell03", "efc_shell04",
+    "fber_shell01", "fber_shell02", "fber_shell03", "fber_shell04",
+    "fa_nans", "fa_degenerate",
 ]
 
 _KEY_IQMS_BY_MODALITY: dict[str, list[str]] = {
@@ -114,6 +130,48 @@ _KEY_IQMS_BY_MODALITY: dict[str, list[str]] = {
     "T2w": T2W_KEY_IQMS,
     "dwi": DWI_KEY_IQMS,
 }
+
+#: MRIQC outputs that are computed wrongly for a modality, with the reason.
+#: They are dropped whenever an IQM file of that modality is read, and asking
+#: for one by name raises rather than returning a value.
+#:
+#: dwi ``ndc``: MRIQC 24.x masks the series to a voxels-by-volumes array, then
+#: indexes it with volume numbers, so its "neighbouring-DWI correlation"
+#: correlates a few voxels at the edge of the brain mask and swings with the
+#: mask. Upstream has fixed the indexing, but affected files carry no marker.
+#:
+#: dwi ``fd_*``: MRIQC estimates diffusion head motion by registering volumes
+#: across shells, where the contrast difference between b-values reads as
+#: displacement (several millimetres of "motion" on every run of a real
+#: multi-shell dataset).
+_DWI_FD_REASON = (
+    "MRIQC's diffusion FD registers volumes across shells, so b-value "
+    "contrast reads as millimetres of motion. Use QSIPrep's eddy-based "
+    "mean_fd / max_rel_translation (desc-image_qc.tsv) instead."
+)
+INVALID_IQMS: dict[str, dict[str, str]] = {
+    "dwi": {
+        "ndc": (
+            "MRIQC 24.x computes diffusion ndc on the wrong axis (voxels "
+            "indexed as volumes), so the value tracks the brain-mask edge, "
+            "not the data. Use QSIPrep's raw_neighbor_corr / "
+            "t1_neighbor_corr (desc-image_qc.tsv) instead."
+        ),
+        "fd_mean": _DWI_FD_REASON,
+        "fd_num": _DWI_FD_REASON,
+        "fd_perc": _DWI_FD_REASON,
+    },
+}
+
+
+def _check_metrics(modality: str, metrics: Sequence[str] | None) -> None:
+    """Raise if *metrics* names an IQM listed in :data:`INVALID_IQMS` for *modality*."""
+    invalid = INVALID_IQMS.get(modality, {})
+    asked = [m for m in (metrics or ()) if m in invalid]
+    if asked:
+        raise ValueError(
+            "; ".join(f"{m!r} is not read for {modality}: {invalid[m]}" for m in asked)
+        )
 
 # fMRIPrep confound columns we care about for motion summary
 MOTION_COLS: list[str] = [
@@ -212,20 +270,28 @@ def load_iqms(
     key_metrics : sequence of str, optional
         If provided, only include these metric keys (plus entities).
         Metrics not present in the file are returned as ``None``.
+        Naming one of the file's modality's :data:`INVALID_IQMS` raises
+        ``ValueError``.
 
     Returns
     -------
     dict
         ``{"entities": {...}, "iqms": {...}}`` where *entities* are parsed
-        BIDS entities and *iqms* are the metric values.
+        BIDS entities and *iqms* are the metric values. The modality's
+        :data:`INVALID_IQMS` are never included.
     """
     json_path = Path(json_path)
     with open(json_path) as f:
         data = json.load(f)
 
     entities = parse_bids_entities(json_path.name)
-    # Remove non-IQM keys
-    iqms = {k: v for k, v in data.items() if k not in ("bids_meta", "provenance")}
+    invalid = INVALID_IQMS.get(entities["suffix"] or "", {})
+    _check_metrics(entities["suffix"] or "", key_metrics)
+    # Remove non-IQM keys, and IQMs this modality's MRIQC computes wrongly
+    iqms = {
+        k: v for k, v in data.items()
+        if k not in ("bids_meta", "provenance") and k not in invalid
+    }
 
     if key_metrics is not None:
         iqms = {k: iqms.get(k) for k in key_metrics}
@@ -323,6 +389,7 @@ def get_iqm_table(
     list of dict
         One dict per run with entity + metric fields.
     """
+    _check_metrics(modality, metrics)
     paths = collect_mriqc_jsons(mriqc_dir, modality, subject, session)
     if metrics is None:
         metrics = _KEY_IQMS_BY_MODALITY.get(modality, BOLD_KEY_IQMS)
@@ -524,6 +591,8 @@ def detect_outliers(
                     "session": row.get("session"),
                     "task": row.get("task"),
                     "run": row.get("run"),
+                    "acq": row.get("acq"),
+                    "dir": row.get("dir"),
                     "flagged_metrics": flagged,
                     "n_flags": len(flagged),
                 })
@@ -560,6 +629,8 @@ def detect_outliers(
                         "session": row.get("session"),
                         "task": row.get("task"),
                         "run": row.get("run"),
+                        "acq": row.get("acq"),
+                        "dir": row.get("dir"),
                         "flagged_metrics": flagged,
                         "n_flags": len(flagged),
                     })

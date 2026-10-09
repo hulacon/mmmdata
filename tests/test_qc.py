@@ -108,6 +108,73 @@ class TestLoadIqms:
         assert result["iqms"]["nonexistent"] is None
 
 
+class TestInvalidIqms:
+    """MRIQC 24.x diffusion ndc is computed on the wrong axis; never read it."""
+
+    @pytest.fixture
+    def dwi_dir(self, tmp_path):
+        d = tmp_path / "mriqc" / "sub-01" / "ses-01" / "dwi"
+        d.mkdir(parents=True)
+        for direction in ("AP", "PA"):
+            iqms = {"ndc": 0.95, "efc_shell01": 0.5, "provenance": {}}
+            (d / f"sub-01_ses-01_dir-{direction}_dwi.json").write_text(json.dumps(iqms))
+        return tmp_path / "mriqc"
+
+    def test_load_all_drops_dwi_ndc(self, dwi_dir):
+        from neuroimaging.qc import load_iqms
+        p = dwi_dir / "sub-01" / "ses-01" / "dwi" / "sub-01_ses-01_dir-AP_dwi.json"
+        iqms = load_iqms(p)["iqms"]
+        assert "ndc" not in iqms
+        assert iqms["efc_shell01"] == 0.5
+
+    def test_asking_for_dwi_ndc_raises_with_the_reason(self, dwi_dir):
+        from neuroimaging.qc import aggregate_iqms, detect_outliers, get_iqm_table
+        for call in (get_iqm_table, aggregate_iqms, detect_outliers):
+            with pytest.raises(ValueError, match="wrong axis"):
+                call(dwi_dir, "dwi", metrics=["ndc", "efc_shell01"])
+
+    def test_no_dwi_default_metric_is_invalid(self):
+        from neuroimaging.qc import DWI_KEY_IQMS, INVALID_IQMS
+        assert not set(DWI_KEY_IQMS) & set(INVALID_IQMS["dwi"])
+
+    def test_dwi_motion_is_not_read(self, dwi_dir):
+        # MRIQC's diffusion FD registers across shells; b-value contrast
+        # reads as millimetres of motion.
+        from neuroimaging.qc import get_iqm_table
+        with pytest.raises(ValueError, match="across shells"):
+            get_iqm_table(dwi_dir, "dwi", metrics=["fd_mean"])
+
+    def test_dwi_defaults_skip_the_b0_duplicate_snr_shell(self):
+        # MRIQC 24.x's snr_cc_shell1_* is the b0 again (shell list starts
+        # with the b0, b-value list does not).
+        from neuroimaging.qc import DWI_KEY_IQMS
+        assert "snr_cc_shell0" in DWI_KEY_IQMS
+        assert not [k for k in DWI_KEY_IQMS if k.startswith("snr_cc_shell1")]
+
+    def test_dwi_defaults_are_keys_mriqc_writes_for_dwi(self):
+        # snr/fwhm_avg/gsr_* are BOLD/anat keys; MRIQC never writes them for dwi.
+        from neuroimaging.qc import DWI_KEY_IQMS
+        assert not {"snr", "fwhm_avg", "gsr_x", "gsr_y", "efc", "fber"} & set(DWI_KEY_IQMS)
+
+    def test_outlier_records_name_the_direction(self, tmp_path):
+        # A dwi session has one run per dir- and no task/run: without dir the
+        # flagged run cannot be told apart from its siblings.
+        from neuroimaging.qc import detect_outliers
+        d = tmp_path / "mriqc" / "sub-01" / "ses-01" / "dwi"
+        d.mkdir(parents=True)
+        values = {"AP": 8.0, "PA": 8.1, "LR": 7.9, "RL": 8.05, "SI": 2.0}
+        for direction, snr in values.items():
+            (d / f"sub-01_ses-01_dir-{direction}_dwi.json").write_text(
+                json.dumps({"snr_cc_shell0": snr})
+            )
+        result = detect_outliers(tmp_path / "mriqc", "dwi", metrics=["snr_cc_shell0"])
+        assert [r["dir"] for r in result["outliers"]] == ["SI"]
+
+    def test_other_modalities_unaffected(self, mriqc_dir):
+        from neuroimaging.qc import get_iqm_table
+        assert get_iqm_table(mriqc_dir, "bold", metrics=["fd_mean"])
+
+
 # ---------------------------------------------------------------------------
 # Tests — list_reports
 # ---------------------------------------------------------------------------

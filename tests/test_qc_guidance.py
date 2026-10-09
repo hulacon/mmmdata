@@ -146,6 +146,21 @@ class TestLookup:
         result = guidance_for_keys(["tsnr", "nope", "fd_mean"])
         assert [g.key for g in result] == ["tsnr", "fd_mean"]
 
+    def test_per_shell_dwi_keys_resolve_to_their_family_once(self):
+        from neuroimaging.qc_guidance import get_guidance, guidance_for_keys
+        assert get_guidance("efc_shell03").key == "efc"
+        assert get_guidance("fber_shell01").key == "fber"
+        assert get_guidance("snr_cc_shell2_worst").key == "snr_cc_shell_dw"
+        assert get_guidance("snr_cc_shell0").key == "snr_cc_shell0"
+        keys = ["efc_shell01", "efc_shell02", "snr_cc_shell2_worst", "snr_cc_shell3_worst"]
+        assert [g.key for g in guidance_for_keys(keys)] == ["efc", "snr_cc_shell_dw"]
+
+    def test_bold_only_measures_are_not_offered_for_dwi(self):
+        # MRIQC writes no snr/gsr for dwi, and its dwi fd is not head motion.
+        from neuroimaging.qc_guidance import guidance_for_modality
+        dwi_keys = {g.key for g in guidance_for_modality("dwi")}
+        assert not {"fd_mean", "fd_num", "fd_perc", "gsr_x", "gsr_y", "snr"} & dwi_keys
+
     def test_tooltip_mentions_direction_and_why(self):
         from neuroimaging.qc_guidance import get_guidance
         tip = get_guidance("fd_mean").tooltip()

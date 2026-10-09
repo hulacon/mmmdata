@@ -24,6 +24,7 @@ Typical usage::
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -299,9 +300,16 @@ def get_guidance(key: str) -> MeasureGuidance | None:
     Parameters
     ----------
     key : str
-        Metric name, e.g. ``'fd_mean'``.
+        Metric name, e.g. ``'fd_mean'``. A per-shell diffusion key
+        (``efc_shell02``, ``snr_cc_shell2_worst``) resolves to the entry for
+        its family, listed in :data:`_SHELL_FAMILIES`.
     """
-    return MEASURE_GUIDANCE.get(key)
+    if key in MEASURE_GUIDANCE:
+        return MEASURE_GUIDANCE[key]
+    for pattern, family in _SHELL_FAMILIES:
+        if pattern.fullmatch(key):
+            return MEASURE_GUIDANCE.get(family)
+    return None
 
 
 def guidance_for_modality(modality: str) -> list[MeasureGuidance]:
@@ -319,9 +327,15 @@ def guidance_for_keys(keys: Iterable[str]) -> list[MeasureGuidance]:
     """Return guidance for *keys*, skipping any that are undocumented.
 
     Preserves the caller's ordering so the glossary can follow the column
-    order of the table it explains.
+    order of the table it explains. Keys that share an entry (the shells of
+    one diffusion measure) yield it once.
     """
-    return [MEASURE_GUIDANCE[k] for k in keys if k in MEASURE_GUIDANCE]
+    out: dict[str, MeasureGuidance] = {}
+    for k in keys:
+        g = get_guidance(k)
+        if g is not None:
+            out.setdefault(g.key, g)
+    return list(out.values())
 
 
 def undocumented_keys(keys: Iterable[str]) -> list[str]:
@@ -330,7 +344,7 @@ def undocumented_keys(keys: Iterable[str]) -> list[str]:
     Used by the test suite to assert that every column the dashboard
     renders carries guidance.
     """
-    return [k for k in keys if k not in MEASURE_GUIDANCE]
+    return [k for k in keys if get_guidance(k) is None]
 
 
 def all_references() -> list[Reference]:
@@ -370,12 +384,12 @@ def _register(g: MeasureGuidance) -> None:
     MEASURE_GUIDANCE[g.key] = g
 
 
-# --- Motion (BOLD and DWI) -------------------------------------------------
+# --- Motion (BOLD) -----------------------------------------------------------
 
 _register(MeasureGuidance(
     key="fd_mean",
     label="Mean framewise displacement",
-    modalities=("bold", "dwi"),
+    modalities=("bold",),
     direction="lower_better",
     units="mm",
     why=(
@@ -422,7 +436,7 @@ _register(MeasureGuidance(
 _register(MeasureGuidance(
     key="fd_num",
     label="Number of high-motion frames",
-    modalities=("bold", "dwi"),
+    modalities=("bold",),
     direction="lower_better",
     units="volumes",
     why=(
@@ -449,7 +463,7 @@ _register(MeasureGuidance(
 _register(MeasureGuidance(
     key="fd_perc",
     label="Percent of high-motion frames",
-    modalities=("bold", "dwi"),
+    modalities=("bold",),
     direction="lower_better",
     units="%",
     why=(
@@ -811,7 +825,7 @@ _register(MeasureGuidance(
 _register(MeasureGuidance(
     key="gsr_x",
     label="Ghost-to-signal ratio (x)",
-    modalities=("bold", "dwi"),
+    modalities=("bold",),
     direction="lower_better",
     why=(
         "Quantifies Nyquist (N/2) ghosting, the replica of the brain that EPI "
@@ -855,7 +869,7 @@ _register(MeasureGuidance(
 _register(MeasureGuidance(
     key="gsr_y",
     label="Ghost-to-signal ratio (y)",
-    modalities=("bold", "dwi"),
+    modalities=("bold",),
     direction="lower_better",
     why=(
         "As gsr_x, for the other in-plane axis. Which of the two carries the "
@@ -957,7 +971,7 @@ _register(MeasureGuidance(
 _register(MeasureGuidance(
     key="snr",
     label="Signal-to-noise ratio",
-    modalities=("bold", "dwi"),
+    modalities=("bold",),
     direction="higher_better",
     why=(
         "A static, single-volume estimate of signal against background noise. "
@@ -1442,6 +1456,117 @@ _register(MeasureGuidance(
     ),
     references=(_MRIQC_MEASURES,),
 ))
+
+# --- Diffusion (MRIQC dwi) -------------------------------------------------
+#
+# MRIQC writes diffusion measures per shell. EFC and FBER keep the meaning of
+# their structural entries (``efc``, ``fber``), computed on one shell's volumes;
+# corpus-callosum SNR is diffusion-specific. Shell numbering is explained at
+# ``qc.DWI_KEY_IQMS``.
+
+_register(MeasureGuidance(
+    key="snr_cc_shell0",
+    label="b0 SNR in the corpus callosum",
+    modalities=("dwi",),
+    direction="higher_better",
+    why=(
+        "Mean b0 signal in a corpus-callosum mask divided by the spread "
+        "(MAD) of that signal. The b0 volumes carry no diffusion weighting, "
+        "so this is the baseline signal the diffusion-weighted shells are "
+        "measured against; a low value means every shell starts noisy."
+    ),
+    look_for=(
+        "In the MRIQC report, check the b0 mosaic for low overall signal, "
+        "coil-element dropout, or a corpus-callosum mask that has slipped "
+        "off the white matter (which lowers the mean and inflates the "
+        "spread)."
+    ),
+    auto_flag=_IQR_FLAG,
+    caveats=(
+        "Depends on the corpus-callosum mask MRIQC derives from the FA map; "
+        "a poor mask moves the number without any change in the data."
+    ),
+    references=(_MRIQC_MEASURES,),
+))
+
+_register(MeasureGuidance(
+    key="snr_cc_shell_dw",
+    label="Diffusion-weighted SNR in the corpus callosum (per shell)",
+    modalities=("dwi",),
+    direction="higher_better",
+    why=(
+        "Corpus-callosum signal in one diffusion shell divided by the b0 "
+        "spread. 'Worst' takes the gradient direction closest to x, along "
+        "which the callosal fibres run and the signal is most attenuated; "
+        "'best' averages the directions closest to y and z. Worst-case SNR "
+        "falls with b-value, and a shell where it approaches 1 is close to "
+        "the noise floor."
+    ),
+    look_for=(
+        "Compare against the same shell in other runs and sessions rather "
+        "than against a fixed value. A drop in one run with a normal b0 SNR "
+        "points at that run's diffusion volumes (dropout, vibration), not "
+        "at the coil or the participant."
+    ),
+    auto_flag=_IQR_FLAG,
+    caveats=(
+        "MRIQC 24.x numbers these shells one off: ``snr_cc_shell1_*`` is the "
+        "b0 again (best equals worst), ``shell2`` the first diffusion shell, "
+        "and the highest shell is never reported. Read the shell from "
+        "``qc.DWI_KEY_IQMS``, not from the key."
+    ),
+    references=(_MRIQC_MEASURES,),
+))
+
+_register(MeasureGuidance(
+    key="fa_nans",
+    label="NaN voxels in the FA map",
+    modalities=("dwi",),
+    direction="lower_better",
+    units="ppm of brain-mask voxels",
+    why=(
+        "MRIQC fits a tensor model and counts brain voxels whose fractional "
+        "anisotropy came out as not-a-number. Those voxels had signal the "
+        "model could not fit at all: zeros, dropout, or a broken gradient "
+        "table."
+    ),
+    look_for=(
+        "Any non-zero value: open the FA map in the MRIQC report and find "
+        "where the holes are. Clustered in one slab suggests slice dropout; "
+        "scattered across the brain suggests the b-vectors or b-values do "
+        "not match the data."
+    ),
+    auto_flag=_IQR_FLAG,
+    references=(_MRIQC_MEASURES,),
+))
+
+_register(MeasureGuidance(
+    key="fa_degenerate",
+    label="Degenerate voxels in the FA map",
+    modalities=("dwi",),
+    direction="lower_better",
+    units="ppm of brain-mask voxels",
+    why=(
+        "Brain voxels whose fractional anisotropy fell outside [0, 1], which "
+        "a valid tensor cannot produce. They mark voxels where the measured "
+        "signal is inconsistent with diffusion: artifacts, or a gradient "
+        "table that does not describe the acquisition."
+    ),
+    look_for=(
+        "Any non-zero value: inspect the FA map for speckle or bright rims, "
+        "and check the run's b-vector orientation against the colour-FA "
+        "image (callosum red, corticospinal tract blue)."
+    ),
+    auto_flag=_IQR_FLAG,
+    references=(_MRIQC_MEASURES,),
+))
+
+#: Per-shell diffusion keys and the entry that documents each family.
+_SHELL_FAMILIES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"efc_shell\d+"), "efc"),
+    (re.compile(r"fber_shell\d+"), "fber"),
+    (re.compile(r"snr_cc_shell[1-9]\d*_(?:worst|best)"), "snr_cc_shell_dw"),
+)
 
 
 # ---------------------------------------------------------------------------
