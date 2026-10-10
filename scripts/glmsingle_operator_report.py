@@ -34,6 +34,11 @@ from pathlib import Path
 
 import numpy as np
 
+# Guarded like glmsingle_export_hrf.py: tests import this module with src/python already on the path.
+_SRC = str(Path(__file__).resolve().parents[1] / "src" / "python")
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+
 SPACE = "MNI152NLin2009cAsym_res-2"
 MEANVOL_FRACTION = 0.25
 NULL_SAMPLE = 25000
