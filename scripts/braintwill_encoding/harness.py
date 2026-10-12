@@ -249,6 +249,10 @@ def _ensure_root(root: Path) -> None:
 TB_TREE = Path("functional_space") / "glmsingle_tb_fsaverage6"
 TB_SESSIONS = tuple(f"{s:02d}" for s in range(4, 19))  # trial-based sessions (study design)
 #: Image feature sets for tb-enc: Contract B tables for the shared1000 set, by band.
+#: Image-keyed only, on purpose: the tb-enc mask (reliability.py tb, pair repeats) does not
+#: cover auditory cortex, and which mask a word- or audio-keyed TB feature set should be read
+#: through is an open decision (mmmdata-agents project-todos, "TB register: a mask for
+#: auditory / word-keyed encoding questions"). Settle it before adding such a set here.
 TB_SPACES = {
     "ebind": {"csv": "shared1000/ebind.csv", "bands": {"ebind": r"^ebind_\d{4}$"}},
     "psytwill": {"parquet": "psytwill/shared1000_psytwill_space_features.parquet",
