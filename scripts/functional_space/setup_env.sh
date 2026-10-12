@@ -103,6 +103,19 @@ echo
 echo "==> pip install (one resolve)"
 "$PY" -m pip install "$FMRALIGN" "${PINS[@]}" "${EXTRAS[@]}"
 
+# braintwill, editable from the sibling checkout, for its encoding harness
+# (scripts/braintwill_encoding/; DECIDED 2026-10-12). --no-deps: its
+# dependencies (numpy, pandas, scipy; himalaya + scikit-learn for the
+# `encoding` extra) are already pinned above, and a second resolve could move them.
+BRAINTWILL="$(cd "$MMMDATA/.." && pwd)/braintwill"
+if [[ -f "$BRAINTWILL/pyproject.toml" ]]; then
+  echo
+  echo "==> pip install -e braintwill (no deps)"
+  "$PY" -m pip install --no-deps --no-build-isolation -e "$BRAINTWILL"
+else
+  echo "WARNING: no braintwill checkout at $BRAINTWILL; braintwill_encoding/ will not import" >&2
+fi
+
 echo
 echo "==> verifying conda channel purity"
 strays="$(conda list --prefix "$PREFIX" --show-channel-urls 2>/dev/null \
