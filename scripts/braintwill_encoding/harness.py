@@ -19,8 +19,9 @@ Registers:
   tb-enc  each subject's TBencoding trials (ses-04–18) as GLMsingle TYPED betas on the same
           89,820 grayordinates: fsaverage6 cortex from the surface refit, subcortex from the
           MNI fit's cache; the hippocampus has no TB betas, so its columns are invalid here.
-          Betas are z-scored per column within each session. The six super-repeat images
-          (shown in every session) are averaged within each session, so each contributes one
+          Betas are z-scored per column within each session; the six super-repeat images
+          (shown in every session) are averaged within each session and the session's rows
+          re-centred, so each contributes one
           row per session rather than the weight of ~14 ordinary items. Groups: an image, or
           a whole triplet for triplet mates (enCon 3), because TYPED leaks ~28 % of each
           neighbour into a beta and a leaked neighbour must not sit across a fold. Features
@@ -341,7 +342,13 @@ def tb_rows(trials: pd.DataFrame, betas: np.ndarray) -> tuple[pd.DataFrame, np.n
             keep.append({"stimulus_id": r.stimulus_id, "session": r.session, "group": group[i],
                          "n_trials": int(sel.size)})
             ys.append(y[sel].mean(axis=0))
-    return pd.DataFrame(keep), np.stack(ys).astype(np.float32)
+    rows, out = pd.DataFrame(keep), np.stack(ys).astype(np.float64)
+    # Averaging a session's super-repeat trials into one row each leaves that session's rows
+    # off zero mean (by ~0.05–0.08 SD); re-centre them, so responses are zero-mean as the
+    # no-intercept ridge and the band split assume. The per-session scale is kept.
+    for _, idx in rows.groupby("session", sort=False).indices.items():
+        out[idx] -= out[idx].mean(axis=0)
+    return rows, out.astype(np.float32)
 
 
 def image_features(stimfeat: Path, space: str) -> dict[str, FrameFeatures]:
@@ -387,7 +394,8 @@ def tb_register(derivatives: Path, subs=fm.SUBJECTS) -> dict:
             h.update(f.read_bytes())
     return {
         "name": "tb-enc", "design": "item", "rows": "TBencoding trials; super repeats averaged per session",
-        "groups": "image; triplet mates (enCon 3) as one group", "standardize": "z-score per column per session",
+        "groups": "image; triplet mates (enCon 3) as one group",
+        "standardize": "z-score per column per session over trials; rows re-centred per session after super averaging",
         "responses": {"betas": "GLMsingle TYPED betasmd", "columns": "grayordinates",
                       "cortex": str(TB_TREE), "subcortex": "functional_space/glmsingle_tb_subcortex",
                       "hippocampus": "none (invalid)", "metadata_sha256": h.hexdigest()},

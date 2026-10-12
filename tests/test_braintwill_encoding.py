@@ -147,7 +147,12 @@ def test_tb_rows_average_super_repeats_and_group_triplets(harness):
     assert list(rows.loc[sup, "n_trials"]) == [2, 2]
     first = np.flatnonzero(sup.to_numpy())[0]
     sel = ((t["stimulus_id"] == "super") & (t["session"] == "ses-04")).to_numpy()
-    np.testing.assert_allclose(y[first], z[sel].mean(axis=0), rtol=1e-6)
+    # the super row is its trials' mean, shifted by the session re-centring like every row
+    ses4 = (rows["session"] == "ses-04").to_numpy()
+    rows4 = np.concatenate([z[(t["session"] == "ses-04").to_numpy() & ~(t["stimulus_id"] == "super").to_numpy()],
+                            z[sel].mean(axis=0, keepdims=True)])
+    np.testing.assert_allclose(y[first], z[sel].mean(axis=0) - rows4.mean(axis=0), atol=1e-5)
+    np.testing.assert_allclose(y[ses4].mean(axis=0), 0, atol=1e-6)
     trip = rows[rows["stimulus_id"].str.startswith("t")]
     assert trip.groupby("session")["group"].nunique().tolist() == [1, 1]
     assert trip["group"].str.startswith("triplet:").all()
