@@ -14,6 +14,12 @@ Writes ``<stem>_runs.npz`` (per contrast: ``<name>_effect`` and ``<name>_varianc
 ``<stem>.json`` (run list, mask size, per-run noise-fit diagnostics). Scoring is
 ``score_consistency.py``. The output is a finding; write it outside this public repository.
 
+``--save-phi`` also writes ``<stem>_phi.npz``: each run's fitted AR coefficients ``phi``
+(runs, voxels, order) float32, NaN where the fit was masked, with ``runs`` (labels),
+``mask_flat`` (the mask's C-order flat voxel indices, i.e. the columns' order), ``mask_shape``
+and ``affine``. That is the noise model itself, for consumers that need Σ rather than a
+contrast's variance (Part R's R-3).
+
 Usage (compute node — a T1w cell loads every run's BOLD):
     .venv/bin/python scripts/braintwill_glm/run_consistency.py --subject sub-## --model floc \\
         --sessions ses-## --out-dir /path/outside/this/repo
@@ -50,6 +56,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--desc", default="referenceOLS")
     p.add_argument("--regime", default="reference")
     p.add_argument("--noise", default="ar3-bc")
+    p.add_argument("--save-phi", action="store_true", help="also write each run's fitted AR coefficients")
     p.add_argument("--out-dir", type=Path, required=True)
     return p.parse_args(argv)
 
@@ -80,11 +87,15 @@ def main(argv=None) -> int:
 
     per_contrast: dict[str, dict[str, list]] = {c: {"effect": [], "variance": [], "runs": []}
                                                 for c in cell.contrast_names()}
-    runs_out = []
+    runs_out, phis = [], []
     for i, ar in enumerate(cell.runs):
         t1 = time.time()
         Y = cell.load_data(i)
         fit = RunBlockGLM(cell.axis, [ar.design], noise=noise).fit([Y])
+        if args.save_phi:
+            phi = np.array(fit.fits[0].phi, dtype=np.float32)
+            phi[~fit.fits[0].ok] = np.nan
+            phis.append(phi)
         for name, c in ar.contrasts.items():
             m = fit.contrast(c)
             per_contrast[name]["effect"].append(m.effect.astype(np.float32))
@@ -110,6 +121,11 @@ def main(argv=None) -> int:
     stem = f"sub-{subject}_{pool}model-{model.name}_space-{args.space}_noise-{noise.name}"
     args.out_dir.mkdir(parents=True, exist_ok=True)
     np.savez(args.out_dir / f"{stem}_runs.npz", **arrays)
+    if args.save_phi:
+        np.savez(args.out_dir / f"{stem}_phi.npz", phi=np.stack(phis),
+                 runs=np.array([ar.run.entity_prefix for ar in cell.runs]),
+                 mask_flat=np.flatnonzero(cell.mask.ravel()), mask_shape=np.array(cell.mask.shape),
+                 affine=cell.mask_img.affine)
     record = {"subject": subject, "model": model.name, "space": args.space, "sessions": sessions,
               "noise": noise.name, "stand_in_desc": args.desc, "stand_in_metadata_runs": wanted,
               "mask_voxels": n_vox, "config": cell.cfg.to_dict(),
