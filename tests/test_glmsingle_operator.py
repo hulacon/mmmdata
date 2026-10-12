@@ -119,6 +119,56 @@ def test_lag_sums_match_dense_centred_covariances(lam, rho):
     assert sums.n_pairs[1] == N_RUNS * (PER_RUN - 1)
 
 
+def _ar2_acf(n, phi1=0.5, phi2=0.2):
+    a = np.zeros(n)
+    a[0], a[1] = 1.0, phi1 / (1.0 - phi2)
+    for k in range(2, n):
+        a[k] = phi1 * a[k - 1] + phi2 * a[k - 2]
+    return a
+
+
+@pytest.mark.parametrize("lam", [None, 3.0])
+def test_acf_noise_matches_ar1_path_and_dense(lam):
+    _, designs, hrf, proj = _setup(7)
+    bases = go.run_bases(designs, hrf, proj, TR)
+    lag_set = (0, 1, 2, 3)
+    lam_arr = None if lam is None else np.array([lam])
+    acf1 = 0.5 ** np.arange(N_TIMES)
+    acf2 = _ar2_acf(N_TIMES)
+    sums = go.lag_sums(bases, lam_arr, rhos=(0.5,), lags=lag_set, acfs={"ar1": acf1, "ar2": acf2})
+    np.testing.assert_allclose(sums.noise["ar1"], sums.noise[0.5], rtol=1e-10, atol=1e-12)
+    per = _direct_per_run(designs, hrf, proj, 0.0 if lam is None else lam)
+    Sigma = go.acf_covariance(N_TIMES, acf2)
+    for li, l in enumerate(lag_set):
+        noi = 0.0
+        for _, A, R in per:
+            n = R.shape[0]
+            C = np.eye(n) - 1.0 / n
+            noi += np.trace(C @ A @ Sigma @ A.T @ C, offset=l)
+        assert sums.noise["ar2"][0, li] == pytest.approx(noi, rel=1e-8, abs=1e-10)
+
+
+def test_noise_lag_basis_contracts_to_lag_sums():
+    _, designs, hrf, proj = _setup(8)
+    bases = go.run_bases(designs, hrf, proj, TR)
+    lag_set = (0, 1, 2, 5)
+    F = go.noise_lag_basis(bases, lags=lag_set)
+    acfs = np.stack([np.eye(1, N_TIMES)[0], 0.3 ** np.arange(N_TIMES), _ar2_acf(N_TIMES, 0.6, -0.1)])
+    per_voxel = acfs @ F
+    for i, a in enumerate(acfs):
+        ref = go.lag_sums(bases, None, rhos=(), lags=lag_set, acfs={"a": a}).noise["a"][0]
+        np.testing.assert_allclose(per_voxel[i], ref, rtol=1e-9, atol=1e-11)
+
+
+def test_acf_covariance_refuses_bad_input():
+    with pytest.raises(ValueError):
+        go.acf_covariance(5, np.array([1.0, 0.5]))
+    with pytest.raises(ValueError):
+        go.acf_covariance(2, np.array([2.0, 0.5]))
+    with pytest.raises(ValueError):
+        go.lag_sums([], None, rhos=(0.0,), acfs={0.0: np.ones(3)})
+
+
 def test_null_profile_with_no_signal_is_the_noise_correlation():
     _, designs, hrf, proj = _setup(5)
     bases = go.run_bases(designs, hrf, proj, TR)

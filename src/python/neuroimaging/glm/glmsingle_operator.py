@@ -20,10 +20,13 @@ across runs. It is solved from the voxel's fraction with fracridge's definition,
 
 **What is reported, all exact for the stored choices.**
 - :func:`leakage`: mean ``R[i, i+l]`` / mean ``R[i, i]`` over within-run trial pairs ``l`` apart.
-- :func:`lag_sums`: run-centred lag sums of ``R R^T`` (signal) and ``A Sigma A^T`` (noise, AR(1)).
-  :func:`null_profile` combines them into the pattern similarity a null with lag-independent item
-  signal plus temporal noise predicts at each lag. A consumer comparing trials by lag can cite it as
-  the estimator's own contribution.
+- :func:`lag_sums`: run-centred lag sums of ``R R^T`` (signal) and ``A Sigma A^T`` (noise: AR(1) at
+  each ``rhos`` value, or any stationary autocorrelation passed in ``acfs``). :func:`null_profile`
+  combines them into the pattern similarity a null with lag-independent item signal plus temporal
+  noise predicts at each lag. A consumer comparing trials by lag can cite it as the estimator's own
+  contribution.
+- :func:`noise_lag_basis`: the OLS noise lag sums for every autocorrelation at once, as one row per
+  autocorrelation lag. A per-voxel noise model (one ACF per voxel) is then a matrix product.
 
 **Not modelled.** The cross-validation that chose the fraction, HRF and PC count. Those are treated as
 fixed, so procedure-level properties of the selection are out of scope. Spatially correlated noise does
@@ -36,7 +39,7 @@ lazily from the installed ``glmsingle`` package, so the operator matches the fit
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -188,29 +191,49 @@ def ar1_covariance(n: int, rho: float) -> np.ndarray:
 
 @dataclass(frozen=True)
 class LagSums:
-    """Run-centred lag sums: ``signal[v, l]`` of R R^T, ``noise[rho][v, l]`` of A Sigma A^T (unit variance).
+    """Run-centred lag sums: ``signal[v, l]`` of R R^T, ``noise[key][v, l]`` of A Sigma A^T (unit variance).
 
+    ``key`` is an AR(1) coefficient (float) or the name of an autocorrelation passed to :func:`lag_sums`.
     Lag 0 is the diagonal. ``n_pairs[l]`` and ``n_trials`` turn sums into means.
     """
 
     lags: tuple[int, ...]
     signal: np.ndarray
-    noise: dict[float, np.ndarray]
+    noise: dict[float | str, np.ndarray]
     n_pairs: dict[int, int]
     n_trials: int
 
 
+def acf_covariance(n: int, acf: np.ndarray) -> np.ndarray:
+    """Unit-variance stationary covariance over ``n`` consecutive samples from an autocorrelation
+    ``acf[0..]`` (``acf[0]`` must be 1, at least ``n`` lags)."""
+    acf = np.asarray(acf, dtype=float)
+    if acf.ndim != 1 or acf.size < n:
+        raise ValueError(f"autocorrelation needs at least {n} lags, got shape {acf.shape}")
+    if not np.isclose(acf[0], 1.0):
+        raise ValueError(f"autocorrelation must be 1 at lag 0, got {acf[0]}")
+    i = np.arange(n)
+    return acf[np.abs(i[:, None] - i[None, :])]
+
+
 def lag_sums(bases: Sequence[RunBasis], lam: np.ndarray | None = None,
-             rhos: Sequence[float] = (0.0,), lags: Sequence[int] = DEFAULT_LAGS) -> LagSums:
+             rhos: Sequence[float] = (0.0,), lags: Sequence[int] = DEFAULT_LAGS,
+             acfs: Mapping[str, np.ndarray] | None = None) -> LagSums:
     """Lag sums of the run-centred signal and noise covariances of the estimate.
 
     Centring is within run over trials, as a consumer that removes each run's mean pattern would do.
-    ``lam`` None gives OLS; otherwise one penalty per voxel.
+    ``lam`` None gives OLS; otherwise one penalty per voxel. Noise is AR(1) at each of ``rhos``, keyed
+    by the coefficient, plus one stationary noise model per entry of ``acfs`` (name → autocorrelation,
+    as :func:`acf_covariance` takes it), keyed by the name.
     """
     lags = tuple(lags)
+    acfs = dict(acfs or {})
+    if set(acfs) & set(rhos):
+        raise ValueError("an autocorrelation name collides with an AR(1) coefficient key")
     nv = 1 if lam is None else np.atleast_1d(lam).size
     sig = np.zeros((nv, len(lags)))
-    noi = {rho: np.zeros((nv, len(lags))) for rho in rhos}
+    keys = list(rhos) + list(acfs)
+    noi = {k: np.zeros((nv, len(lags))) for k in keys}
     n_pairs = {l: 0 for l in lags}
     n_trials = 0
     for b in bases:
@@ -218,19 +241,48 @@ def lag_sums(bases: Sequence[RunBasis], lam: np.ndarray | None = None,
         ut = b.Vt - b.Vt.mean(axis=1, keepdims=True)
         n = ut.shape[1]
         n_trials += n
-        M = {rho: b.U.T @ ar1_covariance(b.U.shape[0], rho) @ b.U for rho in rhos}
+        nt = b.U.shape[0]
+        M = {rho: b.U.T @ ar1_covariance(nt, rho) @ b.U for rho in rhos}
+        M.update({name: b.U.T @ acf_covariance(nt, a) @ b.U for name, a in acfs.items()})
         for li, l in enumerate(lags):
             if l >= n:
                 continue
             n_pairs[l] += n - l
             W = ut[:, : n - l] @ ut[:, l:].T
             sig[:, li] += g**2 @ np.diag(W)
-            for rho in rhos:
-                noi[rho][:, li] += np.sum((d @ (M[rho] * W)) * d, axis=1)
+            for k in keys:
+                noi[k][:, li] += np.sum((d @ (M[k] * W)) * d, axis=1)
     return LagSums(lags=lags, signal=sig, noise=noi, n_pairs=n_pairs, n_trials=n_trials)
 
 
-def null_profile(sums: LagSums, rho: float, tau2: np.ndarray, sigma2: np.ndarray,
+def noise_lag_basis(bases: Sequence[RunBasis], lags: Sequence[int] = DEFAULT_LAGS) -> np.ndarray:
+    """OLS noise lag sums for every stationary autocorrelation at once: ``F[k, l]``.
+
+    For a unit-variance noise model with autocorrelation ``a`` (``a[0] = 1``), the OLS noise lag sum
+    at lag ``l`` is ``sum_k a[k] F[k, l]``, so ``acfs @ F`` gives per-voxel lag sums for one ACF per
+    voxel, exactly, without one ``U^T Sigma U`` per voxel. ``F`` has one row per autocorrelation lag,
+    up to the longest run. Matches ``lag_sums(bases, None, acfs=...)`` for any one ACF.
+    """
+    lags = tuple(lags)
+    K = max(b.U.shape[0] for b in bases)
+    F = np.zeros((K, len(lags)))
+    for b in bases:
+        _, d = _gains(b.s, None)
+        dd = d[0]
+        ut = b.Vt - b.Vt.mean(axis=1, keepdims=True)
+        n = ut.shape[1]
+        Ws = {li: ut[:, : n - l] @ ut[:, l:].T for li, l in enumerate(lags) if l < n}
+        U = b.U
+        for k in range(U.shape[0]):
+            # U^T T_k U, with T_k the symmetric shift (ones where |i - j| = k)
+            Mk = U.T @ U if k == 0 else U[:-k].T @ U[k:] + U[k:].T @ U[:-k]
+            Mk = dd[:, None] * Mk * dd[None, :]
+            for li, W in Ws.items():
+                F[k, li] += np.sum(Mk * W)
+    return F
+
+
+def null_profile(sums: LagSums, rho: float | str, tau2: np.ndarray, sigma2: np.ndarray,
                  weight: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Predicted pooled pattern r at each lag > 0, and the part of it due to noise alone.
 
