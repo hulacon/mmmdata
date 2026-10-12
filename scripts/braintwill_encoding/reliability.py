@@ -11,6 +11,14 @@ per-column reliability tables and default masks (encoding-harness settle 3, DECI
           pool nor the held-out sessions, so the mask is independent of every training row,
           and **ses-23/26 never enter**: a held-out-session row is an error, not a filter.
 
+  tb      repeat reliability over TBencoding image–word pairs (encoding-harness settle 3, B).
+          Every trial plays the pair's word over the image, so the betas are pair-evoked and
+          a repeat replays the same word: auditory cortex is covered. Repeats only — items
+          with ``enCon == 2``, including the super repeats among them; triplets
+          (``enCon == 3``) are left out because TYPED leaks ~28 % of each neighbour into a
+          beta and a triplet repeats its neighbours in the same order, which would inflate
+          their reliability.
+
 Method (films). Each showing's window is put on the first showing's volume grid
 (``films.paired_slices``: nearest whole volume), z-scored per column within the showing,
 and the films are concatenated, so a column's series is ``(n_showings, T)`` with zero mean
@@ -26,12 +34,22 @@ breaks stimulus locking); ``N_NULL`` draws give a per-column empirical p,
 ``(1 + #{null ≥ r̄}) / (N_NULL + 1)``. Default mask = Benjamini–Hochberg q < ``Q`` within
 subject, over the columns finite in every showing.
 
-Output: ``<derivatives>/encoding_harness/reliability/register-films/sub-##.npz``
+Method (tb). Betas are the tb-enc register's: TYPED ``betasmd`` on the grayordinates,
+z-scored per column within each session (``harness.zscore_sessions``). The statistic is the
+item-weighted mean within-item variance over the repeated items' trials, σ²_noise; with the
+pooled variance σ²_total of the same trials it gives NSD's
+``ncsnr = sqrt(max(0, σ²_total − σ²_noise)) / sqrt(σ²_noise)``. Null: item labels permuted
+among the included trials within each session (group sizes kept), ``N_NULL`` draws, per-column
+p = ``(1 + #{null σ²_noise ≤ observed}) / (N_NULL + 1)``. Default mask = BH q < ``Q`` **and**
+the label-free beta floor M3 used (finite in every trial, median |beta| ≤ 100 on the raw betas).
+
+Output: ``<derivatives>/encoding_harness/reliability/register-<films|tb-enc>/sub-##.npz``
 (``r_mean, spearman_brown, p, q, mask, valid``) + ``sub-##.json`` (method, showings, seed,
 code version).
 
 Usage:
     python reliability.py films --sub ##
+    python reliability.py tb --sub ##
 """
 
 from __future__ import annotations
@@ -45,6 +63,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 _REPO = Path(__file__).resolve().parents[2]
 _FS = _REPO / "scripts" / "functional_space"
@@ -61,6 +80,7 @@ N_NULL = 1000
 MIN_SHIFT_TR = 20  # 30 s at TR 1.5: well past the response's autocorrelation
 Q = 0.05
 SEED = 0
+BETA_CAP = 100.0  # functional_space/score_route.py's M3 floor (label-free part)
 
 
 def repeat_rows(windows, sub: str) -> dict[str, dict[str, object]]:
@@ -189,13 +209,94 @@ def cmd_films(args) -> None:
                                            "spearman_brown_q50_q95", "seconds")}))
 
 
+def item_noise(y: np.ndarray, labels: np.ndarray, n_items: int) -> np.ndarray:
+    """Item-weighted mean within-item variance (ddof 1) per column; ``labels`` index items 0..n-1."""
+    from scipy import sparse
+
+    m = sparse.csr_matrix((np.ones(labels.size), (labels, np.arange(labels.size))), shape=(n_items, labels.size))
+    n = np.asarray(m.sum(axis=1)).ravel()[:, None]
+    s = m @ y
+    ss = m @ (y * y)
+    return ((ss - s * s / n) / (n - 1)).mean(axis=0)
+
+
+def permute_within(labels: np.ndarray, blocks: list[np.ndarray], rng: np.random.Generator) -> np.ndarray:
+    out = labels.copy()
+    for idx in blocks:
+        out[idx] = labels[idx][rng.permutation(idx.size)]
+    return out
+
+
+def cmd_tb(args) -> None:
+    import harness as h
+    from core.config import load_config
+
+    t0 = time.time()
+    paths = h.Paths()
+    trials = h.tb_trials(paths.derivatives, Path(load_config()["paths"]["bids_project_dir"]), args.sub)
+    table = pd.read_csv(go.grayordinates_path(paths.cleaned), sep="\t")
+    raw = h.tb_betas(paths.derivatives, args.sub, trials, table)
+    y_all = h.zscore_sessions(trials, raw)
+    super_ids = h.super_repeats(trials)
+    keep = (trials["enCon"] == 2).to_numpy()
+    counts = trials[keep].groupby("stimulus_id").size()
+    if counts.min() < 2:
+        raise RuntimeError(f"sub-{args.sub}: a repeated item has {counts.min()} trial")
+    with np.errstate(invalid="ignore"):
+        floor = np.isfinite(raw).all(axis=0) & (np.nanmedian(np.abs(raw), axis=0) <= BETA_CAP)
+    valid = np.isfinite(y_all[keep]).all(axis=0)
+    y = y_all[keep][:, valid].astype(np.float64)
+    del raw, y_all
+    sub_t = trials[keep].reset_index(drop=True)
+    items = sorted(set(sub_t["stimulus_id"]))
+    labels = sub_t["stimulus_id"].map({s: i for i, s in enumerate(items)}).to_numpy()
+    blocks = list(sub_t.groupby("session", sort=False).indices.values())
+    noise = item_noise(y, labels, len(items))
+    total = y.var(axis=0, ddof=1)
+    ncsnr = np.sqrt(np.maximum(0.0, total - noise)) / np.sqrt(noise)
+    rng = np.random.default_rng(SEED)
+    exceed = np.zeros(noise.size, np.int64)
+    for _ in range(N_NULL):
+        exceed += item_noise(y, permute_within(labels, blocks, rng), len(items)) <= noise
+    p = (1 + exceed) / (N_NULL + 1)
+    q = bh(p)
+
+    def full(v, fill=np.nan):
+        out = np.full(valid.size, fill, dtype=np.float32 if fill is not False else bool)
+        out[valid] = v
+        return out
+
+    mask = full(q < Q, False) & floor
+    dest = paths.derivatives / "encoding_harness" / "reliability" / "register-tb-enc"
+    dest.mkdir(parents=True, exist_ok=True)
+    np.savez(dest / f"sub-{args.sub}.npz", ncsnr=full(ncsnr), noise_var=full(noise), p=full(p), q=full(q),
+             floor=floor, mask=mask, valid=valid)
+    side = {
+        "register": "tb-enc", "sub": args.sub, "source": "TBencoding trials with enCon == 2 (repeated pairs, incl. "
+        "super repeats among them); triplets excluded",
+        "n_items": len(items), "n_trials": int(keep.sum()),
+        "super_repeats_included": sorted(super_ids & set(items)),
+        "statistic": "item-weighted mean within-item variance of per-session z-scored betas; ncsnr as NSD",
+        "null": {"kind": "item labels permuted within session", "n": N_NULL, "seed": SEED},
+        "mask": f"BH q < {Q} AND finite in every trial AND median |raw beta| <= {BETA_CAP}",
+        "n_columns": int(valid.size), "n_valid": int(valid.sum()), "n_floor": int(floor.sum()),
+        "n_mask": int(mask.sum()),
+        "ncsnr_q50_q95_q99": [round(float(v), 4) for v in np.quantile(ncsnr, [0.5, 0.95, 0.99])],
+        "mmmdata": _git_head(), "seconds": round(time.time() - t0, 1),
+        "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+    }
+    (dest / f"sub-{args.sub}.json").write_text(json.dumps(side, indent=2) + "\n")
+    print(json.dumps({k: side[k] for k in ("sub", "n_items", "n_trials", "n_valid", "n_floor", "n_mask",
+                                           "ncsnr_q50_q95_q99", "seconds")}))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="verb", required=True)
-    f = sub.add_parser("films")
-    f.add_argument("--sub", required=True)
+    for name in ("films", "tb"):
+        sub.add_parser(name).add_argument("--sub", required=True)
     args = ap.parse_args()
-    {"films": cmd_films}[args.verb](args)
+    {"films": cmd_films, "tb": cmd_tb}[args.verb](args)
 
 
 if __name__ == "__main__":

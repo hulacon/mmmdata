@@ -16,10 +16,20 @@ Registers:
           encoders, not a redesign. Groups are films. **ses-23 and ses-26 never enter**: only
           ``role == "alignment"`` rows are read, and a row from a held-out session is an
           error even if a later table change gave it that role.
+  tb-enc  each subject's TBencoding trials (ses-04–18) as GLMsingle TYPED betas on the same
+          89,820 grayordinates: fsaverage6 cortex from the surface refit, subcortex from the
+          MNI fit's cache; the hippocampus has no TB betas, so its columns are invalid here.
+          Betas are z-scored per column within each session. The six super-repeat images
+          (shown in every session) are averaged within each session, so each contributes one
+          row per session rather than the weight of ~14 ordinary items. Groups: an image, or
+          a whole triplet for triplet mates (enCon 3), because TYPED leaks ~28 % of each
+          neighbour into a beta and a leaked neighbour must not sit across a fold. Features
+          are per image (one-frame stimuli): shared1000 EBind, or psytwill-space V + VL.
 
-Feature sets are the per-stimulus caches ``functional_space/encoding.py cache`` writes
-(``<derivatives>/functional_space/features/<space>/``); only the register's films are read,
-and their content hash is the cache key's feature half.
+Feature sets: for films, the per-stimulus caches ``functional_space/encoding.py cache``
+writes (``<derivatives>/functional_space/features/<space>/``), only the register's films;
+for tb-enc, the shared1000 image tables under ``<derivatives>/stimuli_features/``. Either
+way their content hash is the cache key's feature half.
 
 Scores go to ``<derivatives>/encoding_harness/register-<name>/spec-<hash>/features-<hash>/
 sub-##/`` (``scores.npz`` + ``encoding.json``). A cached score is read back, never refit.
@@ -35,6 +45,7 @@ Verbs:
 Usage:
     python harness.py plan --space ebind --sub ##
     python harness.py score --space psytwill --sub ## --backend torch_cuda
+    python harness.py score --register tb-enc --space psytwill --sub ##
     python harness.py equivalence --space ebind --scenario primary --pct 0 --draw 0 --target ##
 """
 
@@ -80,7 +91,8 @@ import encoding as fs_enc  # noqa: E402  functional_space/encoding.py: feature c
 import films as fm  # noqa: E402
 import grayordinates as go  # noqa: E402
 from braintwill.encoding import (BandedRidge, EncodingSpec, FrameFeatures, RidgeSpec,  # noqa: E402
-                                 ScoreCache, cache_key, feature_set_hash, fir_design, score)
+                                 ScoreCache, cache_key, feature_set_hash, fir_design, item_design,
+                                 score)
 
 TREE = "encoding_harness"
 #: Outer folds of the nested CV (DECIDED 2026-10-12, encoding-harness settle 1).
@@ -104,6 +116,7 @@ class Paths:
         self.derivatives = p.derivatives
         self.features = p.cache
         self.cleaned = go.tree_root(p.derivatives)
+        self.stimfeat = p.derivatives / "stimuli_features"
         self.out = p.derivatives / TREE
 
 
@@ -228,15 +241,216 @@ def _ensure_root(root: Path) -> None:
         }, indent=2) + "\n")
 
 
-def build(args, paths: Paths):
-    windows = fm.load_windows(paths.derivatives)
-    films = args.films.split(",") if getattr(args, "films", None) else None
-    rows = alignment_rows(windows, args.sub, films)
-    feats = {f.stimulus_id: f for f in frame_features(paths.features, args.space, rows["stimulus_id"])}
-    register = film_register(windows, paths.cleaned, list(rows["stimulus_id"]))
-    spec = film_spec(args.solver, args.n_iter)
-    key = cache_key(feature_set_hash(feats.values()), register, spec, f"sub-{args.sub}")
-    return rows, feats, register, spec, key
+# ---------------------------------------------------------------------------
+# the tb-enc register
+# ---------------------------------------------------------------------------
+
+TB_TREE = Path("functional_space") / "glmsingle_tb_fsaverage6"
+TB_SESSIONS = tuple(f"{s:02d}" for s in range(4, 19))  # trial-based sessions (study design)
+#: Image feature sets for tb-enc: Contract B tables for the shared1000 set, by band.
+TB_SPACES = {
+    "ebind": {"csv": "shared1000/ebind.csv", "bands": {"ebind": r"^ebind_\d{4}$"}},
+    "psytwill": {"parquet": "psytwill/shared1000_psytwill_space_features.parquet",
+                 "bands": {"V": "pspace_v", "VL": "pspace_vl"}},
+}
+
+
+def tb_trials(derivatives: Path, bids_root: Path, sub: str) -> pd.DataFrame:
+    """The subject's TBencoding trials in beta order, with each trial's shared1000 ``stimulus_id``."""
+    d = Path(derivatives) / TB_TREE / f"sub-{sub}" / "enc"
+    t = pd.read_csv(d / "trial_info.csv", dtype={"mmmId": str})
+    ses = t["session"].str.removeprefix("ses-")
+    if not ses.isin(TB_SESSIONS).all() or ses.isin(fm.HELDOUT_SESSIONS).any():
+        raise RuntimeError(f"sub-{sub}: trials outside the trial-based sessions: {sorted(set(ses) - set(TB_SESSIONS))}")
+    if not t.groupby(["session", "run"], sort=False)["onset"].apply(lambda o: o.is_monotonic_increasing).all():
+        raise RuntimeError(f"sub-{sub}: trial_info is not in time order within runs")
+    reg = pd.read_csv(Path(bids_root) / "stimuli" / "stimulus_registry" / "shared1000.tsv", sep="\t",
+                      dtype={"mmmId": str})
+    t = t.merge(reg[["mmmId", "stimulus_id"]], on="mmmId", how="left", validate="many_to_one")
+    if t["stimulus_id"].isna().any():
+        raise RuntimeError(f"sub-{sub}: {t['stimulus_id'].isna().sum()} trials have no shared1000 image")
+    return t
+
+
+def tb_betas(derivatives: Path, sub: str, trials: pd.DataFrame, table: pd.DataFrame) -> np.ndarray:
+    """``(n_trials, n_grayordinates)`` TYPED betas; columns with no TB fit (hippocampus) are NaN."""
+    import families as fam
+
+    d = Path(derivatives) / TB_TREE / f"sub-{sub}" / "enc"
+    fit = np.load(d / "glmsingle_outputs" / "TYPED_FITHRF_GLMDENOISE_RR.npy", allow_pickle=True).item()
+    b = fit["betasmd"].reshape(fit["betasmd"].shape[0], -1)
+    del fit
+    if b.shape[1] != len(trials):
+        raise RuntimeError(f"sub-{sub}: {b.shape[1]} betas for {len(trials)} trials")
+    vi = pd.read_csv(d / "vertex_index.tsv", sep="\t")
+    if not np.array_equal(vi["row"].to_numpy(), np.arange(len(vi))) or len(vi) != b.shape[0]:
+        raise RuntimeError(f"sub-{sub}: vertex_index does not match the beta rows")
+    out = np.full((len(trials), len(table)), np.nan, dtype=np.float32)
+    out[:, np.where(vi["hemi"].to_numpy() == "R", go.FSAVERAGE6_N, 0) + vi["vertex"].to_numpy()] = b.T
+    sub_trials = pd.read_csv(fam.tb_cache_dir(derivatives, sub) / "trial_info.csv", dtype={"mmmId": str})
+    if not trials.drop(columns="stimulus_id").equals(sub_trials):
+        raise RuntimeError(f"sub-{sub}: the subcortical cache's trials differ from the fsaverage6 fit's")
+    rows, sb, _ = fam.load_tb_subcortex(derivatives, sub, table)
+    out[:, rows] = sb.T
+    return out
+
+
+def zscore_sessions(trials: pd.DataFrame, betas: np.ndarray) -> np.ndarray:
+    """Each column z-scored over each session's trials (all of them, super repeats included)."""
+    y = np.empty_like(betas)
+    for _, idx in trials.groupby("session", sort=False).indices.items():
+        blk = betas[idx]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            y[idx] = (blk - blk.mean(0)) / blk.std(0)
+    return y
+
+
+def super_repeats(trials: pd.DataFrame) -> set:
+    """The images shown in more than one session (the super repeats)."""
+    n_ses = trials.groupby("stimulus_id")["session"].nunique()
+    return set(n_ses[n_ses > 1].index)
+
+
+def tb_rows(trials: pd.DataFrame, betas: np.ndarray) -> tuple[pd.DataFrame, np.ndarray]:
+    """Rows, responses and groups for tb-enc (z-score per session, super repeats averaged per session)."""
+    y = zscore_sessions(trials, betas)
+    super_ids = super_repeats(trials)
+    if trials.loc[~trials["stimulus_id"].isin(super_ids)].groupby("stimulus_id")["session"].nunique().max() != 1:
+        raise RuntimeError("an ordinary item spans sessions")
+    con = trials.groupby("stimulus_id")["enCon"].nunique()
+    if (con > 1).any():
+        raise RuntimeError(f"items with mixed enCon: {sorted(con[con > 1].index)[:3]}")
+    group = trials["stimulus_id"].to_numpy(dtype=object).copy()
+    trip = (trials["enCon"] == 3).to_numpy()
+    sup = trials["stimulus_id"].isin(super_ids).to_numpy()
+    group[trip & ~sup] = ("triplet:" + trials["session"] + ":"
+                          + ((trials["pairId"] - 1) // 3).astype(int).astype(str))[trip & ~sup]
+    group[trip & sup] = "triplet:super"
+    sizes = pd.Series(trials.loc[trip & ~sup, "stimulus_id"].to_numpy()).groupby(group[trip & ~sup]).nunique()
+    if not (sizes == 3).all():
+        raise RuntimeError(f"triplet groups without exactly 3 images: {sizes[sizes != 3].to_dict()}")
+    keep, ys, seen = [], [], {}
+    for i, r in enumerate(trials.itertuples(index=False)):
+        if r.stimulus_id not in super_ids:
+            keep.append({"stimulus_id": r.stimulus_id, "session": r.session, "group": group[i], "n_trials": 1})
+            ys.append(y[i])
+        elif (r.stimulus_id, r.session) not in seen:
+            sel = np.flatnonzero((trials["stimulus_id"] == r.stimulus_id).to_numpy()
+                                 & (trials["session"] == r.session).to_numpy())
+            seen[(r.stimulus_id, r.session)] = len(keep)
+            keep.append({"stimulus_id": r.stimulus_id, "session": r.session, "group": group[i],
+                         "n_trials": int(sel.size)})
+            ys.append(y[sel].mean(axis=0))
+    return pd.DataFrame(keep), np.stack(ys).astype(np.float32)
+
+
+def image_features(stimfeat: Path, space: str) -> dict[str, FrameFeatures]:
+    """One-frame features per shared1000 image, bands in ``TB_SPACES`` order."""
+    import re
+
+    spec = TB_SPACES[space]
+    if "csv" in spec:
+        df = pd.read_csv(Path(stimfeat) / spec["csv"])
+        cols, bands = [], {}
+        for band, pattern in spec["bands"].items():
+            got = [c for c in df.columns if re.match(pattern, c)]
+            if not got:
+                raise KeyError(f"no column matches band {band!r}")
+            bands[band] = slice(len(cols), len(cols) + len(got))
+            cols += got
+        wide = df.set_index("stimulus_id")[cols]
+    else:
+        long = pd.read_parquet(Path(stimfeat) / spec["parquet"], columns=["stimulus_id", "model", "feature", "value"])
+        parts, bands, at = [], {}, 0
+        for band, model in spec["bands"].items():
+            w = long[long["model"] == model].pivot(index="stimulus_id", columns="feature", values="value")
+            w = w[sorted(w.columns)]
+            if w.empty:
+                raise KeyError(f"no rows for model {model!r}")
+            parts.append(w)
+            bands[band] = slice(at, at + w.shape[1])
+            at += w.shape[1]
+        wide = pd.concat(parts, axis=1, join="outer")
+    if wide.index.duplicated().any():
+        raise RuntimeError(f"{space}: an image appears twice")
+    x = wide.to_numpy(np.float32)
+    return {sid: FrameFeatures(sid, [0.0], x[i:i + 1], 1.0, bands) for i, sid in enumerate(wide.index)}
+
+
+def tb_register(derivatives: Path, subs=fm.SUBJECTS) -> dict:
+    h = hashlib.sha256()
+    for s in subs:
+        d = Path(derivatives) / TB_TREE / f"sub-{s}" / "enc"
+        for f in (d / "trial_info.csv", d / "run_metadata.json",
+                  Path(derivatives) / "functional_space" / "glmsingle_tb_subcortex" / f"sub-{s}" / "enc"
+                  / "subcortex_betas.json"):
+            h.update(f.read_bytes())
+    return {
+        "name": "tb-enc", "design": "item", "rows": "TBencoding trials; super repeats averaged per session",
+        "groups": "image; triplet mates (enCon 3) as one group", "standardize": "z-score per column per session",
+        "responses": {"betas": "GLMsingle TYPED betasmd", "columns": "grayordinates",
+                      "cortex": str(TB_TREE), "subcortex": "functional_space/glmsingle_tb_subcortex",
+                      "hippocampus": "none (invalid)", "metadata_sha256": h.hexdigest()},
+        "sessions": list(TB_SESSIONS),
+    }
+
+
+# ---------------------------------------------------------------------------
+# requests: one register, one feature set, one subject
+# ---------------------------------------------------------------------------
+
+class Request:
+    """A resolved request: the key, and how to build the design and responses when it misses."""
+
+    def __init__(self, args, paths: Paths):
+        from core.config import load_config
+
+        self.paths = paths
+        self.spec = film_spec(args.solver, args.n_iter)  # tb-enc shares the film grid and folds
+        self.register_name = args.register
+        if args.register == "films":
+            windows = fm.load_windows(paths.derivatives)
+            films = args.films.split(",") if getattr(args, "films", None) else None
+            self.rows = alignment_rows(windows, args.sub, films)
+            feats = frame_features(paths.features, args.space, self.rows["stimulus_id"])
+            self.feats = {f.stimulus_id: f for f in feats}
+            self.register = film_register(windows, paths.cleaned, list(self.rows["stimulus_id"]))
+            self.label = _label(paths, args.space)
+        else:
+            if getattr(args, "films", None):
+                raise SystemExit("--films applies to the films register only")
+            self.bids_root = Path(load_config()["paths"]["bids_project_dir"])
+            self.trials = tb_trials(paths.derivatives, self.bids_root, args.sub)
+            images = image_features(paths.stimfeat, args.space)
+            used = sorted(set(self.trials["stimulus_id"]))
+            missing = sorted(set(used) - set(images))
+            if missing:
+                raise RuntimeError(f"{args.space}: {len(missing)} TB images have no features, e.g. {missing[0]}")
+            self.feats = {sid: images[sid] for sid in used}
+            self.register = tb_register(paths.derivatives)
+            self.label = {"space": args.space, "source": str(paths.stimfeat / next(
+                v for k, v in TB_SPACES[args.space].items() if k in ("csv", "parquet")))}
+        self.sub = args.sub
+        self.key = cache_key(feature_set_hash(self.feats.values()), self.register, self.spec, f"sub-{args.sub}")
+
+    def design(self):
+        if self.register_name == "films":
+            return film_design(self.rows, self.feats, self.paths.cleaned)
+        table = pd.read_csv(go.grayordinates_path(self.paths.cleaned), sep="\t")
+        rows, y = tb_rows(self.trials, tb_betas(self.paths.derivatives, self.sub, self.trials, table))
+        x, bands = item_design(self.feats, rows["stimulus_id"])
+        return x, y, rows["group"].to_numpy(), bands
+
+    def summary(self) -> dict:
+        first = next(iter(self.feats.values()))
+        width = len(fs_enc.DELAYS_TR) if self.register_name == "films" else 1
+        out = {"register": self.register_name, "sub": self.sub,
+               "bands": {b: (sl.stop - sl.start) * width for b, sl in first.bands.items()}}
+        if self.register_name == "films":
+            out.update(films=len(self.rows), volumes=int(self.rows["n"].sum()))
+        else:
+            out.update(trials=len(self.trials), images=len(self.feats))
+        return out
 
 
 def _label(paths: Paths, space: str) -> dict:
@@ -247,31 +461,28 @@ def _label(paths: Paths, space: str) -> dict:
 
 def cmd_plan(args) -> None:
     paths = Paths()
-    rows, feats, register, spec, key = build(args, paths)
+    req = Request(args, paths)
     cache = ScoreCache(paths.out)
-    first = next(iter(feats.values()))
-    print(json.dumps({"sub": args.sub, "space": args.space, "films": len(rows),
-                      "volumes": int(rows["n"].sum()),
-                      "bands": {b: (sl.stop - sl.start) * len(fs_enc.DELAYS_TR) for b, sl in first.bands.items()},
-                      "spec_hash": key["spec_hash"], "feature_hash": key["feature_hash"],
-                      "path": str(cache.path(key)), "cached": cache.get(key) is not None}, indent=2))
+    print(json.dumps({**req.summary(), "space": args.space, "spec_hash": req.key["spec_hash"],
+                      "feature_hash": req.key["feature_hash"], "path": str(cache.path(req.key)),
+                      "cached": cache.get(req.key) is not None}, indent=2))
 
 
 def cmd_score(args) -> None:
     paths = Paths()
-    rows, feats, register, spec, key = build(args, paths)
+    req = Request(args, paths)
     cache = ScoreCache(paths.out)
-    hit = cache.get(key)
+    hit = cache.get(req.key)
     if hit is not None:
-        print(f"cached: {cache.path(key)}\n{json.dumps(hit.summary)}")
+        print(f"cached: {cache.path(req.key)}\n{json.dumps(hit.summary)}")
         return
     t0 = time.time()
-    x, y, groups, bands = film_design(rows, feats, paths.cleaned)
+    x, y, groups, bands = req.design()
     t_load = time.time() - t0
-    result = score(x, y, groups, bands, spec, backend=args.backend)
+    result = score(x, y, groups, bands, req.spec, backend=args.backend)
     seconds = {"load": round(t_load, 1), "score": round(time.time() - t0 - t_load, 1)}
     _ensure_root(paths.out)
-    dest = cache.put(key, result, provenance(args.backend, seconds), _label(paths, args.space))
+    dest = cache.put(req.key, result, provenance(args.backend, seconds), req.label)
     print(f"wrote {dest}\n{json.dumps(result.summary)}\nfull fit {json.dumps(result.full_fit)}")
 
 
@@ -354,7 +565,8 @@ def main() -> None:
     sub = ap.add_subparsers(dest="verb", required=True)
     for name in ("plan", "score"):
         p = sub.add_parser(name)
-        p.add_argument("--space", choices=list(fs_enc.FEATURE_SPACES), required=True)
+        p.add_argument("--register", choices=("films", "tb-enc"), default="films")
+        p.add_argument("--space", choices=sorted(set(fs_enc.FEATURE_SPACES) | set(TB_SPACES)), required=True)
         p.add_argument("--sub", required=True)
         p.add_argument("--films", help="comma-separated subset of the alignment pool (default: all of it)")
         p.add_argument("--solver", choices=("random_search", "hyper_gradient"), default="random_search")
