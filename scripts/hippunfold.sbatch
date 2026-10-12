@@ -1,5 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=hippunfold
+#SBATCH --account=hulacon
 #SBATCH --partition=compute
 #SBATCH --time=04:00:00
 #SBATCH --nodes=1
@@ -8,19 +9,32 @@
 #SBATCH --mem=16G
 #SBATCH --output=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/hippunfold_%A_%a.out
 #SBATCH --error=/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata/logs/hippunfold_%A_%a.err
-#SBATCH --mail-user=your-email@uoregon.edu
 
 #==============================================================================
 # HippUnfold: Hippocampal Subfield Segmentation & Unfolding (SLURM Job)
 #==============================================================================
-# Runs HippUnfold v1.5.2 on BIDS data using T1w + T2w (acq-SPC) inputs.
-# Uses the combined T1T2w nnU-net model for best segmentation quality.
+# Runs HippUnfold on BIDS data using T1w + T2w inputs, with the combined
+# T1T2w nnU-net model for best segmentation quality.
 #
 # Usage:
-#   Single subject:   sbatch --export=SUBJECT=sub-03 hippunfold.sbatch
-#   Array (all 3):    sbatch --array=1-3 hippunfold.sbatch
+#   Single subject:   sbatch --export=ALL,SUBJECT=sub-## hippunfold.sbatch
+#   Array (all):      sbatch --array=1-N hippunfold.sbatch
+#   T2w acquisition:  --export=ALL,SUBJECT=sub-##,T2W_ACQ=oblcor   (default SPC)
+#   Version:          --export=ALL,SUBJECT=sub-##,HIPPUNFOLD_VERSION=2.2.0
+#                     (default 1.5.2; v2 needs more memory, see below)
 #
-# Output goes to: derivatives/hippunfold/
+# Output goes to derivatives/hippunfold[_v<major>][_<acq>]/:
+#   1.5.2 SPC    -> derivatives/hippunfold/
+#   1.5.2 oblcor -> derivatives/hippunfold_oblcor/
+#   2.x   SPC    -> derivatives/hippunfold_v2/
+#   2.x   oblcor -> derivatives/hippunfold_v2_oblcor/
+# Major versions get separate trees because their surfaces and file layout
+# differ; downstream code (functional_space/grayordinates.py) reads the 1.5.2
+# tree. Snakemake locks the whole output dir, so subjects sharing a tree must
+# run one after another (--dependency=afterok:<jobid>).
+#
+# Memory: 1.5.2 peaks ~4.3 GB (16G is plenty). 2.x's docs put nnU-net
+# inference at ~32 GB, so submit v2 with --mem=48G until a pilot says less.
 #==============================================================================
 
 echo "=========================================="
@@ -67,7 +81,9 @@ echo "Processing: ${SUB} (participant label: ${PARTICIPANT_LABEL})"
 echo ""
 
 # --- Container setup ---
-CONTAINER="${SINGULARITY_DIR}/hippunfold-v1.5.2.sif"
+HIPPUNFOLD_VERSION="${HIPPUNFOLD_VERSION:-1.5.2}"
+HIPPUNFOLD_MAJOR="${HIPPUNFOLD_VERSION%%.*}"
+CONTAINER="${SINGULARITY_DIR}/hippunfold-v${HIPPUNFOLD_VERSION}.sif"
 if [ ! -f "${CONTAINER}" ]; then
     echo "ERROR: HippUnfold container not found at ${CONTAINER}"
     exit 1
@@ -80,8 +96,26 @@ mkdir -p "${SINGULARITY_TMPDIR}"
 # Bind paths for container access
 export SINGULARITY_BINDPATH="/gpfs:/gpfs"
 
-# HippUnfold model cache (downloaded on first run)
-export HIPPUNFOLD_CACHE_DIR="${CODE_ROOT}/.cache/hippunfold"
+# HippUnfold model cache (downloaded on first run); one per major version so
+# v2's models and atlases never mix with the cache 1.5.2 ran from
+if [ "${HIPPUNFOLD_MAJOR}" = "1" ]; then
+    export HIPPUNFOLD_CACHE_DIR="${CODE_ROOT}/.cache/hippunfold"
+    TREE="hippunfold"
+else
+    export HIPPUNFOLD_CACHE_DIR="${CODE_ROOT}/.cache/hippunfold_v${HIPPUNFOLD_MAJOR}"
+    TREE="hippunfold_v${HIPPUNFOLD_MAJOR}"
+fi
+
+# 2.x containers run /app/entrypoint.sh, which execs its first argument, so the
+# command name must come first; 1.5.2's runscript IS hippunfold. 2.2.0 also
+# reports `--version` as 2.0.0 (upstream hard-codes it in snakebids.yml at the
+# v2.2.0 tag); the container's org.opencontainers.image.revision label is the
+# reliable provenance.
+if [ "${HIPPUNFOLD_MAJOR}" = "1" ]; then
+    ENTRY_CMD=()
+else
+    ENTRY_CMD=(hippunfold)
+fi
 mkdir -p "${HIPPUNFOLD_CACHE_DIR}"
 
 # T2w acquisition: default SPC, override via --export=T2W_ACQ=oblcor
@@ -89,14 +123,14 @@ T2W_ACQ="${T2W_ACQ:-SPC}"
 
 # Output directory: separate dirs per T2w acquisition for comparison
 if [ "${T2W_ACQ}" = "SPC" ]; then
-    OUTPUT_DIR="${BIDS_DIR}/derivatives/hippunfold"
+    OUTPUT_DIR="${BIDS_DIR}/derivatives/${TREE}"
 else
-    OUTPUT_DIR="${BIDS_DIR}/derivatives/hippunfold_${T2W_ACQ}"
+    OUTPUT_DIR="${BIDS_DIR}/derivatives/${TREE}_${T2W_ACQ}"
 fi
 mkdir -p "${OUTPUT_DIR}"
 
 # --- Run HippUnfold ---
-echo "Running HippUnfold with T1T2w model..."
+echo "Running HippUnfold ${HIPPUNFOLD_VERSION} with T1T2w model..."
 echo "  Input:  ${BIDS_DIR}"
 echo "  Output: ${OUTPUT_DIR}"
 echo "  T2w acquisition: ${T2W_ACQ}"
@@ -106,6 +140,7 @@ echo ""
 singularity run -e \
     --env HIPPUNFOLD_CACHE_DIR="${HIPPUNFOLD_CACHE_DIR}" \
     "${CONTAINER}" \
+    "${ENTRY_CMD[@]}" \
     "${BIDS_DIR}" \
     "${OUTPUT_DIR}" \
     participant \
