@@ -194,17 +194,25 @@ def film_register(windows: pd.DataFrame, cleaned: Path, films: list[str]) -> dic
     }
 
 
-def _git(repo: Path) -> dict:
+def _git(repo: Path, paths: tuple[str, ...]) -> dict:
+    """HEAD, and whether the paths this code runs from have uncommitted changes.
+
+    Scoped to those paths: the checkouts are shared with other sessions, whose unrelated
+    uncommitted files would otherwise mark every run dirty and make the flag meaningless.
+    """
     def run(*a):
         return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True).stdout.strip()
-    return {"head": run("rev-parse", "--short", "HEAD"), "dirty": bool(run("status", "--porcelain", "--", "."))}
+    return {"head": run("rev-parse", "--short", "HEAD"), "dirty_paths": list(paths),
+            "dirty": bool(run("status", "--porcelain", "--", *paths))}
 
 
 def provenance(backend: str, seconds: dict) -> dict:
     import braintwill
 
     bt = Path(braintwill.__file__).resolve().parents[1]
-    return {"backend": backend, "seconds": seconds, "mmmdata": _git(_REPO), "braintwill": _git(bt),
+    mmm = ("scripts/braintwill_encoding", "scripts/functional_space", "src/python/core")
+    return {"backend": backend, "seconds": seconds, "mmmdata": _git(_REPO, mmm),
+            "braintwill": _git(bt, ("braintwill/encoding", "braintwill/ledger.py", "pyproject.toml")),
             "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")}
 
 
