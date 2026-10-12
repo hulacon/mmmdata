@@ -20,6 +20,10 @@ Per run, per draw, per design, per contrast, it writes the boolean |z| > z_α ma
 bits, plus per-run noise-fit diagnostics (stationary fraction, masked count, wall time). The
 pass/fail reading is not here: it belongs to the record that pre-registered it.
 
+``--save-maps DIR`` also writes each contrast's effect and variance (float32, variance NaN where
+the noise fit was masked) to ``DIR``: the rest-run null for Part R's between-run consistency
+test (R-2). The draws are seeded per run, so the designs and fits are the same as without it.
+
 ``--draws 1 --runs <one per subject>`` is the pre-registered feasibility check's resting half.
 
 Usage (compute node):
@@ -100,6 +104,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--regime", default="reference")
     p.add_argument("--list", action="store_true", help="print the run list and mask size, fit nothing")
     p.add_argument("--out-dir", type=Path, required=True)
+    p.add_argument("--save-maps", type=Path, default=None,
+                   help="also write per-draw effect + variance maps here (large: ~180 MB per run)")
     return p.parse_args(argv)
 
 
@@ -145,7 +151,7 @@ def main(argv=None) -> int:
     record = {"subject": subject, "run": run.entity_prefix, "run_index": args.run_index, "n_scans": n_scans,
               "t_r": t_r, "mask_voxels": int(mask.sum()), "noise": noise.name, "alpha": args.alpha,
               "seed": [args.seed, int(subject), args.run_index], "load_s": round(t_load, 1), "draws": []}
-    hits = {}
+    hits, maps = {}, {}
     for d in range(args.draws):
         for kind in DESIGNS:
             model = null_model(kind, run.task)
@@ -160,7 +166,11 @@ def main(argv=None) -> int:
                      "phi_median": np.nanmedian(fit.fits[0].phi, axis=0).round(4).tolist(), "fpr": {}}
             for cname, weights in CONTRASTS.items():
                 c = np.array([weights.get(cond, 0.0) for cond in model.conditions])
-                z = fit.contrast(c).z
+                cmap = fit.contrast(c)
+                z = cmap.z
+                if args.save_maps is not None:
+                    maps[f"{kind}_{cname}_d{d:02d}_effect"] = cmap.effect.astype(np.float32)
+                    maps[f"{kind}_{cname}_d{d:02d}_variance"] = cmap.variance.astype(np.float32)
                 sig = np.abs(z) > z_crit                      # NaN (masked) compares False
                 entry["fpr"][cname] = float(sig[fit.ok].mean())
                 hits[f"{kind}_{cname}_d{d:02d}"] = np.packbits(sig)
@@ -170,6 +180,10 @@ def main(argv=None) -> int:
                   f"{entry['fit_s']:.0f} s, FPR " + ", ".join(f"{k} {v:.4f}" for k, v in entry["fpr"].items()))
     np.savez_compressed(out_dir / f"{stem}_hits.npz", **hits)
     (out_dir / f"{stem}.json").write_text(json.dumps(record, indent=1))
+    if args.save_maps is not None:
+        maps_dir = args.save_maps / f"sub-{subject}"
+        maps_dir.mkdir(parents=True, exist_ok=True)
+        np.savez(maps_dir / f"{stem}_maps.npz", **maps)
     print(f"wrote {out_dir / stem}.json (+ _hits.npz), {time.time() - t0:.0f} s total")
     return 0
 
