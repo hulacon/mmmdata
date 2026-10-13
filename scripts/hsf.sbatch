@@ -25,8 +25,14 @@
 #   SPC (default):    sbatch --export=SUBJECT=sub-03 hsf.sbatch
 #   Oblique-coronal:  sbatch --export=SUBJECT=sub-03,T2W_ACQ=oblcor hsf.sbatch
 #   All 3 subjects:   sbatch --array=1-3 hsf.sbatch
+#   Another dataset:  --export=ALL,SUBJECT=sub-##,INPUT_BIDS=<bids>,DERIV_ROOT=<dir>,
+#                     T2W_ACQ=<acq>,ROILOC_CFG=default_t2iso|default_corot2
+#                     (input read from <bids>/sub-##/ses-01/anat/*acq-<acq>_T2w.nii.gz;
+#                     ROILOC_CFG defaults to default_corot2 for oblcor, else
+#                     default_t2iso)
 #
-# Output goes to: derivatives/hsf/ (SPC) or derivatives/hsf_oblcor/ (oblcor)
+# Output goes to: ${DERIV_ROOT}/hsf/ (SPC) or ${DERIV_ROOT}/hsf_<acq>/ (others);
+# DERIV_ROOT defaults to this dataset's derivatives/
 #==============================================================================
 
 echo "=========================================="
@@ -49,11 +55,15 @@ source "${REPO_ROOT}/.venv/bin/activate"
 # Load configuration from config files
 source "${REPO_ROOT}/scripts/load_config.sh"
 
+# Input dataset + derivative root: this dataset unless overridden
+INPUT_BIDS="${INPUT_BIDS:-${BIDS_DIR}}"
+DERIV_ROOT="${DERIV_ROOT:-${BIDS_DIR}/derivatives}"
+
 # --- Determine subject ---
 if [ -n "${SUBJECT}" ]; then
     SUB="${SUBJECT}"
 elif [ -n "${SLURM_ARRAY_TASK_ID}" ]; then
-    SUBJECTS=($(ls -d ${BIDS_DIR}/sub-* | xargs -n 1 basename | sort))
+    SUBJECTS=($(ls -d ${INPUT_BIDS}/sub-* | xargs -n 1 basename | sort))
     if [ ${SLURM_ARRAY_TASK_ID} -gt ${#SUBJECTS[@]} ]; then
         echo "ERROR: Array task ID ${SLURM_ARRAY_TASK_ID} exceeds number of subjects (${#SUBJECTS[@]})"
         exit 1
@@ -80,13 +90,14 @@ fi
 T2W_ACQ="${T2W_ACQ:-SPC}"
 
 # Input and roiloc config depend on acquisition
-INPUT_DIR="${BIDS_DIR}/${SUB}/ses-01/anat"
-if [ "${T2W_ACQ}" = "oblcor" ]; then
-    INPUT_PATTERN="*acq-oblcor_T2w.nii.gz"
-    ROILOC_CFG="default_corot2"
-else
-    INPUT_PATTERN="*acq-SPC_T2w.nii.gz"
-    ROILOC_CFG="default_t2iso"
+INPUT_DIR="${INPUT_BIDS}/${SUB}/ses-01/anat"
+INPUT_PATTERN="*acq-${T2W_ACQ}_T2w.nii.gz"
+if [ -z "${ROILOC_CFG}" ]; then
+    if [ "${T2W_ACQ}" = "oblcor" ]; then
+        ROILOC_CFG="default_corot2"
+    else
+        ROILOC_CFG="default_t2iso"
+    fi
 fi
 
 if ! ls ${INPUT_DIR}/${INPUT_PATTERN} 1>/dev/null 2>&1; then
@@ -96,9 +107,9 @@ fi
 
 # Output directory: separate dirs per T2w acquisition
 if [ "${T2W_ACQ}" = "SPC" ]; then
-    OUTPUT_DIR="${BIDS_DIR}/derivatives/hsf/${SUB}"
+    OUTPUT_DIR="${DERIV_ROOT}/hsf/${SUB}"
 else
-    OUTPUT_DIR="${BIDS_DIR}/derivatives/hsf_${T2W_ACQ}/${SUB}"
+    OUTPUT_DIR="${DERIV_ROOT}/hsf_${T2W_ACQ}/${SUB}"
 fi
 mkdir -p "${OUTPUT_DIR}"
 

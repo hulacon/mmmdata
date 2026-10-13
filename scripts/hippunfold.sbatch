@@ -22,8 +22,13 @@
 #   T2w acquisition:  --export=ALL,SUBJECT=sub-##,T2W_ACQ=oblcor   (default SPC)
 #   Version:          --export=ALL,SUBJECT=sub-##,HIPPUNFOLD_VERSION=2.2.0
 #                     (default 1.5.2; v2 needs more memory, see below)
+#   Another dataset:  --export=ALL,SUBJECT=sub-##,INPUT_BIDS=<bids>,DERIV_ROOT=<dir>,
+#                     T1W_FILTER="acquisition=<acq>"
+#                     (defaults: this dataset's BIDS root, its derivatives/, and
+#                     "acquisition=MPR run=01"; DERIV_ROOT must be outside any
+#                     other dataset's raw tree)
 #
-# Output goes to derivatives/hippunfold[_v<major>][_<acq>]/:
+# Output goes to ${DERIV_ROOT}/hippunfold[_v<major>][_<acq>]/:
 #   1.5.2 SPC    -> derivatives/hippunfold/
 #   1.5.2 oblcor -> derivatives/hippunfold_oblcor/
 #   2.x   SPC    -> derivatives/hippunfold_v2/
@@ -57,13 +62,18 @@ source "${REPO_ROOT}/.venv/bin/activate"
 # Load configuration from config files
 source "${REPO_ROOT}/scripts/load_config.sh"
 
+# Input dataset + derivative root: this dataset unless overridden
+INPUT_BIDS="${INPUT_BIDS:-${BIDS_DIR}}"
+DERIV_ROOT="${DERIV_ROOT:-${BIDS_DIR}/derivatives}"
+T1W_FILTER="${T1W_FILTER:-acquisition=MPR run=01}"
+
 # --- Determine subject ---
 if [ -n "${SUBJECT}" ]; then
     # Explicit subject passed via --export=SUBJECT=sub-XX
     SUB="${SUBJECT}"
 elif [ -n "${SLURM_ARRAY_TASK_ID}" ]; then
     # Array mode: map task ID to subject
-    SUBJECTS=($(ls -d ${BIDS_DIR}/sub-* | xargs -n 1 basename | sort))
+    SUBJECTS=($(ls -d ${INPUT_BIDS}/sub-* | xargs -n 1 basename | sort))
     if [ ${SLURM_ARRAY_TASK_ID} -gt ${#SUBJECTS[@]} ]; then
         echo "ERROR: Array task ID ${SLURM_ARRAY_TASK_ID} exceeds number of subjects (${#SUBJECTS[@]})"
         exit 1
@@ -123,15 +133,16 @@ T2W_ACQ="${T2W_ACQ:-SPC}"
 
 # Output directory: separate dirs per T2w acquisition for comparison
 if [ "${T2W_ACQ}" = "SPC" ]; then
-    OUTPUT_DIR="${BIDS_DIR}/derivatives/${TREE}"
+    OUTPUT_DIR="${DERIV_ROOT}/${TREE}"
 else
-    OUTPUT_DIR="${BIDS_DIR}/derivatives/${TREE}_${T2W_ACQ}"
+    OUTPUT_DIR="${DERIV_ROOT}/${TREE}_${T2W_ACQ}"
 fi
 mkdir -p "${OUTPUT_DIR}"
 
 # --- Run HippUnfold ---
 echo "Running HippUnfold ${HIPPUNFOLD_VERSION} with T1T2w model..."
-echo "  Input:  ${BIDS_DIR}"
+echo "  Input:  ${INPUT_BIDS}"
+echo "  T1w filter: ${T1W_FILTER}"
 echo "  Output: ${OUTPUT_DIR}"
 echo "  T2w acquisition: ${T2W_ACQ}"
 echo "  Container: ${CONTAINER}"
@@ -141,7 +152,7 @@ singularity run -e \
     --env HIPPUNFOLD_CACHE_DIR="${HIPPUNFOLD_CACHE_DIR}" \
     "${CONTAINER}" \
     "${ENTRY_CMD[@]}" \
-    "${BIDS_DIR}" \
+    "${INPUT_BIDS}" \
     "${OUTPUT_DIR}" \
     participant \
     --participant-label "${PARTICIPANT_LABEL}" \
@@ -149,7 +160,7 @@ singularity run -e \
     --force-nnunet-model T1T2w \
     --t1-reg-template \
     --output-spaces T1w \
-    --filter_T1w acquisition=MPR run=01 \
+    --filter_T1w ${T1W_FILTER} \
     --filter_T2w acquisition="${T2W_ACQ}" \
     --cores ${SLURM_CPUS_PER_TASK} \
     -p
