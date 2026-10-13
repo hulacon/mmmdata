@@ -54,6 +54,8 @@ def main(argv=None) -> None:
             dst = out / f"group_desc-{name}_stats.tsv"
             df.to_csv(dst, sep="\t", index=False, float_format="%.6g")
             print(f"{dst}: {len(df)} rows, {df['subject'].nunique()} subjects")
+        for fig in hc.group_figures(tables, out):
+            print(fig)
         return
 
     hc.ensure_dataset_description(out, provenance)

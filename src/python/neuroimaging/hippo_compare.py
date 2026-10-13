@@ -554,3 +554,79 @@ def collect(out_root: Path) -> dict[str, pd.DataFrame]:
             raise FileNotFoundError(f"no *_desc-{k}_stats.tsv under {out_root}")
         out[k] = pd.concat([pd.read_csv(f, sep="\t", dtype={"subject": str}) for f in files], ignore_index=True)
     return out
+
+
+#: Sequential ramp (one hue, light -> dark) for Dice matrices.
+DICE_RAMP = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
+
+
+def group_figures(tables: dict[str, pd.DataFrame], out_dir: Path, arms: Sequence[Arm] = ARMS) -> list[Path]:
+    """Median pairwise Dice per region (one figure per grid) and per-arm volumes, across every hemisphere."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
+
+    names = [a.name for a in arms]
+    ramp = LinearSegmentedColormap.from_list("dice", DICE_RAMP)
+    dice_df, vol = tables["dice"], tables["volumes"]
+    n_hemi = dice_df[["subject", "hemi"]].drop_duplicates().shape[0]
+    written = []
+    for grid in ("fine", "bold"):
+        d = dice_df[dice_df["grid"] == grid]
+        regions = list(REGIONS)
+        fig, axes = plt.subplots(1, len(regions), figsize=(3.3 * len(regions), 3.9))
+        for ax, r in zip(axes, regions):
+            these = [n for n in names if r not in SUBFIELDS or next(a for a in arms if a.name == n).has_subfields]
+            med = d[d["region"] == r].groupby(["arm_a", "arm_b"])["dice"].median()
+            # lower triangle without its empty first row / last column: rows these[1:], columns these[:-1]
+            rows, cols = these[1:], these[:-1]
+            m = np.full((len(rows), len(cols)), np.nan)
+            for i, a in enumerate(rows):
+                for j, b in enumerate(cols):
+                    if these.index(b) < these.index(a):
+                        m[i, j] = med.get((b, a), med.get((a, b), np.nan))
+            ax.imshow(np.ma.masked_invalid(m), cmap=ramp, vmin=0, vmax=1)
+            for i in range(len(rows)):
+                for j in range(len(cols)):
+                    if np.isfinite(m[i, j]):
+                        ax.text(j, i, f"{m[i, j]:.2f}"[1:] if m[i, j] < 1 else "1", ha="center", va="center",
+                                fontsize=8, color="#ffffff" if m[i, j] > 0.55 else "#1a1a19")
+            ax.set_xticks(range(len(cols)), cols, rotation=45, ha="right", fontsize=8)
+            ax.set_yticks(range(len(rows)), rows, fontsize=8)
+            ax.set_title(r, fontsize=10)
+            for s in ax.spines.values():
+                s.set_visible(False)
+        fig.suptitle(f"Median pairwise Dice, {grid} grid ({'0.3 mm' if grid == 'fine' else 'BOLD, plurality label'}), "
+                     f"{n_hemi} hemispheres; hipp = HippUnfold incl. SRLM", fontsize=10)
+        fig.tight_layout(rect=(0, 0, 1, 0.93))
+        p = Path(out_dir) / f"group_desc-dice{grid.capitalize()}_hippcompare.png"
+        fig.savefig(p, dpi=120, bbox_inches="tight")
+        plt.close(fig)
+        written.append(p)
+
+    regions = ["hipp", "hippNoSRLM", *SUBFIELDS]
+    fig, axes = plt.subplots(1, len(regions), figsize=(2.6 * len(regions), 3.4), sharey=False)
+    for ax, r in zip(axes, regions):
+        v = vol[vol["region"] == r]
+        shown = [n for n in names if (v["arm"] == n).any()]
+        for k, n in enumerate(shown):
+            y = v.loc[v["arm"] == n, "fine_mm3"].to_numpy()
+            if len(y):
+                x = k + np.linspace(-0.18, 0.18, len(y))
+                ax.scatter(x, y, s=14, color="#2a78d6", edgecolors="#ffffff", linewidths=0.6, zorder=3)
+                ax.plot([k - 0.3, k + 0.3], [np.median(y)] * 2, color="#1a1a19", lw=1.2, zorder=4)
+        ax.set_xticks(range(len(shown)), shown, rotation=45, ha="right", fontsize=8)
+        ax.set_title(r, fontsize=10)
+        ax.tick_params(axis="y", labelsize=8)
+        ax.grid(axis="y", color="#e4e3df", lw=0.6, zorder=0)
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+    axes[0].set_ylabel("mm³ (fine grid)", fontsize=8)
+    fig.suptitle(f"Volumes per arm, one dot per hemisphere ({n_hemi}), bar = median", fontsize=10)
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    p = Path(out_dir) / "group_desc-volumes_hippcompare.png"
+    fig.savefig(p, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    written.append(p)
+    return written
