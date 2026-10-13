@@ -20,6 +20,11 @@ Writes ``<stem>_runs.npz`` (per contrast: ``<name>_effect`` and ``<name>_varianc
 and ``affine``. That is the noise model itself, for consumers that need Σ rather than a
 contrast's variance (Part R's R-3).
 
+``--censor-fd MM`` censors volumes with framewise displacement above MM through braintwill's
+``retain``; ``--confounds [COL ...]`` replaces the regime's named confound columns (none when
+given bare: aCompCor, cosines and non-steady-state spikes stay). Both are recorded in the JSON,
+with each run's censored count. Default: the stand-in's design, unchanged.
+
 Usage (compute node — a T1w cell loads every run's BOLD):
     .venv/bin/python scripts/braintwill_glm/run_consistency.py --subject sub-## --model floc \\
         --sessions ses-## --out-dir /path/outside/this/repo
@@ -57,6 +62,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--regime", default="reference")
     p.add_argument("--noise", default="ar3-bc")
     p.add_argument("--save-phi", action="store_true", help="also write each run's fitted AR coefficients")
+    p.add_argument("--censor-fd", type=float, default=None, help="censor volumes with FD above this (mm)")
+    p.add_argument("--confounds", nargs="*", default=None,
+                   help="replace the regime's named confound columns (bare flag: none)")
     p.add_argument("--out-dir", type=Path, required=True)
     return p.parse_args(argv)
 
@@ -80,7 +88,8 @@ def main(argv=None) -> int:
     if missing:
         raise SystemExit(f"ERROR: stand-in runs not found now: {missing}")
     t0 = time.time()
-    cell = adapt(subject, args.model, space=args.space, regime=args.regime, runs=[found[w] for w in wanted])
+    cell = adapt(subject, args.model, space=args.space, regime=args.regime, runs=[found[w] for w in wanted],
+                 confounds=args.confounds, censor_fd=args.censor_fd)
     noise = parse_noise(args.noise)
     n_vox = int(cell.mask.sum())
     print(f"sub-{subject} {model.name} {args.space}: {len(cell.runs)} runs, {n_vox} mask voxels, {noise.name}")
@@ -101,12 +110,14 @@ def main(argv=None) -> int:
             per_contrast[name]["effect"].append(m.effect.astype(np.float32))
             per_contrast[name]["variance"].append(m.variance.astype(np.float32))
             per_contrast[name]["runs"].append(ar.run.entity_prefix)
-        rec = {"run": ar.run.entity_prefix, "n_scans": int(Y.shape[0]), "contrasts": sorted(ar.contrasts),
+        n_cens = 0 if ar.design.retain is None else int((~ar.design.retain).sum())
+        rec = {"run": ar.run.entity_prefix, "n_scans": int(Y.shape[0]), "n_censored": n_cens,
+               "contrasts": sorted(ar.contrasts),
                "ok_fraction": float(fit.ok.mean()), "masked": int(fit.masked_per_run()[0]),
                "phi_median": np.nanmedian(fit.fits[0].phi, axis=0).round(4).tolist(),
                "seconds": round(time.time() - t1, 1)}
         runs_out.append(rec)
-        print(f"  {ar.run.entity_prefix}: n {Y.shape[0]}, ok {rec['ok_fraction']:.4f} ({rec['masked']} masked), "
+        print(f"  {ar.run.entity_prefix}: n {Y.shape[0]} ({n_cens} censored), ok {rec['ok_fraction']:.4f} ({rec['masked']} masked), "
               f"{rec['seconds']:.0f} s")
         del Y
 
@@ -127,7 +138,8 @@ def main(argv=None) -> int:
                  mask_flat=np.flatnonzero(cell.mask.ravel()), mask_shape=np.array(cell.mask.shape),
                  affine=cell.mask_img.affine)
     record = {"subject": subject, "model": model.name, "space": args.space, "sessions": sessions,
-              "noise": noise.name, "stand_in_desc": args.desc, "stand_in_metadata_runs": wanted,
+              "noise": noise.name, "censor_fd": args.censor_fd, "confounds_override": args.confounds,
+              "stand_in_desc": args.desc, "stand_in_metadata_runs": wanted,
               "mask_voxels": n_vox, "config": cell.cfg.to_dict(),
               "runs_per_contrast": {k: len(v["runs"]) for k, v in per_contrast.items()},
               "runs": runs_out, "seconds": round(time.time() - t0, 1)}

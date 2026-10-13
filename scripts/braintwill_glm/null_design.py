@@ -24,6 +24,10 @@ pass/fail reading is not here: it belongs to the record that pre-registered it.
 the noise fit was masked) to ``DIR``: the rest-run null for Part R's between-run consistency
 test (R-2). The draws are seeded per run, so the designs and fits are the same as without it.
 
+``--censor-fd`` and ``--confounds`` are as in ``run_consistency.py`` (FD censoring through
+braintwill's ``retain``; replacing the regime's named confound columns). The draws stay seeded
+per run, so an arm differs from the default only in its nuisance and censoring.
+
 ``--draws 1 --runs <one per subject>`` is the pre-registered feasibility check's resting half.
 
 Usage (compute node):
@@ -45,14 +49,13 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from adapter import coefficient_axis, config_bids_root, load_scaled, split_design  # noqa: E402
+from adapter import censor_retain, coefficient_axis, config_bids_root, load_scaled, regime_config, split_design  # noqa: E402
 
 from braintwill import NoiseModel, RunBlockGLM  # noqa: E402
 
 from neuroimaging.glm.config import repetition_time  # noqa: E402
 from neuroimaging.glm.design import build_design_matrix  # noqa: E402
 from neuroimaging.glm.models import StatsModel  # noqa: E402
-from neuroimaging.glm.reference import reference_config  # noqa: E402
 from neuroimaging.io import find_fmriprep_runs, load_confounds, mask_intersection  # noqa: E402
 
 DESIGNS = {
@@ -102,6 +105,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--alpha", type=float, default=0.05)
     p.add_argument("--space", default="T1w")
     p.add_argument("--regime", default="reference")
+    p.add_argument("--censor-fd", type=float, default=None, help="censor volumes with FD above this (mm)")
+    p.add_argument("--confounds", nargs="*", default=None,
+                   help="replace the regime's named confound columns (bare flag: none)")
     p.add_argument("--list", action="store_true", help="print the run list and mask size, fit nothing")
     p.add_argument("--out-dir", type=Path, required=True)
     p.add_argument("--save-maps", type=Path, default=None,
@@ -122,7 +128,7 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     subject = args.subject.removeprefix("sub-")
     bids_root = config_bids_root()
-    cfg = dataclasses.replace(reference_config(args.regime), space=args.space, hrf_model="spm")
+    cfg = dataclasses.replace(regime_config(args.regime, args.confounds), space=args.space, hrf_model="spm")
     runs = []
     for task in args.task:
         runs += sorted(find_fmriprep_runs(subject=subject, task=task, variant=cfg.variant, space=args.space,
@@ -144,12 +150,15 @@ def main(argv=None) -> int:
     Y = load_scaled(run.bold, mask_img)
     n_scans, t_r = Y.shape[0], repetition_time(run, bids_root)
     confounds = load_confounds(run)
+    retain = None if args.censor_fd is None else censor_retain(confounds, args.censor_fd)
     t_load = time.time() - t0
     out_dir = args.out_dir / f"sub-{subject}"
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = f"sub-{subject}_{run.entity_prefix.split('_', 1)[1]}_noise-{noise.name}"
     record = {"subject": subject, "run": run.entity_prefix, "run_index": args.run_index, "n_scans": n_scans,
               "t_r": t_r, "mask_voxels": int(mask.sum()), "noise": noise.name, "alpha": args.alpha,
+              "censor_fd": args.censor_fd, "n_censored": 0 if retain is None else int((~retain).sum()),
+              "confounds_override": args.confounds,
               "seed": [args.seed, int(subject), args.run_index], "load_s": round(t_load, 1), "draws": []}
     hits, maps = {}, {}
     for d in range(args.draws):
@@ -158,7 +167,7 @@ def main(argv=None) -> int:
             events = fake_events(kind, n_scans, t_r, rng)
             dm = build_design_matrix(events, confounds, t_r, n_scans, model, cfg, strict=True)
             axis = coefficient_axis(model, cfg)
-            design = split_design(dm, model.conditions)
+            design = split_design(dm, model.conditions, retain)
             t1 = time.time()
             fit = RunBlockGLM(axis, [design], noise=noise).fit([Y])
             entry = {"draw": d, "design": kind, "n_events": int(len(events)), "ok_fraction": float(fit.ok.mean()),

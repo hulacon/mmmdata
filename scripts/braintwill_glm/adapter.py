@@ -121,15 +121,37 @@ def coefficient_axis(model: StatsModel, cfg: GlmConfig) -> CoefficientAxis:
     )
 
 
-def split_design(dm: pd.DataFrame, conditions: Sequence[str]) -> RunDesign:
-    """Condition columns → task ``S`` (zero where the run lacks one); the rest → nuisance."""
+def split_design(dm: pd.DataFrame, conditions: Sequence[str], retain: Optional[np.ndarray] = None) -> RunDesign:
+    """Condition columns → task ``S`` (zero where the run lacks one); the rest → nuisance.
+    ``retain`` (bool per sample) censors the samples it marks False."""
     n = len(dm)
     S = np.zeros((n, len(conditions)))
     for j, cond in enumerate(conditions):
         if cond in dm.columns:
             S[:, j] = dm[cond].to_numpy(dtype=float)
     nuisance = [c for c in dm.columns if c not in set(conditions)]
-    return RunDesign(S=S, N=dm[nuisance].to_numpy(dtype=float), nuisance=tuple(nuisance))
+    return RunDesign(S=S, N=dm[nuisance].to_numpy(dtype=float), nuisance=tuple(nuisance), retain=retain)
+
+
+FD_COLUMN = "framewise_displacement"
+
+
+def censor_retain(confounds: pd.DataFrame, fd_max: float) -> np.ndarray:
+    """Samples to retain when censoring volumes with framewise displacement above ``fd_max``
+    (mm). fMRIPrep leaves FD undefined for the first volume; it has no predecessor to move
+    from, so it is retained."""
+    if FD_COLUMN not in confounds.columns:
+        raise KeyError(f"confounds have no {FD_COLUMN!r} column; cannot censor on FD")
+    fd = confounds[FD_COLUMN].to_numpy(dtype=float)
+    return ~(np.nan_to_num(fd, nan=0.0) > fd_max)
+
+
+def regime_config(regime: str = "reference", confounds: Optional[Sequence[str]] = None) -> GlmConfig:
+    """``reference_config(regime)``, with its named confound columns replaced when
+    ``confounds`` is given (aCompCor, cosines and non-steady-state spikes are separate
+    config fields and stay). The fit's recorded config shows the replacement."""
+    over = {} if confounds is None else {"confounds": tuple(confounds)}
+    return reference_config(regime, **over)
 
 
 def load_scaled(bold: Path, mask_img: Any) -> np.ndarray:
@@ -143,16 +165,19 @@ def load_scaled(bold: Path, mask_img: Any) -> np.ndarray:
 
 def adapt(subject: str, model_name: str, *, space: str = "T1w", sessions: Optional[Sequence[str]] = None,
           regime: str = "reference", bids_root: Optional[Path] = None,
-          runs: Optional[Sequence[FmriprepRun]] = None) -> AdaptedCell:
+          runs: Optional[Sequence[FmriprepRun]] = None, confounds: Optional[Sequence[str]] = None,
+          censor_fd: Optional[float] = None) -> AdaptedCell:
     """Every run of one subject × model (optionally restricted to ``sessions``), as the
     stand-in selected and designed them. ``runs`` overrides discovery (e.g. a stand-in's
-    recorded run list)."""
+    recorded run list). ``confounds`` replaces the regime's named confound columns
+    (:func:`regime_config`); ``censor_fd`` censors volumes whose FD exceeds it (mm), through
+    braintwill's ``retain`` (:func:`censor_retain`). Both default to the stand-in's design."""
     import nibabel as nib
 
     if bids_root is None:
         bids_root = config_bids_root()
     model = load_model(model_name)
-    cfg = dataclasses.replace(reference_config(regime), space=space, hrf_model=model.hrf_model)
+    cfg = dataclasses.replace(regime_config(regime, confounds), space=space, hrf_model=model.hrf_model)
     subject = subject.removeprefix("sub-")
     if runs is None:
         found = find_fmriprep_runs(subject=subject, task=model.task, variant=cfg.variant, space=space,
@@ -175,12 +200,14 @@ def adapt(subject: str, model_name: str, *, space: str = "T1w", sessions: Option
     for run, events in zip(runs, all_events):
         t_r = repetition_time(run, bids_root)
         n_scans = nib.load(str(run.bold)).shape[-1]
-        dm = build_design_matrix(events, load_confounds(run), t_r, n_scans, model, cfg,
-                                 strict=strict_for(model))
+        conf = load_confounds(run)
+        dm = build_design_matrix(events, conf, t_r, n_scans, model, cfg, strict=strict_for(model))
         vectors, _ = available_contrast_vectors(model, list(dm.columns))
         on_axis = {name: _on_axis(vec, list(dm.columns), model.conditions) for name, vec in vectors.items()}
         adapted.append(AdaptedRun(run=run, t_r=t_r, design_matrix=dm,
-                                  design=split_design(dm, model.conditions), contrasts=on_axis))
+                                  design=split_design(dm, model.conditions,
+                                                      None if censor_fd is None else censor_retain(conf, censor_fd)),
+                                  contrasts=on_axis))
     return AdaptedCell(subject=subject, model=model, cfg=cfg, axis=axis, runs=adapted,
                        mask_img=mask_img, mask=mask)
 
