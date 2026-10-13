@@ -16,6 +16,7 @@
 #   One subject:   sbatch --export=ALL,SUB=##,PPDATA=<nsddata/ppdata>,EVAL_ROOT=<dir> score_hippo_nsd.sbatch
 #   Array:         sbatch --array=0-7 --export=ALL,SUBS="01 02 ... 08",PPDATA=...,EVAL_ROOT=... score_hippo_nsd.sbatch
 #   Group tables:  sbatch --export=ALL,GROUP=1,EVAL_ROOT=<dir> score_hippo_nsd.sbatch
+# Optional ARMS="U1iso U2iso ..." scores a subset of arms.
 #
 # Modules load BEFORE the venv: a later `module load` replaces `python`.
 #==============================================================================
@@ -42,5 +43,5 @@ git -C "${REPO_ROOT}" status --short src/python/neuroimaging/hippo_nsd.py src/py
     scripts/score_hippo_nsd.py | sed 's/^/  dirty: /'
 
 python "${REPO_ROOT}/scripts/score_hippo_nsd.py" "${WHO[@]}" --eval-root "${EVAL_ROOT:?set EVAL_ROOT}" \
-    --jobs "${SLURM_CPUS_PER_TASK}"
+    --jobs "${SLURM_CPUS_PER_TASK}" ${ARMS:+--arms ${ARMS}}
 echo "Done $(date)"

@@ -40,6 +40,8 @@ def main(argv=None) -> None:
     ap.add_argument("--eval-root", type=Path, required=True, help="holds derivatives/<arm trees>; scores/ is written here")
     ap.add_argument("--ppdata", type=Path, help="NSD nsddata/ppdata (required with --sub)")
     ap.add_argument("--jobs", type=int, default=1, help="registrations/resamplings in parallel")
+    ap.add_argument("--arms", nargs="+", choices=[a.name for a in hn.ARMS],
+                    help="score only these arms (default: all)")
     args = ap.parse_args(argv)
 
     out = args.eval_root / "scores"
@@ -54,8 +56,9 @@ def main(argv=None) -> None:
         ap.error("--sub needs --ppdata")
     provenance = {"code_version": dq.code_version(REPO_ROOT)}
     t0 = time.time()
-    hn.build_subject(out, args.eval_root / "derivatives", args.ppdata, args.sub, provenance, n_jobs=args.jobs,
-                     log=lambda m: print(m, flush=True))
+    arms = [a for a in hn.ARMS if not args.arms or a.name in args.arms]
+    hn.build_subject(out, args.eval_root / "derivatives", args.ppdata, args.sub, provenance, arms=arms,
+                     n_jobs=args.jobs, log=lambda m: print(m, flush=True))
     print(f"sub-{args.sub}: {time.time() - t0:.0f} s", flush=True)
 
 
