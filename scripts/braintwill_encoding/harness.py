@@ -26,6 +26,14 @@ Registers:
           a whole triplet for triplet mates (enCon 3), because TYPED leaks ~28 % of each
           neighbour into a beta and a leaked neighbour must not sit across a fold. Features
           are per image (one-frame stimuli): shared1000 EBind, or psytwill-space V + VL.
+  tb-enc-ts  each subject's cleaned TBencoding time series (ses-04–18) on the films' grid,
+          FIR delays and α grid, so TB and NAT are fitted the same way. Each run loses its
+          first 7 volumes (their delay spans start before the run) and is z-scored per column;
+          groups are sessions (repeats and triplet mates cross runs, not sessions). Features
+          come from the run's composed tables under ``stimuli_features/tb/`` (run time,
+          0.5 s grid): an ``onoff`` band (visual-on, audio-on, from the tables' NaN pattern)
+          in every fit, then each band as a modulator — the feature minus its mean over the
+          run's on-bins, times on, so off-bins are 0 by design.
 
 Feature sets: for films, the per-stimulus caches ``functional_space/encoding.py cache``
 writes (``<derivatives>/functional_space/features/<space>/``), only the register's films;
@@ -47,6 +55,7 @@ Usage:
     python harness.py plan --space ebind --sub ##
     python harness.py score --space psytwill --sub ## --backend torch_cuda
     python harness.py score --register tb-enc --space psytwill --sub ##
+    python harness.py plan --register tb-enc-ts --space ebind --sub ##
     python harness.py equivalence --space ebind --scenario primary --pct 0 --draw 0 --target ##
 """
 
@@ -408,6 +417,178 @@ def tb_register(derivatives: Path, subs=fm.SUBJECTS) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# the tb-enc-ts register
+# ---------------------------------------------------------------------------
+
+TB_TS_TASK = "TBencoding"
+#: Leading volumes dropped from every TB run: the longest delay's span of volume ``i`` starts
+#: at ``(i - 7) * TR``, so the first 7 volumes have spans before the run started.
+TB_TS_DROP = max(fs_enc.DELAYS_TR)
+#: The on/off band's streams: each column is "this stream has a value in the bin", read from
+#: the run's composed generic table (any model defined), so every feature space gets the same
+#: on/off band.
+TB_TS_ON = {"visual": "movies_frames", "audio": "movies_audio_frames"}
+#: Feature spaces for tb-enc-ts: band -> (composed table, model). A band's stream (and so the
+#: on column it is modulated by) is the table's: ``audio`` in the name means audio.
+TB_TS_SPACES = {
+    "ebind": {"ebind": ("movies_frames", "ebind")},
+    "psytwill": {"V": ("movies_psytwill_space_frames", "pspace_v"),
+                 "A": ("movies_psytwill_space_audio_frames", "pspace_a"),
+                 "VL": ("movies_psytwill_space_frames", "pspace_vl")},
+}
+
+
+def table_stream(table: str) -> str:
+    return "audio" if "audio" in table else "visual"
+
+
+def tb_ts_runs(manifest: pd.DataFrame, sub: str) -> pd.DataFrame:
+    """The subject's cleaned TBencoding runs in (session, run) order; held-out sessions refused."""
+    m = manifest[(manifest["sub"] == sub) & (manifest["task"] == TB_TS_TASK)].copy()
+    if m.empty:
+        raise RuntimeError(f"sub-{sub}: no cleaned {TB_TS_TASK} runs in the manifest")
+    if m["ses"].isin(fm.HELDOUT_SESSIONS).any() or not m["ses"].isin(TB_SESSIONS).all():
+        raise RuntimeError(f"sub-{sub}: {TB_TS_TASK} runs outside the trial-based sessions: "
+                           f"{sorted(set(m['ses']) - set(TB_SESSIONS))}")
+    if m.duplicated(["ses", "run"]).any():
+        raise RuntimeError(f"sub-{sub}: a (session, run) appears twice in the manifest")
+    bad = m[m["n_nss"].astype(int) >= TB_TS_DROP]
+    if len(bad):
+        raise RuntimeError(f"sub-{sub}: runs with >= {TB_TS_DROP} non-steady-state volumes: {list(bad['path'])}")
+    m["stem"] = m["path"].map(lambda p: Path(p).name.split("_space-")[0])
+    return m.sort_values(["ses", "run"]).reset_index(drop=True)
+
+
+def grid_wide(long: pd.DataFrame, model: str, stamp: str, n_bins: int) -> pd.DataFrame:
+    """One model's ``(n_bins, n_features)`` table on bin starts ``0, FRAME_S, …``; undefined = NaN."""
+    d = long[long["model"] == model]
+    if d.empty:
+        raise KeyError(f"no rows for model {model!r}")
+    start = d["time"].to_numpy(dtype=float) - (fs_enc.FRAME_S / 2 if stamp == "center" else 0.0)
+    b = np.rint(start / fs_enc.FRAME_S).astype(int)
+    if np.abs(b * fs_enc.FRAME_S - start).max() > 1e-6 or b.min() < 0 or b.max() >= n_bins:
+        raise RuntimeError(f"{model}: times are not on the {fs_enc.FRAME_S} s grid of {n_bins} bins")
+    w = d.assign(bin=b).pivot(index="bin", columns="feature", values="value")
+    return w.reindex(index=range(n_bins), columns=sorted(w.columns))
+
+
+def stream_on(long: pd.DataFrame, stamp: str, n_bins: int) -> np.ndarray:
+    """Bins where any model of the table has a value."""
+    start = long["time"].to_numpy(dtype=float) - (fs_enc.FRAME_S / 2 if stamp == "center" else 0.0)
+    b = np.rint(start / fs_enc.FRAME_S).astype(int)
+    on = np.zeros(n_bins, bool)
+    on[b[long["value"].notna().to_numpy()]] = True
+    return on
+
+
+def modulators(f: np.ndarray, on: np.ndarray, name: str = "") -> np.ndarray:
+    """``(f - mean of f over on-bins) * on``: centred within the run, 0 where the stream is off.
+
+    The 0 is the design, not a fill (tb-nat-encoding DECIDED 2026-10-13): off-bins are outside
+    the feature space and would be dropped but for the delays. A value present while the
+    stream is off is an error; an undefined value at an on-bin stays undefined.
+    """
+    f = np.asarray(f, dtype=np.float64)
+    if np.isfinite(f[~on]).any():
+        raise RuntimeError(f"{name}: defined values in bins where its stream is off")
+    if not on.any():
+        raise RuntimeError(f"{name}: the stream is never on")
+    with np.errstate(invalid="ignore"):
+        mean = np.nanmean(f[on], axis=0)
+    if np.isnan(mean).any():
+        raise RuntimeError(f"{name}: {int(np.isnan(mean).sum())} features undefined at every on-bin")
+    out = np.zeros_like(f)
+    out[on] = f[on] - mean
+    return out
+
+
+def run_features(stem: str, tables: dict[str, tuple[pd.DataFrame, str]], space: str,
+                 n_bins: int) -> FrameFeatures:
+    """One TB run as one frame stimulus: band ``onoff`` (visual-on, audio-on), then the space's
+    bands as centred modulators of their stream's on column.
+
+    ``tables`` maps a composed table name to ``(long rows, stamp)``.
+    """
+    on = {s: stream_on(*tables[t], n_bins) for s, t in TB_TS_ON.items()}
+    blocks = [np.stack([on[s] for s in TB_TS_ON], axis=1).astype(np.float64)]
+    bands, at = {"onoff": slice(0, len(TB_TS_ON))}, len(TB_TS_ON)
+    for band, (table, model) in TB_TS_SPACES[space].items():
+        long, stamp = tables[table]
+        w = grid_wide(long, model, stamp, n_bins).to_numpy()
+        blocks.append(modulators(w, on[table_stream(table)], f"{stem} {band}"))
+        bands[band] = slice(at, at + w.shape[1])
+        at += w.shape[1]
+    return FrameFeatures(stem, np.arange(n_bins) * fs_enc.FRAME_S, np.concatenate(blocks, axis=1),
+                         fs_enc.FRAME_S, bands)
+
+
+def tb_run_dir(stimfeat: Path, sub: str, ses: str, stem: str) -> Path:
+    return Path(stimfeat) / "tb" / f"sub-{sub}" / f"ses-{ses}" / stem / "features"
+
+
+def load_run_features(stimfeat: Path, run, space: str, n_bins: int) -> FrameFeatures:
+    """Read a run's composed tables (only the models the space and the on/off band need)."""
+    d = tb_run_dir(stimfeat, run.sub, run.ses, run.stem)
+    need = {t: None for t in TB_TS_ON.values()}
+    for table, model in TB_TS_SPACES[space].values():
+        if table not in TB_TS_ON.values():
+            need[table] = need.get(table) or set()
+            need[table].add(model)
+    tables = {}
+    for table, models in need.items():
+        meta = json.loads((d / f"{table}_features.meta.json").read_text())
+        if abs(float(meta["grid"]["window"]) - fs_enc.FRAME_S) > 1e-9:
+            raise RuntimeError(f"{d / table}: grid window {meta['grid']['window']} is not {fs_enc.FRAME_S}")
+        cols = ["time", "model", "feature", "value"]
+        long = pd.read_parquet(d / f"{table}_features.parquet", columns=cols,
+                               filters=None if models is None else [("model", "in", sorted(models))])
+        tables[table] = (long, meta["grid"]["stamp"])
+    return run_features(run.stem, tables, space, n_bins)
+
+
+def tb_ts_design(runs: pd.DataFrame, feats: dict[str, FrameFeatures], cleaned: Path):
+    """FIR design over each run minus its first ``TB_TS_DROP`` volumes, responses z-scored per
+    run, groups = session; rows in run order."""
+    xs, ys, groups, bands = [], [], [], None
+    for r in runs.itertuples(index=False):
+        tr = float(r.RepetitionTime)
+        n_vol = int(r.n_vol)
+        starts = np.arange(TB_TS_DROP, n_vol) * tr
+        x, bands = fir_design(feats[r.stem], starts, tr, fs_enc.DELAYS_TR, end=n_vol * tr)
+        y = go.load_run(Path(cleaned) / r.path, cleaned).data[TB_TS_DROP:]
+        if np.isnan(y).all(axis=1).any():
+            raise RuntimeError(f"{r.stem}: a non-steady-state row survives the drop")
+        with np.errstate(invalid="ignore", divide="ignore"):
+            y = (y - y.mean(0)) / y.std(0)
+        xs.append(x)
+        ys.append(y.astype(np.float32))
+        groups += [f"ses-{r.ses}"] * len(starts)
+    return np.concatenate(xs), np.concatenate(ys), np.array(groups), bands
+
+
+def tb_ts_register(manifest: pd.DataFrame, cleaned: Path) -> dict:
+    """What fixes tb-enc-ts's responses, hashed over every subject's TBencoding manifest rows."""
+    m = manifest[manifest["task"] == TB_TS_TASK].sort_values("path")
+    trs = sorted(set(m["RepetitionTime"].astype(float)))
+    if len(trs) != 1:
+        raise RuntimeError(f"{TB_TS_TASK} runs have several TRs {trs}")
+    cols = ["path", "n_vol", "n_nss", "regime", "regime_version", "code_version", "created"]
+    n_columns = len(pd.read_csv(go.grayordinates_path(cleaned), sep="\t"))
+    return {
+        "name": "tb-enc-ts", "design": "fir", "tr": trs[0], "frame_s": fs_enc.FRAME_S,
+        "delays_tr": list(fs_enc.DELAYS_TR), "groups": "session", "drop_leading_volumes": TB_TS_DROP,
+        "onoff": {"band": "onoff", "columns": list(TB_TS_ON), "source": "composed table NaN pattern"},
+        "modulators": "feature minus its mean over the run's on-bins of its stream, times on",
+        "responses": {"tree": str(Path(cleaned).name), "columns": "grayordinates", "n_columns": n_columns,
+                      "standardize": "z-score per run after the drop",
+                      "manifest_sha256": hashlib.sha256(m[cols].to_csv(index=False).encode()).hexdigest(),
+                      "n_series": int(len(m)), "regime_versions": sorted(set(m["regime_version"])),
+                      "code_versions": sorted(set(m["code_version"]))},
+        "sessions": list(TB_SESSIONS), "heldout_sessions_excluded": list(fm.HELDOUT_SESSIONS),
+    }
+
+
+# ---------------------------------------------------------------------------
 # requests: one register, one feature set, one subject
 # ---------------------------------------------------------------------------
 
@@ -428,6 +609,23 @@ class Request:
             self.feats = {f.stimulus_id: f for f in feats}
             self.register = film_register(windows, paths.cleaned, list(self.rows["stimulus_id"]))
             self.label = _label(paths, args.space)
+        elif args.register == "tb-enc-ts":
+            if getattr(args, "films", None):
+                raise SystemExit("--films applies to the films register only")
+            if args.space not in TB_TS_SPACES:
+                raise SystemExit(f"tb-enc-ts spaces: {sorted(TB_TS_SPACES)}")
+            manifest = pd.read_csv(Path(paths.cleaned) / "manifest.tsv", sep="\t", dtype=str)
+            self.runs = tb_ts_runs(manifest, args.sub)
+            n_bins = {int(round(int(r.n_vol) * float(r.RepetitionTime) / fs_enc.FRAME_S))
+                      for r in self.runs.itertuples(index=False)}
+            if len(n_bins) != 1:
+                raise RuntimeError(f"sub-{args.sub}: runs of different lengths {sorted(n_bins)}")
+            (n,) = n_bins
+            self.feats = {r.stem: load_run_features(paths.stimfeat, r, args.space, n)
+                          for r in self.runs.itertuples(index=False)}
+            self.register = tb_ts_register(manifest, paths.cleaned)
+            self.label = {"space": args.space, "source": str(paths.stimfeat / "tb"),
+                          "bands": {b: list(v) for b, v in TB_TS_SPACES[args.space].items()}}
         else:
             if getattr(args, "films", None):
                 raise SystemExit("--films applies to the films register only")
@@ -448,6 +646,8 @@ class Request:
     def design(self):
         if self.register_name == "films":
             return film_design(self.rows, self.feats, self.paths.cleaned)
+        if self.register_name == "tb-enc-ts":
+            return tb_ts_design(self.runs, self.feats, self.paths.cleaned)
         table = pd.read_csv(go.grayordinates_path(self.paths.cleaned), sep="\t")
         rows, y = tb_rows(self.trials, tb_betas(self.paths.derivatives, self.sub, self.trials, table))
         x, bands = item_design(self.feats, rows["stimulus_id"])
@@ -455,11 +655,14 @@ class Request:
 
     def summary(self) -> dict:
         first = next(iter(self.feats.values()))
-        width = len(fs_enc.DELAYS_TR) if self.register_name == "films" else 1
+        width = 1 if self.register_name == "tb-enc" else len(fs_enc.DELAYS_TR)
         out = {"register": self.register_name, "sub": self.sub,
                "bands": {b: (sl.stop - sl.start) * width for b, sl in first.bands.items()}}
         if self.register_name == "films":
             out.update(films=len(self.rows), volumes=int(self.rows["n"].sum()))
+        elif self.register_name == "tb-enc-ts":
+            out.update(runs=len(self.runs), sessions=int(self.runs["ses"].nunique()),
+                       volumes=int((self.runs["n_vol"].astype(int) - TB_TS_DROP).sum()))
         else:
             out.update(trials=len(self.trials), images=len(self.feats))
         return out
@@ -577,8 +780,9 @@ def main() -> None:
     sub = ap.add_subparsers(dest="verb", required=True)
     for name in ("plan", "score"):
         p = sub.add_parser(name)
-        p.add_argument("--register", choices=("films", "tb-enc"), default="films")
-        p.add_argument("--space", choices=sorted(set(fs_enc.FEATURE_SPACES) | set(TB_SPACES)), required=True)
+        p.add_argument("--register", choices=("films", "tb-enc", "tb-enc-ts"), default="films")
+        p.add_argument("--space", choices=sorted(set(fs_enc.FEATURE_SPACES) | set(TB_SPACES) | set(TB_TS_SPACES)),
+                       required=True)
         p.add_argument("--sub", required=True)
         p.add_argument("--films", help="comma-separated subset of the alignment pool (default: all of it)")
         p.add_argument("--solver", choices=("random_search", "hyper_gradient"), default="random_search")

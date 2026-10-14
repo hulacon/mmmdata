@@ -168,3 +168,93 @@ def test_tb_rows_refuse_a_broken_triplet(harness):
     t.loc[t["stimulus_id"] == "t34", "pairId"] = 4.0  # third mate now falls in the next triplet slot
     with pytest.raises(RuntimeError, match="triplet groups"):
         harness.tb_rows(t, np.zeros((len(t), 2), np.float32))
+
+
+# ---------------------------------------------------------------------------
+# tb-enc-ts: on/off band, modulators, run selection
+# ---------------------------------------------------------------------------
+
+def _long(times, model, values):
+    """Composed-table rows: one row per (time, feature); ``values`` is (n_times, n_features)."""
+    rows = []
+    for t, v in zip(times, values):
+        for j, x in enumerate(v):
+            rows.append({"time": t, "model": model, "feature": f"{model}_{j:03d}", "value": x})
+    return pd.DataFrame(rows)
+
+
+def test_modulators_centre_over_on_bins_and_zero_the_rest(harness):
+    import numpy as np
+
+    on = np.array([False, True, True, True, False])
+    f = np.array([[np.nan], [1.0], [2.0], [6.0], [np.nan]])
+    out = harness.modulators(f, on)
+    np.testing.assert_allclose(out[:, 0], [0, -2, -1, 3, 0])
+    f[2, 0] = np.nan  # undefined at an on-bin stays undefined, and leaves the mean
+    out = harness.modulators(f, on)
+    assert out[0, 0] == 0 and np.isnan(out[2, 0])
+    np.testing.assert_allclose(out[[1, 3], 0], [-2.5, 2.5])
+
+
+def test_modulators_refuse_a_value_where_the_stream_is_off(harness):
+    import numpy as np
+
+    with pytest.raises(RuntimeError, match="stream is off"):
+        harness.modulators(np.array([[1.0], [2.0]]), np.array([False, True]))
+
+
+def test_run_features_build_onoff_then_modulators(harness):
+    import numpy as np
+
+    n = 8
+    vis_t = np.arange(n) * 0.5
+    vis = np.full((n, 2), np.nan)
+    vis[2:6] = [[1, 0], [3, 0], [1, 4], [3, 4]]
+    aud_t = np.arange(n) * 0.5 + 0.25  # the generic audio table stamps bin centres
+    aud = np.full((n, 1), np.nan)
+    aud[3] = 7.0
+    tables = {"movies_frames": (_long(vis_t, "ebind", vis), "start"),
+              "movies_audio_frames": (_long(aud_t, "clap", aud), "center")}
+    f = harness.run_features("run-x", tables, "ebind", n)
+    assert list(f.bands) == ["onoff", "ebind"]
+    np.testing.assert_array_equal(f.x[:, 0], [0, 0, 1, 1, 1, 1, 0, 0])  # visual-on
+    np.testing.assert_array_equal(f.x[:, 1], [0, 0, 0, 1, 0, 0, 0, 0])  # audio-on, centre shifted to bin 3
+    np.testing.assert_allclose(f.x[2:6, 2:], [[-1, -2], [1, -2], [-1, 2], [1, 2]])
+    assert not f.x[[0, 1, 6, 7], 2:].any()
+
+
+def _manifest(rows):
+    base = {"sub": "01", "task": "TBencoding", "n_vol": "210", "n_nss": "0", "RepetitionTime": "1.5"}
+    return pd.DataFrame([{**base, **r, "path": f"sub-01/ses-{r['ses']}/func/sub-01_ses-{r['ses']}_task-TBencoding"
+                                              f"_run-{r['run']}_space-fsaverage6_desc-reference_bold.dtseries.nii"}
+                         for r in rows])
+
+
+def test_tb_ts_runs_sort_and_strip_the_stem(harness):
+    m = _manifest([{"ses": "05", "run": "01"}, {"ses": "04", "run": "02"}, {"ses": "04", "run": "01"}])
+    r = harness.tb_ts_runs(m, "01")
+    assert list(zip(r["ses"], r["run"])) == [("04", "01"), ("04", "02"), ("05", "01")]
+    assert r["stem"].iloc[0] == "sub-01_ses-04_task-TBencoding_run-01"
+
+
+def test_tb_ts_runs_refuse_a_heldout_session(harness):
+    held = harness.fm.HELDOUT_SESSIONS[0]
+    with pytest.raises(RuntimeError, match="outside the trial-based sessions"):
+        harness.tb_ts_runs(_manifest([{"ses": "04", "run": "01"}, {"ses": held, "run": "01"}]), "01")
+
+
+def test_tb_ts_runs_refuse_too_many_nonsteady_volumes(harness):
+    m = _manifest([{"ses": "04", "run": "01", "n_nss": str(harness.TB_TS_DROP)}])
+    with pytest.raises(RuntimeError, match="non-steady-state"):
+        harness.tb_ts_runs(m, "01")
+
+
+def test_the_drop_is_the_first_volume_whose_delays_all_land_in_the_run(harness):
+    import numpy as np
+    from braintwill.encoding import fir_design
+
+    n, tr = 60, 1.5  # 30 s of 0.5 s bins
+    f = harness.FrameFeatures("run-x", np.arange(n) * 0.5, np.ones((n, 1)), 0.5)
+    fir_design(f, np.arange(harness.TB_TS_DROP, 20) * tr, tr, harness.fs_enc.DELAYS_TR, end=n * 0.5)
+    with pytest.raises(Exception, match="no frames"):
+        fir_design(f, np.arange(harness.TB_TS_DROP - 1, 20) * tr, tr, harness.fs_enc.DELAYS_TR, end=n * 0.5)
