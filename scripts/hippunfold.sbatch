@@ -27,6 +27,9 @@
 #                     (defaults: this dataset's BIDS root, its derivatives/, and
 #                     "acquisition=MPR run=01"; DERIV_ROOT must be outside any
 #                     other dataset's raw tree)
+#   Resume a killed run: --export=ALL,SUBJECT=sub-##,EXTRA_ARGS="--rerun-incomplete"
+#                     (after clearing the tree's stale .snakemake/locks; extra
+#                     args are passed through to Snakemake)
 #
 # Output goes to ${DERIV_ROOT}/hippunfold[_v<major>][_<acq>]/:
 #   1.5.2 SPC    -> derivatives/hippunfold/
@@ -66,6 +69,7 @@ source "${REPO_ROOT}/scripts/load_config.sh"
 INPUT_BIDS="${INPUT_BIDS:-${BIDS_DIR}}"
 DERIV_ROOT="${DERIV_ROOT:-${BIDS_DIR}/derivatives}"
 T1W_FILTER="${T1W_FILTER:-acquisition=MPR run=01}"
+EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 # --- Determine subject ---
 if [ -n "${SUBJECT}" ]; then
@@ -163,7 +167,7 @@ singularity run -e \
     --filter_T1w ${T1W_FILTER} \
     --filter_T2w acquisition="${T2W_ACQ}" \
     --cores ${SLURM_CPUS_PER_TASK} \
-    -p
+    -p ${EXTRA_ARGS}
 
 # Capture exit status
 EXIT_STATUS=$?
