@@ -322,8 +322,38 @@ pa = 50
 # ses-26: Naturalistic — has anatomical scans (T1w + DWI AP/PA)
 # =============================================================================
 [ses-26]
-note = "Anatomical session (T1w + DWI AP/PA)"
+note = "Anatomical session (T1w + DWI AP/PA); encoding-side runs use the retrieval fmap"
 add_anat = ["T1w_MPR", "dwi_AP", "dwi_PA"]
+
+# The encoding fmap pair is unusable: its estimated field is far outside every
+# other fieldmap in the dataset, and correcting with it distorts the BOLD.
+# NATencoding + NATmath are pointed at the retrieval pair (Ben, 2026-10-14). The
+# encoding pair is still converted and keeps its B0FieldIdentifier.
+# Record: mmmdata-agents docs/workbench/alignment-strategy/log.md (2026-10-14).
+[[ses-26.tasks]]
+task_label = "NATencoding"
+protocol_base = "free_recall_encoding_run{n}"
+fmap_group = "retrieval"
+runs = 2
+has_sbref = true
+
+[[ses-26.tasks]]
+task_label = "NATmath"
+protocol_base = "free_recall_math"
+fmap_group = "retrieval"
+has_sbref = true
+
+[[ses-26.tasks]]
+task_label = "NATresting"
+protocol_base = "free_recall_resting"
+fmap_group = "retrieval"
+has_sbref = true
+
+[[ses-26.tasks]]
+task_label = "NATretrieval"
+protocol_base = "free_recall_retrieval_run{n}"
+fmap_group = "retrieval"
+has_sbref = true
 
 
 # =============================================================================

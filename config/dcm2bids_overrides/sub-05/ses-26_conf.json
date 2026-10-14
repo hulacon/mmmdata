@@ -34,11 +34,11 @@
       "custom_entities": "task-NATencoding",
       "criteria": {
         "ProtocolName": "free_recall_encoding_run1",
-        "MultibandAccelerationFactor": 3
+        "SeriesDescription": "free_recall_encoding_run1"
       },
       "sidecar_changes": {
         "TaskName": "NATencoding",
-        "B0FieldSource": "B0map_encoding_sub05_ses26"
+        "B0FieldSource": "B0map_retrieval_sub05_ses26"
       }
     },
     {
@@ -51,7 +51,7 @@
       },
       "sidecar_changes": {
         "TaskName": "NATencoding",
-        "B0FieldSource": "B0map_encoding_sub05_ses26"
+        "B0FieldSource": "B0map_retrieval_sub05_ses26"
       }
     },
     {
@@ -61,11 +61,11 @@
       "custom_entities": "task-NATencoding",
       "criteria": {
         "ProtocolName": "free_recall_encoding_run2",
-        "MultibandAccelerationFactor": 3
+        "SeriesDescription": "free_recall_encoding_run2"
       },
       "sidecar_changes": {
         "TaskName": "NATencoding",
-        "B0FieldSource": "B0map_encoding_sub05_ses26"
+        "B0FieldSource": "B0map_retrieval_sub05_ses26"
       }
     },
     {
@@ -78,7 +78,7 @@
       },
       "sidecar_changes": {
         "TaskName": "NATencoding",
-        "B0FieldSource": "B0map_encoding_sub05_ses26"
+        "B0FieldSource": "B0map_retrieval_sub05_ses26"
       }
     },
     {
@@ -88,11 +88,11 @@
       "custom_entities": "task-NATmath",
       "criteria": {
         "ProtocolName": "free_recall_math",
-        "MultibandAccelerationFactor": 3
+        "SeriesDescription": "free_recall_math"
       },
       "sidecar_changes": {
         "TaskName": "NATmath",
-        "B0FieldSource": "B0map_encoding_sub05_ses26"
+        "B0FieldSource": "B0map_retrieval_sub05_ses26"
       }
     },
     {
@@ -105,7 +105,7 @@
       },
       "sidecar_changes": {
         "TaskName": "NATmath",
-        "B0FieldSource": "B0map_encoding_sub05_ses26"
+        "B0FieldSource": "B0map_retrieval_sub05_ses26"
       }
     },
     {
@@ -115,7 +115,7 @@
       "custom_entities": "task-NATresting",
       "criteria": {
         "ProtocolName": "free_recall_resting",
-        "MultibandAccelerationFactor": 3
+        "SeriesDescription": "free_recall_resting"
       },
       "sidecar_changes": {
         "TaskName": "NATresting",
@@ -142,7 +142,7 @@
       "custom_entities": "task-NATretrieval",
       "criteria": {
         "ProtocolName": "free_recall_retrieval_run1",
-        "MultibandAccelerationFactor": 3
+        "SeriesDescription": "free_recall_retrieval_run1"
       },
       "sidecar_changes": {
         "TaskName": "NATretrieval",
