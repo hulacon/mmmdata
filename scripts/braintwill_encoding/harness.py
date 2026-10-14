@@ -109,14 +109,17 @@ TREE = "encoding_harness"
 OUTER_FOLDS = 5
 
 
-def film_spec(solver: str = "random_search", n_iter: int | None = None) -> EncodingSpec:
+def film_spec(solver: str = "random_search", n_iter: int | None = None,
+              solver_params: dict | None = None) -> EncodingSpec:
     """functional-space's encoder settings, wrapped in the outer CV.
 
     ``random_search`` with functional-space's ``N_ITER_BANDS`` is the default and the only
     setting the equivalence covers; ``hyper_gradient`` is opt-in for fits with many bands.
+    ``solver_params`` go to himalaya verbatim (``TB_TS_SOLVER_PARAMS`` for tb-enc-ts).
     """
     ridge = RidgeSpec(alphas=tuple(fs_enc.ALPHAS), inner_folds=fs_enc.N_FOLDS, solver=solver,
-                      n_iter=fs_enc.N_ITER_BANDS if n_iter is None else n_iter, random_state=0)
+                      n_iter=fs_enc.N_ITER_BANDS if n_iter is None else n_iter, random_state=0,
+                      solver_params=dict(solver_params or {}))
     return EncodingSpec(ridge=ridge, outer_folds=OUTER_FOLDS)
 
 
@@ -430,6 +433,12 @@ TB_TS_DROP = max(fs_enc.DELAYS_TR)
 TB_TS_ON = {"visual": "movies_frames", "audio": "movies_audio_frames"}
 #: Feature spaces for tb-enc-ts: band -> (composed table, model). A band's stream (and so the
 #: on column it is modulated by) is the table's: ``audio`` in the name means audio.
+#: himalaya's kernel decomposition for tb-enc-ts fits. float32 ``eigh`` on the GPU failed to
+#: converge on the first tb-enc-ts fits (2026-10-14). Likely cause, not verified: the ``onoff``
+#: band's kernel has rank <= 10 over thousands of rows, so a band-weight sample favouring it
+#: leaves thousands of near-equal eigenvalues. SVD of the same PSD kernel is the same
+#: decomposition, computed more stably.
+TB_TS_SOLVER_PARAMS = {"diagonalize_method": "svd"}
 TB_TS_SPACES = {
     "ebind": {"ebind": ("movies_frames", "ebind")},
     "psytwill": {"V": ("movies_psytwill_space_frames", "pspace_v"),
@@ -599,7 +608,8 @@ class Request:
         from core.config import load_config
 
         self.paths = paths
-        self.spec = film_spec(args.solver, args.n_iter)  # tb-enc shares the film grid and folds
+        self.spec = film_spec(args.solver, args.n_iter,  # tb registers share the film grid and folds
+                              TB_TS_SOLVER_PARAMS if args.register == "tb-enc-ts" else None)
         self.register_name = args.register
         if args.register == "films":
             windows = fm.load_windows(paths.derivatives)

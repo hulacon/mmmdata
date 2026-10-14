@@ -298,8 +298,9 @@ class Encoder:
     """Banded kernel ridge from a delayed design to the valid grayordinates."""
 
     def __init__(self, bands: dict[str, slice], alphas=ALPHAS, n_iter: int = N_ITER_BANDS,
-                 backend: str = "torch", random_state: int = 0):
+                 backend: str = "torch", random_state: int = 0, solver_params: dict | None = None):
         self.bands = bands
+        self.solver_params = dict(solver_params or {})  # extra himalaya solver params (several bands)
         self.alphas = np.asarray(alphas)
         self.n_iter = n_iter
         self.backend = backend
@@ -318,7 +319,8 @@ class Encoder:
         kernelizer = ColumnKernelizer([(b, Kernelizer(kernel="linear"), sl) for b, sl in self.bands.items()])
         model = MultipleKernelRidgeCV(
             kernels="precomputed", solver="random_search", cv=cv, random_state=self.random_state,
-            solver_params={"n_iter": self.n_iter, "alphas": self.alphas, "progress_bar": False},
+            solver_params={"n_iter": self.n_iter, "alphas": self.alphas, "progress_bar": False,
+                           **self.solver_params},
         )
         return make_pipeline(StandardScaler(), kernelizer, model)
 

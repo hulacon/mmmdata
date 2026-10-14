@@ -21,7 +21,8 @@ Training sets (``--train``):
              features are fully on, so the film design gets constant ``onoff``
              columns prepended; with predictions centred per window this is the
              register's per-window centring exactly. Features keep the TB
-             fit's standardisation (one physical unit, one weight).
+             fit's standardisation (one physical unit, one weight). The kernel
+             decomposition is the register's (``TB_TS_SOLVER_PARAMS``: SVD).
 
 Test sets (never in any training set):
 
@@ -245,7 +246,8 @@ def run_score(args: argparse.Namespace, log=print) -> Path:
         else:
             x, y, groups, bands = enc.film_design(train, paths.cache, space, cleaned)
             y = enc._zscore_film_windows(y, groups)
-        model = enc.Encoder(bands, backend=args.backend).fit(x, y, groups)
+        extra = _harness().TB_TS_SOLVER_PARAMS if args.train == "tb" else None
+        model = enc.Encoder(bands, backend=args.backend, solver_params=extra).fit(x, y, groups)
         del x, y
         pred = predicted(model, pd.concat([held, rep]), paths.cache, space, cleaned)
         name = f"within-{args.train}-{space}"
