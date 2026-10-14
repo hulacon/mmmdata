@@ -318,6 +318,9 @@ def arm_inputs(arm: NsdArm, deriv: Path, ppdata: Path, subject: str) -> dict[str
     return {h: p for h in HEMIS}
 
 
+MIN_REG_R = 0.9  # T2 through the xfm vs T2matched; good fits sit at .97-.99, a failed one near 0
+
+
 def register_t1_to_hrt2(ppdata: Path, subject: str, out: Path, threads: int = 1) -> Path:
     """Rigid ``T2_0pt8 -> HRT2/T2matched`` (fixed = HRT2 grid): resamples T1-space images onto HRT2 forward."""
     a = Path(ppdata) / nsd_subject(subject) / "anat"
@@ -362,8 +365,14 @@ def _hemi_split(native: Path, hemi: str, tmp: Path) -> Path:
 
 
 def build_subject(out_root: Path, deriv: Path, ppdata: Path, subject: str, provenance: dict,
-                  arms: Sequence[NsdArm] = ARMS, n_jobs: int = 1, log: Callable[[str], None] = print) -> dict[str, Path]:
-    """Score every arm against the manual labels for one NSD subject (both hemispheres, all grids, both variants)."""
+                  arms: Sequence[NsdArm] = ARMS, n_jobs: int = 1, log: Callable[[str], None] = print,
+                  xfm_from: Path | None = None) -> dict[str, Path]:
+    """Score every arm against the manual labels for one NSD subject (both hemispheres, all grids, both variants).
+
+    ``xfm_from``: an already-validated T1 -> HRT2 xfm to reuse instead of registering (the rigid MI fit is
+    not reproducible across thread counts and can land in a wrong basin). Either way the scorer refuses to
+    continue if the xfm fails the ``MIN_REG_R`` check.
+    """
     paths = subject_paths(out_root, subject)
     paths["dir"].mkdir(parents=True, exist_ok=True)
     anat = Path(ppdata) / nsd_subject(subject) / "anat"
@@ -382,8 +391,13 @@ def build_subject(out_root: Path, deriv: Path, ppdata: Path, subject: str, prove
         with ThreadPoolExecutor(max_workers=max(1, n_jobs)) as ex:
             return list(ex.map(fn, items))
 
-    log(f"sub-{subject}: registering T1 space -> HRT2")
-    xfm = register_t1_to_hrt2(ppdata, subject, paths["xfm"], threads=max(1, n_jobs))
+    if xfm_from is not None and Path(xfm_from).exists():
+        log(f"sub-{subject}: reusing T1 -> HRT2 xfm {xfm_from}")
+        paths["xfm"].write_bytes(Path(xfm_from).read_bytes())
+        xfm, xfm_source = paths["xfm"], str(xfm_from)
+    else:
+        log(f"sub-{subject}: registering T1 space -> HRT2")
+        xfm, xfm_source = register_t1_to_hrt2(ppdata, subject, paths["xfm"], threads=max(1, n_jobs)), "registered"
 
     score_rows_all, assign_rows, purity_all, gate_rows, vol_rows, reg_rows = [], [], [], [], [], []
     montage_inputs = {}
@@ -396,8 +410,11 @@ def build_subject(out_root: Path, deriv: Path, ppdata: Path, subject: str, prove
         T = np.asarray(nib.load(str(anat / "HRT2" / "T2matched.nii.gz")).dataobj)
         M = np.asarray(nib.load(str(anat / "HRT2" / "HRT2_mask.nii.gz")).dataobj) > 0
         m = M & (W > 0) & (T > 0)
-        reg_rows.append({"subject": subject, "check": "r_T2_vs_T2matched", "hemi": "", "region": "",
-                         "value": float(np.corrcoef(W[m], T[m])[0, 1])})
+        r_reg = float(np.corrcoef(W[m], T[m])[0, 1])
+        reg_rows.append({"subject": subject, "check": "r_T2_vs_T2matched", "hemi": "", "region": "", "value": r_reg})
+        if not r_reg >= MIN_REG_R:
+            raise RuntimeError(f"sub-{subject}: T1 -> HRT2 xfm fails its check (r = {r_reg:.3f} < {MIN_REG_R}); "
+                               f"not scoring. Supply a validated xfm (xfm_from).")
 
         # FS arms are whole-brain: split by hemisphere first
         native = {}
@@ -547,7 +564,8 @@ def build_subject(out_root: Path, deriv: Path, ppdata: Path, subject: str, prove
                   "inputs": {h: str(inputs[a.name][h]) for h in HEMIS}} for a in arms],
         "reference": {"labels": str(anat / "HRT2" / "MTL_rawlabels.nii.gz"),
                       "decoding": "ctab = ceil(k/2); odd = R, even = L", "crosscheck": "roi/{lh,rh}.MTL (0.8 mm)"},
-        "xfm": {"file": str(paths["xfm"]), "method": "ANTs rigid MI, T2_0pt8 -> HRT2/T2matched, HRT2_mask on fixed"},
+        "xfm": {"file": str(paths["xfm"]), "method": "ANTs rigid MI, T2_0pt8 -> HRT2/T2matched, HRT2_mask on fixed",
+                "source": xfm_source},
         "grids": {"hrt2": {"subdiv": list(SUBDIV), "rule": "block plurality, ties to the lower class"},
                   "t1_fine_mm": T1_FINE_MM, "pad_mm": PAD_MM, "bold": {"zooms_mm": list(BOLD_ZOOMS),
                   "offsets_vox": [list(o) for o in BOLD_OFFSETS]}},

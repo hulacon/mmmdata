@@ -39,6 +39,8 @@ def main(argv=None) -> None:
     who.add_argument("--group", action="store_true", help="concatenate every subject's tables")
     ap.add_argument("--eval-root", type=Path, required=True, help="holds derivatives/<arm trees>; scores/ is written here")
     ap.add_argument("--ppdata", type=Path, help="NSD nsddata/ppdata (required with --sub)")
+    ap.add_argument("--xfm-dir", type=Path, help="validated sub-##_from-T1w_to-HRT2_mode-image_xfm.mat files to "
+                    "reuse (default: <eval-root>/xfm when present; otherwise each subject is registered)")
     ap.add_argument("--jobs", type=int, default=1, help="registrations/resamplings in parallel")
     ap.add_argument("--arms", nargs="+", choices=[a.name for a in hn.ARMS],
                     help="score only these arms (default: all)")
@@ -57,8 +59,10 @@ def main(argv=None) -> None:
     provenance = {"code_version": dq.code_version(REPO_ROOT)}
     t0 = time.time()
     arms = [a for a in hn.ARMS if not args.arms or a.name in args.arms]
+    xfm_dir = args.xfm_dir or args.eval_root / "xfm"
     hn.build_subject(out, args.eval_root / "derivatives", args.ppdata, args.sub, provenance, arms=arms,
-                     n_jobs=args.jobs, log=lambda m: print(m, flush=True))
+                     n_jobs=args.jobs, log=lambda m: print(m, flush=True),
+                     xfm_from=xfm_dir / f"sub-{args.sub}_from-T1w_to-HRT2_mode-image_xfm.mat")
     print(f"sub-{args.sub}: {time.time() - t0:.0f} s", flush=True)
 
 
