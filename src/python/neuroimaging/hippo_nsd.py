@@ -551,6 +551,15 @@ def build_subject(out_root: Path, deriv: Path, ppdata: Path, subject: str, prove
             montage_inputs[h] = (man_box, {a.name: counts_plurality(block_counts(collapse(arm_fine[(a, "hrt2")], "primary"),
                                                                                 SUBDIV)) for a in arms},
                                  np.asarray(hrt2_img.dataobj)[box], dom_box, slice_axis)
+            # every label map on the HRT2 box, uncollapsed (SRLM, CA4 kept), for viewers
+            lab_dir = paths["dir"] / "hrt2_labels"
+            lab_dir.mkdir(exist_ok=True)
+            stem = f"sub-{subject}_hemi-{h}"
+            _save(np.asarray(hrt2_img.dataobj)[box].astype(np.float32), box_aff, lab_dir / f"{stem}_desc-HRT2_T2w.nii.gz")
+            _save(man_box.astype(np.uint8), box_aff, lab_dir / f"{stem}_desc-manual_dseg.nii.gz")
+            for a in arms:
+                _save(counts_plurality(block_counts(arm_fine[(a, "hrt2")], SUBDIV)).astype(np.uint8), box_aff,
+                      lab_dir / f"{stem}_desc-{a.name}_dseg.nii.gz")
 
     for key, rows in (("scores", score_rows_all), ("assignment", assign_rows), ("purity", purity_all),
                       ("gate", gate_rows), ("volumes", vol_rows), ("registration", reg_rows)):
