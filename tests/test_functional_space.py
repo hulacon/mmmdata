@@ -1363,3 +1363,21 @@ class TestSummarize:
             assert np.isclose(row["gain_anatomical_lo"], 0.15) and np.isclose(row["gain_anatomical_hi"], 0.15)
             assert row["ci_lo"] <= row["mean"] <= row["ci_hi"]
             assert set(out["target"]) == {"03", "04", "all"}
+
+
+def test_within_subject_onoff_prefix_matches_a_tb_fit_layout():
+    import importlib.util
+
+    import numpy as np
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "functional_space" / "within_subject.py"
+    spec = importlib.util.spec_from_file_location("within_subject_onoff", path)
+    ws = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ws)
+    fit = {"onoff": slice(0, 4), "V": slice(4, 10), "A": slice(10, 12)}
+    x = np.arange(16, dtype=np.float32).reshape(2, 8)
+    out = ws.with_onoff(x, {"V": slice(0, 6), "A": slice(6, 8)}, fit)
+    assert out.shape == (2, 12) and (out[:, :4] == 1).all()
+    np.testing.assert_array_equal(out[:, 4:], x)
+    with pytest.raises(ValueError, match="do not match"):
+        ws.with_onoff(x, {"A": slice(0, 2), "V": slice(2, 8)}, fit)  # band order differs

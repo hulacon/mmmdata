@@ -19,6 +19,8 @@
 #
 #   Full-pool encoder + data ceiling, one subject:
 #     sbatch --export=ALL,TRAIN=pool,TARGET=03 within_subject.sbatch
+#   TB-trained encoder (tb-enc-ts register; ~8.5k TB volumes), one subject:
+#     sbatch --export=ALL,TRAIN=tb,TARGET=## within_subject.sbatch
 #   Partition encoders at 0% (array index = `partitions.py job --index N`; 0-149 = primary 0%).
 #   A 3g.40gb MIG slice is enough for 15 films and starts sooner than a full A100:
 #     sbatch --gres=gpu:nvidia_a100_80gb_pcie_3g.40gb:1 --array=0-149%12 \
@@ -31,7 +33,7 @@ set -euo pipefail
 
 REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
 PY="/gpfs/projects/hulacon/shared/envs/functional-space/bin/python"
-TRAIN="${TRAIN:?set TRAIN to partition or pool}"
+TRAIN="${TRAIN:?set TRAIN to partition, pool or tb}"
 if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then  # array task: the job comes from the partition table
     read -r SCENARIO PCT DRAW TARGET < <("${PY}" "${REPO_ROOT}/scripts/functional_space/partitions.py" \
         job --index "${SLURM_ARRAY_TASK_ID}")
@@ -46,8 +48,8 @@ if [[ "${TRAIN}" == "partition" ]]; then
     : "${PCT:?set PCT}" "${DRAW:?set DRAW}"
     /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/within_subject.py" score --train partition \
         --scenario "${SCENARIO}" --pct "${PCT}" --draw "${DRAW}" --target "${TARGET}"
-else
-    /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/within_subject.py" score --train pool \
+else  # pool or tb: one job per subject
+    /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/within_subject.py" score --train "${TRAIN}" \
         --target "${TARGET}"
 fi
 echo "End $(date)"

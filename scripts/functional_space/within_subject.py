@@ -14,6 +14,14 @@ Training sets (``--train``):
              the stimulus route fitted; as M4 refits it), one job per
              (draw, target) at the given level
   pool       every alignment-pool film of the subject (one job per subject)
+  tb         every TBencoding run of the subject (ses-04–18), through the
+             encoding harness's ``tb-enc-ts`` register: same FIR, α grid and
+             solver, plus an ``onoff`` band and features as per-run centred
+             modulators. On a film window both on columns are 1 and the
+             features are fully on, so the film design gets constant ``onoff``
+             columns prepended; with predictions centred per window this is the
+             register's per-window centring exactly. Features keep the TB
+             fit's standardisation (one physical unit, one weight).
 
 Test sets (never in any training set):
 
@@ -38,6 +46,7 @@ Verbs:
 Usage:
     python within_subject.py score --train partition --pct 0 --draw 0 --target 03
     python within_subject.py score --train pool --target 03
+    python within_subject.py score --train tb --target 03
 """
 
 from __future__ import annotations
@@ -67,7 +76,7 @@ REGION_FAMILIES = ("schaefer7n", "familyB", "familyD")
 def out_dir(derivatives: Path, train: str, target: str, scenario: str = "primary", pct: int = 0,
             draw: int | None = None) -> Path:
     root = Path(derivatives) / "functional_space" / "scores" / "within" / train
-    if train == "pool":
+    if train in ("pool", "tb"):
         return root / f"target-{target}"
     return root / scenario / f"pct-{pct:03d}" / f"draw-{draw:02d}" / f"target-{target}"
 
@@ -85,6 +94,44 @@ def measured(rows: pd.DataFrame, cleaned: Path) -> dict[str, np.ndarray]:
     return {k: sc.zscore_columns(fm.film_series(r, cleaned, cache)).astype(np.float32) for k, r in rows.iterrows()}
 
 
+def _harness():
+    """The encoding harness (``scripts/braintwill_encoding/harness.py``), which owns tb-enc-ts."""
+    p = str(REPO_ROOT / "scripts" / "braintwill_encoding")
+    if p not in sys.path:
+        sys.path.insert(0, p)
+    import harness
+
+    return harness
+
+
+def tb_inputs(sub: str, spaces) -> tuple[pd.DataFrame, dict]:
+    """The subject's tb-enc-ts runs and, per space, each run's frame features."""
+    hs = _harness()
+    paths = hs.Paths()
+    runs = hs.tb_ts_runs(pd.read_csv(paths.cleaned / "manifest.tsv", sep="\t", dtype=str), sub)
+    n_bins = {int(round(int(r.n_vol) * float(r.RepetitionTime) / hs.fs_enc.FRAME_S))
+              for r in runs.itertuples(index=False)}
+    if len(n_bins) != 1:
+        raise ValueError(f"sub-{sub}: TB runs of different lengths {sorted(n_bins)}")
+    (n,) = n_bins
+    return runs, {sp: {r.stem: hs.load_run_features(paths.stimfeat, r, sp, n) for r in runs.itertuples(index=False)}
+                  for sp in spaces}
+
+
+def tb_design(runs: pd.DataFrame, feats: dict, cleaned: Path):
+    return _harness().tb_ts_design(runs, feats, cleaned)
+
+
+def with_onoff(x: np.ndarray, bands: dict[str, slice], fit_bands: dict[str, slice]) -> np.ndarray:
+    """A film design laid out as a tb-enc-ts fit: its ``onoff`` columns (all 1: a film window is on
+    in every stream) prepended, every other band where the fit has it."""
+    n_on = fit_bands["onoff"].stop - fit_bands["onoff"].start
+    shifted = {b: slice(s.start + n_on, s.stop + n_on) for b, s in bands.items()}
+    if fit_bands != {"onoff": slice(0, n_on), **shifted}:
+        raise ValueError(f"film bands {bands} do not match the TB fit's {fit_bands}")
+    return np.hstack([np.ones((x.shape[0], n_on), x.dtype), x])
+
+
 def predicted(model, rows: pd.DataFrame, cache_root: Path, space: str, cleaned: Path) -> dict[str, np.ndarray]:
     """The encoder's prediction of each showing's window, centred per window, keyed by the row index.
 
@@ -95,7 +142,9 @@ def predicted(model, rows: pd.DataFrame, cache_root: Path, space: str, cleaned: 
 
     out = {}
     for k in rows.index:
-        x, _, g, _ = enc.film_design(rows.loc[[k]], cache_root, space, cleaned)
+        x, _, g, b = enc.film_design(rows.loc[[k]], cache_root, space, cleaned)
+        if "onoff" in model.bands:
+            x = with_onoff(x, b, model.bands)
         out[k] = sr.center_blocks(model.predict(x), g).astype(np.float32)
     return out
 
@@ -169,9 +218,12 @@ def run_score(args: argparse.Namespace, log=print) -> Path:
             raise ValueError("--train partition needs --draw")
         parts = pt.load_partitions(paths.derivatives)
         train = sr.job_films(parts, windows, args.scenario, args.pct, args.draw, s)[s]
-    else:
+    elif args.train == "pool":
         train = windows[(windows["sub"] == s) & (windows["role"] == "alignment")]
-    if train.empty:
+    else:  # tb: no films in training; the register refuses any session outside 04–18
+        train = windows.iloc[:0]
+        tb_runs, tb_feats = tb_inputs(s, args.spaces)
+    if train.empty and args.train != "tb":
         raise ValueError(f"sub-{s}: no training films")
     held = keyed(windows, s, "heldout")
     rep = keyed(windows, s, "heldout_repeat")
@@ -188,8 +240,12 @@ def run_score(args: argparse.Namespace, log=print) -> Path:
     frames, info, seconds = [], {}, {}
     for space in args.spaces:
         t1 = time.time()
-        x, y, groups, bands = enc.film_design(train, paths.cache, space, cleaned)
-        model = enc.Encoder(bands, backend=args.backend).fit(x, enc._zscore_film_windows(y, groups), groups)
+        if args.train == "tb":
+            x, y, groups, bands = tb_design(tb_runs, tb_feats[space], cleaned)  # y z-scored per run
+        else:
+            x, y, groups, bands = enc.film_design(train, paths.cache, space, cleaned)
+            y = enc._zscore_film_windows(y, groups)
+        model = enc.Encoder(bands, backend=args.backend).fit(x, y, groups)
         del x, y
         pred = predicted(model, pd.concat([held, rep]), paths.cache, space, cleaned)
         name = f"within-{args.train}-{space}"
@@ -198,10 +254,11 @@ def run_score(args: argparse.Namespace, log=print) -> Path:
         for a, ks in rep_keys.items():
             frames.append(sc.m2b_segments(by_film(data, ks), by_film(pred, ks), regions)
                           .assign(model=name, set=f"repeat@{a}"))
-        info[space] = {"encoder": model.diagnostics_, "training_films": int(train["stimulus_id"].nunique()),
-                       "training_volumes": int(groups.size)}
+        n_train = len(tb_runs) if args.train == "tb" else train["stimulus_id"].nunique()
+        info[space] = {"encoder": model.diagnostics_, "training_volumes": int(groups.size),
+                       ("training_runs" if args.train == "tb" else "training_films"): int(n_train)}
         seconds[space] = round(time.time() - t1, 1)
-        log(f"{space}: {train['stimulus_id'].nunique()} training films, encoder "
+        log(f"{space}: {n_train} training {'runs' if args.train == 'tb' else 'films'}, encoder "
             f"{model.diagnostics_['cv_1_plus_score_q50_q95_q99']} ({seconds[space]:.0f} s)")
         del model, pred
 
@@ -221,7 +278,9 @@ def run_score(args: argparse.Namespace, log=print) -> Path:
                        "adds the within-subject data ceiling on the repeat pool",
         "job": {"train": args.train, "target": s,
                 **({"scenario": args.scenario, "pct": args.pct, "draw": args.draw} if args.train == "partition" else {})},
-        "spaces": info, "training_films": sorted(train["stimulus_id"].unique()),
+        "spaces": info,
+        **({"training_runs": list(tb_runs["stem"]), "register": "tb-enc-ts"} if args.train == "tb"
+           else {"training_films": sorted(train["stimulus_id"].unique())}),
         "test": {"heldout": held_keys, "repeat": {str(a): ks for a, ks in rep_keys.items()}},
         "regions": list(REGION_FAMILIES), "backend": args.backend, "segment_trs": sc.SEGMENT_TRS,
         "code_version": sc._code_version(), "seconds": seconds,
@@ -236,7 +295,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="verb", required=True)
     s = sub.add_parser("score")
-    s.add_argument("--train", required=True, choices=("partition", "pool"))
+    s.add_argument("--train", required=True, choices=("partition", "pool", "tb"))
     s.add_argument("--target", required=True)
     s.add_argument("--scenario", default="primary", choices=("primary", "secondary"))
     s.add_argument("--pct", type=int, default=0)
