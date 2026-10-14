@@ -26,6 +26,8 @@
 #   psytwill arm (scores/psytwill-arm/): add ARM=psytwill to --export, for score, m4 or families
 #   Secondary families + smoothed-anatomical control (after `families.py cache-tb` per subject):
 #   sbatch --array=0-479%20 --export=ALL,VERB=families score_route.sbatch
+#   Segment guesses kept (post hoc; 0% primary = indices 0-149; psytwill arm covers both arms' models):
+#   sbatch --array=0-149%30 --export=ALL,VERB=segments,ARM=psytwill score_route.sbatch
 #   M4 (0% jobs only; needs the job's score.json) runs on a GPU, so the
 #   resources are given at submission and override the CPU defaults above:
 #   sbatch --partition=gpu --gres=gpu:nvidia_a100_80gb_pcie:1 --cpus-per-task=8 \
@@ -61,6 +63,12 @@ elif [[ "${VERB}" == "families" ]]; then
     : "${PCT:?set PCT}" "${DRAW:?set DRAW}"
     echo "Job ${SLURM_JOB_ID} families ${SCENARIO} ${PCT}% draw ${DRAW} target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"
     /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/score_route.py" families \
+        --scenario "${SCENARIO}" --pct "${PCT}" --draw "${DRAW}" --target "${TARGET}" --n-jobs "${SLURM_CPUS_PER_TASK}" \
+        --arm "${ARM}"
+elif [[ "${VERB}" == "segments" ]]; then
+    : "${PCT:?set PCT}" "${DRAW:?set DRAW}"
+    echo "Job ${SLURM_JOB_ID} segments (${ARM} arm) ${SCENARIO} ${PCT}% draw ${DRAW} target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"
+    /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/score_route.py" segments \
         --scenario "${SCENARIO}" --pct "${PCT}" --draw "${DRAW}" --target "${TARGET}" --n-jobs "${SLURM_CPUS_PER_TASK}" \
         --arm "${ARM}"
 elif [[ "${VERB}" == "mni" ]]; then

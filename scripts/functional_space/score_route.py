@@ -66,6 +66,10 @@ Verbs:
   families one job's §10 secondary families and §6 smoothed-anatomical control ->
            <the job's score dir>/families/ (m2b.parquet, m2a.tsv, m3.tsv, m1.tsv, smoothing.tsv,
            families.json); needs `families.py cache-tb` for every subject first
+  segments post hoc (2026-10-14): M2b's held-out segment matrix with its guesses kept
+           (film hit, temporal offset, between/within-film ranks; ``scoring.m2b_segments``),
+           checked against the job's saved M2b -> <arm root>/segments/<scenario>/pct-<pct>/
+           draw-<draw>/target-<sub>/ (m2b_segments.parquet, segments.json)
 
 Usage:
     python score_route.py score --pct 0 --draw 0 --target 03 --n-jobs 16
@@ -73,6 +77,7 @@ Usage:
     python score_route.py score --arm psytwill --pct 0 --draw 0 --target 03 --n-jobs 16
     python score_route.py mni --target 03
     python score_route.py decide
+    python score_route.py segments --arm psytwill --pct 0 --draw 0 --target 03 --n-jobs 16
     python score_route.py families --pct 0 --draw 0 --target 03 --n-jobs 16
 """
 
@@ -754,6 +759,89 @@ def run_score(args: argparse.Namespace, log=print) -> Path:
     return dest
 
 
+def segments_dir(derivatives: Path, scenario: str, pct: int, draw: int, target: str, arm: str = "ebind") -> Path:
+    return scores_root(derivatives, arm) / "segments" / scenario / f"pct-{pct:03d}" / f"draw-{draw:02d}" / f"target-{target}"
+
+
+def run_segments(args: argparse.Namespace, log=print) -> Path:
+    """Post hoc (2026-10-14, not pre-registered): M2b's segment matrix with its guesses kept, held-out set only.
+
+    The models and columns of ``score`` for the same job and arm, so ``rank_all``
+    must reproduce that job's saved M2b; a mismatch is an error. With
+    ``--arm psytwill`` one job covers both arms (combined-psytwill's faces and
+    combined-EBind's full model and stimulus face).
+    """
+    import cha
+    import encoding as enc
+    import films as fm
+    import grayordinates as go
+    import partitions as pt
+
+    t0 = time.time()
+    paths = enc.Paths()
+    cleaned = cha.Paths().cleaned
+    parts = pt.load_partitions(paths.derivatives)
+    windows = fm.load_windows(paths.derivatives)
+    subs = sorted(parts.loc[(parts["scenario"] == args.scenario) & (parts["pct"] == args.pct)
+                            & (parts["draw"] == args.draw) & (parts["target"] == args.target), "subject"].unique())
+    if args.target not in subs or len(subs) != 3:
+        raise ValueError(f"job resolves to subjects {subs}; expected the target and two template subjects")
+    template_subs = [s for s in subs if s != args.target]
+    saved = out_dir(paths.derivatives, args.scenario, args.pct, args.draw, args.target, args.arm) / "m2b.parquet"
+    if not saved.exists():
+        raise FileNotFoundError(f"{saved}: run `score` for this job first (the check needs its M2b)")
+    job = {"derivatives": paths.derivatives, "parts": parts, "windows": windows, "scenario": args.scenario,
+           "pct": args.pct, "draw": args.draw, "target": args.target}
+    table = pd.read_csv(go.grayordinates_path(cleaned), sep="\t")
+    n = len(table)
+    networks = network_labels(table, cha.Paths().atlases)
+    seconds = {}
+
+    t1 = time.time()
+    models, info = build_models(job, template_subs, n, args.n_jobs, cleaned, log, arm=args.arm)
+    seconds["models"] = round(time.time() - t1, 1)
+    log(f"models: {list(models)} ({seconds['models']:.0f} s)")
+
+    t1 = time.time()
+    role = next(r for r, s in FILM_SETS.items() if s == PRIMARY_SET)
+    data = load_films(film_rows(windows, subs, role), subs, args.target,
+                      lambda row, cache: fm.film_series(row, cleaned, cache))
+    proj = project_all(models, data, template_subs, args.target)
+    valid = shared_valid(data[args.target], proj)
+    nets = {net: cols[valid[cols]] for net, cols in sc.network_columns(networks).items()}
+    nets = {net: c for net, c in nets.items() if c.size}
+    seg = pd.concat([sc.m2b_segments(data[args.target], per_film, nets).assign(model=name)
+                     for name, per_film in proj.items()], ignore_index=True)
+    seconds["score"] = round(time.time() - t1, 1)
+
+    ref = pd.read_parquet(saved)
+    ref = ref[ref["set"] == PRIMARY_SET]
+    key = ["model", "network", "film", "segment"]
+    m = seg[key + ["rank_all"]].merge(ref[key + ["rank_acc"]], on=key, validate="1:1")
+    if len(m) != len(seg) or len(m) != len(ref):
+        raise ValueError(f"segment rows {len(seg)} do not pair with the saved M2b's {len(ref)}")
+    worst = float((m["rank_all"] - m["rank_acc"]).abs().max())
+    if worst > 1e-9:
+        raise ValueError(f"rank_all differs from the saved M2b by up to {worst:.3g}")
+
+    dest = segments_dir(paths.derivatives, args.scenario, args.pct, args.draw, args.target, args.arm)
+    dest.mkdir(parents=True, exist_ok=True)
+    seg.to_parquet(dest / "m2b_segments.parquet", index=False)
+    seconds["total"] = round(time.time() - t0, 1)
+    side = {
+        "description": "post hoc (2026-10-14, not pre-registered): M2b's held-out segment matrix with its guesses "
+                       "kept, per model, family-A network and segment (scoring.m2b_segments)",
+        "job": {"scenario": args.scenario, "pct": args.pct, "draw": args.draw, "target": args.target},
+        "arm": args.arm, "template_subjects": template_subs, "models": sorted(models),
+        "check": {"against": str(saved.relative_to(paths.derivatives)), "max_abs_rank_diff": worst},
+        "segment_trs": sc.SEGMENT_TRS, "code_version": sc._code_version(), "seconds": seconds,
+        "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+    }
+    (dest / "segments.json").write_text(json.dumps(side, indent=2) + "\n")
+    log(f"wrote {dest} (check {worst:.1e}) in {seconds['total']:.0f} s")
+    return dest
+
+
 #: Routes whose smoothness the smoothed-anatomical control matches (§6; Bazeille 2021), where the job has them.
 SMOOTH_MATCH = ("combined", "cha", "srm")
 
@@ -1213,8 +1301,16 @@ def main() -> None:
     f.add_argument("--target", required=True)
     f.add_argument("--n-jobs", type=int, default=1)
     f.add_argument("--arm", default="ebind", choices=ARMS)
+    g2 = sub.add_parser("segments")
+    g2.add_argument("--scenario", default="primary", choices=("primary", "secondary"))
+    g2.add_argument("--pct", type=int, required=True)
+    g2.add_argument("--draw", type=int, required=True)
+    g2.add_argument("--target", required=True)
+    g2.add_argument("--n-jobs", type=int, default=1)
+    g2.add_argument("--arm", default="ebind", choices=ARMS)
     args = ap.parse_args()
-    {"score": run_score, "m4": run_m4, "mni": run_mni, "decide": run_decide, "families": run_families}[args.verb](args)
+    {"score": run_score, "m4": run_m4, "mni": run_mni, "decide": run_decide, "families": run_families,
+     "segments": run_segments}[args.verb](args)
 
 
 if __name__ == "__main__":

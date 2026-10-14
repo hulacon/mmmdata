@@ -235,6 +235,56 @@ def m2b(target_films: dict[str, np.ndarray], template_films: dict[str, np.ndarra
     return pd.DataFrame(rows)
 
 
+def m2b_segments(target_films: dict[str, np.ndarray], template_films: dict[str, np.ndarray],
+                 nets: dict[str, np.ndarray], length: int = SEGMENT_TRS) -> pd.DataFrame:
+    """M2b's segment matrix, kept: where each target segment's best match lands (post hoc, 2026-10-14).
+
+    The same patterns, columns and correlations as ``m2b`` (so ``rank_all``
+    equals its ``rank_acc``), plus per (network, film, segment):
+
+      guess_film, guess_segment  the argmax over every template segment (top-1)
+      within_segment             the argmax over the true film's segments only
+      rank_between, rank_within  rank accuracy against other-film / same-film foils
+      n_film_segments            the true film's segment count (sets the within-film null)
+
+    Ties take the first index (argmax); rank accuracies count them half.
+    """
+    if target_films.keys() != template_films.keys():
+        raise ValueError("target and template cover different films")
+    tz = {f: zscore_columns(x) for f, x in target_films.items()}
+    pz = {f: zscore_columns(x) for f, x in template_films.items()}
+    segs = [(f, k, sl) for f in tz for k, sl in enumerate(segment_slices(tz[f].shape[0], length))]
+    film_of = np.array([f for f, _, _ in segs], dtype=object)
+    seg_of = np.array([k for _, k, _ in segs])
+    same = film_of[:, None] == film_of[None, :]
+    eye = np.eye(len(segs), dtype=bool)
+    rows = []
+    for net, cols in nets.items():
+        ok = _valid(*(tz[f][:, cols] for f in tz), *(pz[f][:, cols] for f in pz))
+        c = cols[ok]
+        if c.size == 0 or len(segs) < 2:
+            continue
+        a = zscore_columns(np.stack([tz[f][sl][:, c].ravel() for f, _, sl in segs]).T).T
+        b = zscore_columns(np.stack([pz[f][sl][:, c].ravel() for f, _, sl in segs]).T).T
+        r = a @ b.T / a.shape[1]
+        true = np.diag(r)[:, None]
+
+        def rank(foil):
+            n = foil.sum(1)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                return np.where(n > 0, (((r < true) & foil).sum(1) + 0.5 * ((r == true) & foil).sum(1)) / n, np.nan)
+
+        guess = r.argmax(axis=1)
+        within = np.where(same, r, -np.inf).argmax(axis=1)
+        rows += [{"network": net, "film": f, "segment": k, "guess_film": film_of[g], "guess_segment": int(seg_of[g]),
+                  "within_segment": int(seg_of[w]), "rank_all": float(ra), "rank_between": float(rb),
+                  "rank_within": float(rw), "n_film_segments": int(nf), "n_columns": int(c.size),
+                  "n_segments": len(segs)}
+                 for (f, k, _), g, w, ra, rb, rw, nf in zip(segs, guess, within, rank(~eye), rank(~same),
+                                                             rank(same & ~eye), same.sum(1))]
+    return pd.DataFrame(rows)
+
+
 def per_film(scores: pd.DataFrame, value: str = "rank_acc") -> pd.DataFrame:
     """Film means of segment scores: the unit the inference uses (network × film)."""
     return scores.groupby(["network", "film"], as_index=False)[value].mean()

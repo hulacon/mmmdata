@@ -997,6 +997,23 @@ class TestScoring:
         assert 0.3 < shuffled["rank_acc"].mean() < 0.7
         assert set(sc.per_film(df)["film"]) == {"a", "b", "c"}
 
+    def test_m2b_segments_matches_m2b_and_locates_guesses(self):
+        rng = np.random.default_rng(4)
+        nets = {"n0": np.arange(20), "n1": np.arange(20, 40)}
+        films = {f: rng.standard_normal((40, 40)) for f in ("a", "b", "c")}
+        tpl = {f: x + 1.5 * rng.standard_normal(x.shape) for f, x in films.items()}
+        seg = sc.m2b_segments(films, tpl, nets)
+        ref = sc.m2b(films, tpl, nets)
+        assert np.allclose(seg["rank_all"].to_numpy(), ref["rank_acc"].to_numpy())
+        assert (seg["n_film_segments"] == 4).all()
+        # rank_all is the foil-count-weighted mix of between- and within-film ranks (8 and 3 foils of 11)
+        assert np.allclose(seg["rank_all"], (8 * seg["rank_between"] + 3 * seg["rank_within"]) / 11)
+        # template rolled one segment later within each film: the within-film guess is one segment late
+        shifted = {f: np.roll(x, 10, axis=0) for f, x in films.items()}
+        s2 = sc.m2b_segments(films, shifted, nets)
+        assert ((s2["within_segment"] - s2["segment"]) % 4 == 1).all()
+        assert (s2["guess_film"] == s2["film"]).all()
+
     def test_m2b_leaves_out_nonfinite_columns(self):
         rng = np.random.default_rng(2)
         films = {f: rng.standard_normal((20, 10)) for f in ("a", "b")}
