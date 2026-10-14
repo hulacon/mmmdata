@@ -70,6 +70,8 @@ Verbs:
            (film hit, temporal offset, between/within-film ranks; ``scoring.m2b_segments``),
            checked against the job's saved M2b -> <arm root>/segments/<scenario>/pct-<pct>/
            draw-<draw>/target-<sub>/ (m2b_segments.parquet, segments.json)
+           ``--set repeat``: the repeated films' held-out showings, one pool per showing,
+           regions A/B/D -> m2b_segments_repeat.parquet beside it
 
 Usage:
     python score_route.py score --pct 0 --draw 0 --target 03 --n-jobs 16
@@ -763,6 +765,79 @@ def segments_dir(derivatives: Path, scenario: str, pct: int, draw: int, target: 
     return scores_root(derivatives, arm) / "segments" / scenario / f"pct-{pct:03d}" / f"draw-{draw:02d}" / f"target-{target}"
 
 
+def run_segments_repeat(args: argparse.Namespace, log=print) -> Path:
+    """Post hoc (2026-10-14): the between-subject models on the repeated films' held-out showings.
+
+    One pool per showing (The Bench / From Dad To Son at showings 5 and 8 in
+    the current windows): each target showing's segments against the template
+    subjects' same showing, projected, so the pool matches the within-subject
+    arm's repeat pool (``within_subject.py``). Regions as that arm (families A,
+    B, D). No saved M2b pools these showings this way, so there is no check.
+    """
+    import cha
+    import encoding as enc
+    import families as fam
+    import films as fm
+    import grayordinates as go
+    import partitions as pt
+    import within_subject as ws
+
+    t0 = time.time()
+    paths = enc.Paths()
+    cpaths = cha.Paths()
+    cleaned = cpaths.cleaned
+    parts = pt.load_partitions(paths.derivatives)
+    windows = fm.load_windows(paths.derivatives)
+    subs = sorted(parts.loc[(parts["scenario"] == args.scenario) & (parts["pct"] == args.pct)
+                            & (parts["draw"] == args.draw) & (parts["target"] == args.target), "subject"].unique())
+    if args.target not in subs or len(subs) != 3:
+        raise ValueError(f"job resolves to subjects {subs}; expected the target and two template subjects")
+    template_subs = [s for s in subs if s != args.target]
+    job = {"derivatives": paths.derivatives, "parts": parts, "windows": windows, "scenario": args.scenario,
+           "pct": args.pct, "draw": args.draw, "target": args.target}
+    table = pd.read_csv(go.grayordinates_path(cleaned), sep="\t")
+    n = len(table)
+    regions = ws.region_columns(fam.family_labels(table, cpaths.atlases))
+    seconds = {}
+
+    t1 = time.time()
+    models, info = build_models(job, template_subs, n, args.n_jobs, cleaned, log, arm=args.arm)
+    seconds["models"] = round(time.time() - t1, 1)
+    log(f"models: {list(models)} ({seconds['models']:.0f} s)")
+
+    t1 = time.time()
+    rows = film_rows(windows, subs, "heldout_repeat")
+    data = load_films(rows, subs, args.target, lambda row, cache: fm.film_series(row, cleaned, cache))
+    showings = sorted({k.split("@")[1] for k in data[args.target]})
+    frames = []
+    for a in showings:
+        keys = sorted(k for k in data[args.target] if k.split("@")[1] == a)
+        pool = {s: ws.by_film(data[s], keys) for s in subs}
+        proj = project_all(models, pool, template_subs, args.target)
+        valid = shared_valid(pool[args.target], proj)
+        regs = {r: c[valid[c]] for r, c in regions.items()}
+        regs = {r: c for r, c in regs.items() if c.size}
+        frames += [sc.m2b_segments(pool[args.target], per_film, regs).assign(model=name, set=f"repeat@{a}")
+                   for name, per_film in proj.items()]
+    seconds["score"] = round(time.time() - t1, 1)
+
+    dest = segments_dir(paths.derivatives, args.scenario, args.pct, args.draw, args.target, args.arm)
+    dest.mkdir(parents=True, exist_ok=True)
+    pd.concat(frames, ignore_index=True).to_parquet(dest / "m2b_segments_repeat.parquet", index=False)
+    seconds["total"] = round(time.time() - t0, 1)
+    side = {
+        "description": "post hoc (2026-10-14): between-subject models on the repeated films' held-out showings, "
+                       "one pool per showing, regions = families A/B/D (matches within_subject.py's repeat pool)",
+        "job": {"scenario": args.scenario, "pct": args.pct, "draw": args.draw, "target": args.target},
+        "arm": args.arm, "template_subjects": template_subs, "models": sorted(models), "showings": showings,
+        "segment_trs": sc.SEGMENT_TRS, "code_version": sc._code_version(), "seconds": seconds,
+        "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+    }
+    (dest / "segments_repeat.json").write_text(json.dumps(side, indent=2) + "\n")
+    log(f"wrote {dest / 'm2b_segments_repeat.parquet'} in {seconds['total']:.0f} s")
+    return dest
+
+
 def run_segments(args: argparse.Namespace, log=print) -> Path:
     """Post hoc (2026-10-14, not pre-registered): M2b's segment matrix with its guesses kept, held-out set only.
 
@@ -1308,7 +1383,11 @@ def main() -> None:
     g2.add_argument("--target", required=True)
     g2.add_argument("--n-jobs", type=int, default=1)
     g2.add_argument("--arm", default="ebind", choices=ARMS)
+    g2.add_argument("--set", default="heldout", choices=("heldout", "repeat"))
     args = ap.parse_args()
+    if args.verb == "segments" and args.set == "repeat":
+        run_segments_repeat(args)
+        return
     {"score": run_score, "m4": run_m4, "mni": run_mni, "decide": run_decide, "families": run_families,
      "segments": run_segments}[args.verb](args)
 

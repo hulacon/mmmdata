@@ -28,6 +28,7 @@
 #   sbatch --array=0-479%20 --export=ALL,VERB=families score_route.sbatch
 #   Segment guesses kept (post hoc; 0% primary = indices 0-149; psytwill arm covers both arms' models):
 #   sbatch --array=0-149%30 --export=ALL,VERB=segments,ARM=psytwill score_route.sbatch
+#   (repeat pool, one pool per held-out showing: add SET=repeat)
 #   M4 (0% jobs only; needs the job's score.json) runs on a GPU, so the
 #   resources are given at submission and override the CPU defaults above:
 #   sbatch --partition=gpu --gres=gpu:nvidia_a100_80gb_pcie:1 --cpus-per-task=8 \
@@ -70,7 +71,7 @@ elif [[ "${VERB}" == "segments" ]]; then
     echo "Job ${SLURM_JOB_ID} segments (${ARM} arm) ${SCENARIO} ${PCT}% draw ${DRAW} target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"
     /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/score_route.py" segments \
         --scenario "${SCENARIO}" --pct "${PCT}" --draw "${DRAW}" --target "${TARGET}" --n-jobs "${SLURM_CPUS_PER_TASK}" \
-        --arm "${ARM}"
+        --arm "${ARM}" --set "${SET:-heldout}"
 elif [[ "${VERB}" == "mni" ]]; then
     echo "Job ${SLURM_JOB_ID} MNI baseline target sub-${TARGET} on ${SLURMD_NODENAME}; start $(date)"
     /usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/functional_space/score_route.py" mni --target "${TARGET}"
