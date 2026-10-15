@@ -22,11 +22,15 @@ def _load_paths():
         py_root = str(code_root / "src" / "python")
         if py_root not in sys.path:
             sys.path.insert(0, py_root)
-        from core.config import load_config
-        cfg = load_config()
-        return cfg["paths"]["bids_project_dir"], cfg["paths"]["source_dir"]
-    except Exception:
+        from core.config import _find_config_dir, load_config
+        config_dir = _find_config_dir()
+    except (ImportError, FileNotFoundError):
+        # Config system unreachable (module or config dir not found). Only
+        # discovery falls back: a found config that is broken (no base.toml,
+        # bad TOML, missing key) must raise, not silently resolve to GPFS.
         return _FALLBACK_BIDS_ROOT, _FALLBACK_SOURCE_DIR
+    cfg = load_config(config_dir)
+    return cfg["paths"]["bids_project_dir"], cfg["paths"]["source_dir"]
 
 
 BIDS_ROOT, SOURCE_DIR = _load_paths()

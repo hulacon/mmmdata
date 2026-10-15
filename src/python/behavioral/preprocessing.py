@@ -9,7 +9,6 @@ from __future__ import annotations
 import sys
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 from .constants import (
@@ -20,6 +19,8 @@ from .constants import (
     RETRIEVAL_COLUMNS,
     FIN2AFC_COLUMNS,
     FINTIMELINE_COLUMNS,
+    RESP_CONFIDENCE_MAP,
+    RESP_POSITION_MAP,
     COLUMN_RENAMES,
 )
 
@@ -89,13 +90,15 @@ def decompose_2afc_resp(df: pd.DataFrame) -> pd.DataFrame:
     correct = pd.to_numeric(result["correct_resp"], errors="coerce")
 
     # Position chosen: resp 1-2 -> position 1, resp 3-4 -> position 2
-    result["chose_position"] = np.where(resp.isin([1, 2]), 1, 2)
+    # A missing or out-of-range response is no choice (NaN), and so never
+    # correct.
+    result["chose_position"] = resp.map(RESP_POSITION_MAP).astype("Int64")
 
     # Confidence: resp 1 or 4 = sure, resp 2 or 3 = maybe
-    result["confidence"] = np.where(resp.isin([1, 4]), "sure", "maybe")
+    result["confidence"] = resp.map(RESP_CONFIDENCE_MAP)
 
     # Accuracy check
-    result["is_correct"] = result["chose_position"] == correct
+    result["is_correct"] = (result["chose_position"] == correct).fillna(False).astype(bool)
 
     return result
 
@@ -152,9 +155,9 @@ def filter_rt(
     if max_sd is not None:
         rt = pd.to_numeric(result[rt_col], errors="coerce")
         if by:
-            groups = result.groupby(by, observed=True)
-            means = groups[rt_col].transform("mean")
-            sds = groups[rt_col].transform("std")
+            groups = rt.groupby([result[c] for c in by], observed=True)
+            means = groups.transform("mean")
+            sds = groups.transform("std")
         else:
             means = rt.mean()
             sds = rt.std()

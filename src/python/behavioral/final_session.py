@@ -179,7 +179,9 @@ def long_term_retention_curve(
     tb[accuracy_col] = pd.to_numeric(tb[accuracy_col], errors="coerce")
     tb[pair_col] = pd.to_numeric(tb[pair_col], errors="coerce")
     tb = tb.sort_values([subject_col, pair_col, session_col])
-    tb_first = tb.groupby([subject_col, pair_col], observed=True).first().reset_index()
+    # head(1), not first(): first() takes the first non-null value per column,
+    # pairing one session's label with another session's accuracy.
+    tb_first = tb.groupby([subject_col, pair_col], observed=True).head(1).reset_index(drop=True)
     tb_first = tb_first.rename(columns={
         session_col: "initial_session",
         accuracy_col: "initial_accuracy",

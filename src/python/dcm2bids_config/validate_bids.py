@@ -235,7 +235,7 @@ def check_physio_alignment(
     by_task: dict[str, list[str]] = {}
     for run_key in bold_times:
         # Extract task portion
-        m = re.search(r"_task-(\w+)", run_key)
+        m = re.search(r"_task-([A-Za-z0-9]+)", run_key)
         if m:
             by_task.setdefault(m.group(1), []).append(run_key)
 
@@ -290,7 +290,7 @@ def check_events_alignment(
     }
 
     for nii in sorted(func_dir.glob("*_bold.nii.gz")):
-        m = re.search(r"_task-(\w+)", nii.name)
+        m = re.search(r"_task-([A-Za-z0-9]+)", nii.name)
         if not m:
             continue
         task = m.group(1)

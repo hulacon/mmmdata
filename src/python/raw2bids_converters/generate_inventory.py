@@ -824,6 +824,29 @@ def load_physio_triage(subjects=None, required=True, bids_root=None):
     return rows
 
 
+# Conversion types that write nothing (mirrors run_all.SKIP_TYPES).
+NON_CONVERTING_TYPES = {"timing_input", "supplementary", "no_conversion", "edf_excluded"}
+
+
+def check_unique_destinations(rows):
+    """Raise if two converting rows share a bids_destination.
+
+    run_all converts row by row and every converter overwrites its output, so
+    a shared destination keeps whichever source ran last and drops the other
+    without a message. load_physio_triage guards physio rows; this covers all.
+    """
+    seen = {}
+    for r in rows:
+        if r["conversion_type"] in NON_CONVERTING_TYPES:
+            continue
+        dest = r["bids_destination"]
+        if dest in seen:
+            raise ValueError(
+                f"two sources map to {dest}: {seen[dest]} and {r['source_file']}"
+            )
+        seen[dest] = r["source_file"]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate file_inventory.csv from sourcedata"
@@ -898,6 +921,8 @@ def main():
     else:
         print("Scanner physio: triage table present but holds no COMPLETE/PARTIAL "
               "row for these subjects")
+
+    check_unique_destinations(all_rows)
 
     # Write CSV
     fieldnames = ["source_file", "description", "bids_destination", "conversion_type"]

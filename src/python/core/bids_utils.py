@@ -170,7 +170,7 @@ def get_subject_summary(
     if layout is None:
         if bids_dir is None:
             config = load_config()
-            bids_dir = config['bids_project_dir']
+            bids_dir = config['paths']['bids_project_dir']
         layout = BIDSLayout(bids_dir, validate=False)
     
     # Get all files for this subject

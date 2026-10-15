@@ -78,7 +78,9 @@ def rt_by_accuracy(
     """
     work = df.copy()
     work["_rt"] = pd.to_numeric(work[rt_col], errors="coerce")
-    work["accurate"] = pd.to_numeric(work[accuracy_col], errors="coerce").astype(bool)
+    # Nullable boolean keeps a missing accuracy missing (astype(bool) made it
+    # True), so groupby leaves those trials out of both groups.
+    work["accurate"] = pd.to_numeric(work[accuracy_col], errors="coerce").astype("boolean")
 
     gcols = list(group_cols or []) + ["accurate"]
     grouped = work.groupby(gcols, observed=True)

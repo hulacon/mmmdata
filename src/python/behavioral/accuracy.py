@@ -289,7 +289,9 @@ def confidence_accuracy_curve(
     """
     work = df.copy()
     resp = pd.to_numeric(work[resp_col], errors="coerce")
-    work["confidence_level"] = np.where(resp.isin([1, 4]), 2, 1)
+    # A missing or out-of-range response has no confidence level; groupby
+    # drops it rather than counting it as "maybe".
+    work["confidence_level"] = resp.map({1: 2, 4: 2, 2: 1, 3: 1}).astype("Int64")
     work["_acc"] = pd.to_numeric(work[accuracy_col], errors="coerce")
 
     gcols = list(group_cols or []) + ["confidence_level"]
@@ -300,5 +302,6 @@ def confidence_accuracy_curve(
         accuracy="mean",
         se="sem",
     ).reset_index()
+    result["confidence_level"] = result["confidence_level"].astype(int)
 
     return result

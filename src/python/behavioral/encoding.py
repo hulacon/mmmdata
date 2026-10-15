@@ -99,7 +99,8 @@ def subsequent_memory_effect(
     # For items encoded multiple times (repeats/triplets), take the mean rating
     enc = enc.groupby(merge_keys, observed=True)["encoding_rating"].mean().reset_index()
     # Round to nearest integer for grouping
-    enc["encoding_rating"] = enc["encoding_rating"].round().astype(int)
+    # Halves round up; Series.round() rounds half to even (1.5 and 2.5 -> 2).
+    enc["encoding_rating"] = np.floor(enc["encoding_rating"] + 0.5).astype(int)
 
     # Prepare recognition side: keep accuracy + merge keys
     rec = recognition_df[merge_keys + [accuracy_col]].copy()
