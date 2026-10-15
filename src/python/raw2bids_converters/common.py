@@ -25,7 +25,9 @@ def _load_paths():
         from core.config import load_config
         cfg = load_config()
         return cfg["paths"]["bids_project_dir"], cfg["paths"]["source_dir"]
-    except Exception:
+    except (ImportError, FileNotFoundError):
+        # Config system unreachable. A config that loads but is broken
+        # (bad TOML, missing key) must raise, not silently resolve to GPFS.
         return _FALLBACK_BIDS_ROOT, _FALLBACK_SOURCE_DIR
 
 

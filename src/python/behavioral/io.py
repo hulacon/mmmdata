@@ -44,7 +44,9 @@ def _resolve_bids_root(bids_root: Optional[Path] = None) -> Path:
         from core.config import load_config
         config = load_config()
         return Path(config["paths"]["bids_project_dir"])
-    except Exception:
+    except (ImportError, FileNotFoundError):
+        # Config system unreachable. A config that loads but is broken
+        # (bad TOML, missing key) must raise, not silently resolve to GPFS.
         return DEFAULT_BIDS_ROOT
 
 

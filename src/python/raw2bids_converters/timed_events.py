@@ -31,6 +31,27 @@ from common import (
 
 
 # ============================================================================
+# Merge behavioral + timing
+# ============================================================================
+
+def _merge_on_trial(beh_df, timing_df):
+    """Inner-merge behavioral and timing rows on trial_id, refusing a mismatch.
+
+    Scheduled onsets are computed from row position, so a trial present in
+    only one CSV would be dropped by the merge and shift every later onset.
+    """
+    beh_ids = set(beh_df["trial_id"])
+    timing_ids = set(timing_df["trial_id"])
+    if beh_ids != timing_ids:
+        raise ValueError(
+            "behavioral and timing CSVs disagree on trial_id: "
+            f"only in behavioral {sorted(beh_ids - timing_ids)}, "
+            f"only in timing {sorted(timing_ids - beh_ids)}"
+        )
+    return pd.merge(beh_df, timing_df, on="trial_id", suffixes=("", "_timing"))
+
+
+# ============================================================================
 # Detect task type from filename
 # ============================================================================
 
@@ -89,7 +110,7 @@ def convert_cued_recall_encoding(beh_df, timing_df, subj, sess, run):
     beh_df = beh_df.copy()
     timing_df = timing_df.copy()
     beh_df["trial_id"] = beh_df["trial"]
-    merged = pd.merge(beh_df, timing_df, on="trial_id", suffixes=("", "_timing"))
+    merged = _merge_on_trial(beh_df, timing_df)
 
     # Detect rest trials: pairId == 0 or word is NaN
     is_rest = merged["word"].isna() | (merged["pairId"].astype(float) == 0)
@@ -186,7 +207,7 @@ def convert_cued_recall_math(beh_df, timing_df, subj, sess, run):
     beh_df = beh_df.copy()
     timing_df = timing_df.copy()
     beh_df["trial_id"] = beh_df["trial"]
-    merged = pd.merge(beh_df, timing_df, on="trial_id", suffixes=("", "_timing"))
+    merged = _merge_on_trial(beh_df, timing_df)
 
     onset_actual = merged["stim_image_start"].astype(float)
     duration_actual = merged["stim_image_end"].astype(float) - onset_actual
@@ -233,7 +254,7 @@ def convert_cued_recall_retrieval(beh_df, timing_df, subj, sess, run):
     beh_df = beh_df.copy()
     timing_df = timing_df.copy()
     beh_df["trial_id"] = beh_df["trial"]
-    merged = pd.merge(beh_df, timing_df, on="trial_id", suffixes=("", "_timing"))
+    merged = _merge_on_trial(beh_df, timing_df)
 
     n_trials = len(merged)
 
@@ -285,6 +306,11 @@ def convert_cued_recall_retrieval(beh_df, timing_df, subj, sess, run):
             trial_type.append("image")
             modality.append("visual")
             duration_scheduled.append(3.0)
+        elif not is_word.iloc[i]:
+            raise ValueError(
+                f"trial_id {merged['trial_id'].iloc[i]}: cue trial has no "
+                "image or word stimulus timing"
+            )
         else:
             trial_type.append("word")
             modality.append("auditory")
@@ -363,7 +389,7 @@ def convert_final_cued_recall(beh_df, timing_df, subj, sess, run):
     beh_df = beh_df.copy()
     timing_df = timing_df.copy()
     beh_df["trial_id"] = beh_df["trial"]
-    merged = pd.merge(beh_df, timing_df, on="trial_id", suffixes=("", "_timing"))
+    merged = _merge_on_trial(beh_df, timing_df)
 
     n_trials = len(merged)
 
@@ -413,6 +439,11 @@ def convert_final_cued_recall(beh_df, timing_df, subj, sess, run):
             trial_type.append("image")
             modality.append("visual")
             duration_scheduled.append(3.0)
+        elif not is_word.iloc[i]:
+            raise ValueError(
+                f"trial_id {merged['trial_id'].iloc[i]}: cue trial has no "
+                "image or word stimulus timing"
+            )
         else:
             trial_type.append("word")
             modality.append("auditory")
