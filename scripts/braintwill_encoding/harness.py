@@ -433,11 +433,11 @@ TB_TS_DROP = max(fs_enc.DELAYS_TR)
 TB_TS_ON = {"visual": "movies_frames", "audio": "movies_audio_frames"}
 #: Feature spaces for tb-enc-ts: band -> (composed table, model). A band's stream (and so the
 #: on column it is modulated by) is the table's: ``audio`` in the name means audio.
-#: himalaya's kernel decomposition for tb-enc-ts fits. float32 ``eigh`` on the GPU failed to
-#: converge on the first tb-enc-ts fits (2026-10-14). Likely cause, not verified: the ``onoff``
-#: band's kernel has rank <= 10 over thousands of rows, so a band-weight sample favouring it
-#: leaves thousands of near-equal eigenvalues. SVD of the same PSD kernel is the same
-#: decomposition, computed more stably.
+#: himalaya's kernel decomposition for tb-enc-ts fits. float32 ``eigh`` on the GPU fails to
+#: converge on every outer fold of a TB fit: a feature band's TB kernel is itself highly
+#: rank-deficient (plausibly few distinct items per run held over several bins; unchecked), leaving thousands of
+#: near-zero eigenvalues. SVD of the same PSD kernel is the same decomposition, computed more
+#: stably, at ~40x the cost (a fit is ~25 min rather than ~1 on an A100).
 TB_TS_SOLVER_PARAMS = {"diagonalize_method": "svd"}
 TB_TS_SPACES = {
     "ebind": {"ebind": ("movies_frames", "ebind")},
