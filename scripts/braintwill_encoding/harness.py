@@ -35,6 +35,19 @@ Registers:
           in every fit, then each band as a modulator — the feature minus its mean over the
           run's on-bins, times on, so off-bins are 0 by design.
 
+Model spaces (``model-<name>``, tb-nat-encoding read (b)): one *2psy model of the films'
+and the TB runs' shared visual and audio tables as one band, on films and on tb-enc-ts
+alike. Features are modulators on both registers: each minus its mean over the run's (TB)
+or the film window's (films) on-bins. A feature its store declares ``undefined`` in some
+bins (a content gate: no face, unvoiced, near-black) is a nested gate: its value centred over
+the bins where it is defined and 0 elsewhere, plus a ``<feature>:defined`` indicator, itself a
+modulator of on; indicators that are zero or repeat another across the register's stimuli
+are dropped (DECIDED 2026-10-15). ``undefinable`` values (a clip's trailing window) stay
+undefined and ``binned`` averages the defined frames. TB fits also carry the ``onoff`` band; film fits do
+not, because every film bin is on in both streams, so on/off is zero once centred. Both
+registers fit model spaces in float64 with ``eigh`` (``MODEL_DTYPE``), so read (b) has one
+solver on both sides.
+
 Feature sets: for films, the per-stimulus caches ``functional_space/encoding.py cache``
 writes (``<derivatives>/functional_space/features/<space>/``), only the register's films;
 for tb-enc, the shared1000 image tables under ``<derivatives>/stimuli_features/``. Either
@@ -56,6 +69,7 @@ Usage:
     python harness.py score --space psytwill --sub ## --backend torch_cuda
     python harness.py score --register tb-enc --space psytwill --sub ##
     python harness.py plan --register tb-enc-ts --space ebind --sub ##
+    python harness.py score --register films --space model-clip --sub ##
     python harness.py equivalence --space ebind --scenario primary --pct 0 --draw 0 --target ##
 """
 
@@ -110,16 +124,17 @@ OUTER_FOLDS = 5
 
 
 def film_spec(solver: str = "random_search", n_iter: int | None = None,
-              solver_params: dict | None = None) -> EncodingSpec:
+              solver_params: dict | None = None, dtype: str = "float32") -> EncodingSpec:
     """functional-space's encoder settings, wrapped in the outer CV.
 
     ``random_search`` with functional-space's ``N_ITER_BANDS`` is the default and the only
     setting the equivalence covers; ``hyper_gradient`` is opt-in for fits with many bands.
-    ``solver_params`` go to himalaya verbatim (``TB_TS_SOLVER_PARAMS`` for tb-enc-ts).
+    ``solver_params`` go to himalaya verbatim (``TB_TS_SOLVER_PARAMS`` for tb-enc-ts);
+    ``dtype`` is the fit's precision (``MODEL_DTYPE`` for model spaces).
     """
     ridge = RidgeSpec(alphas=tuple(fs_enc.ALPHAS), inner_folds=fs_enc.N_FOLDS, solver=solver,
                       n_iter=fs_enc.N_ITER_BANDS if n_iter is None else n_iter, random_state=0,
-                      solver_params=dict(solver_params or {}))
+                      solver_params=dict(solver_params or {}), dtype=dtype)
     return EncodingSpec(ridge=ridge, outer_folds=OUTER_FOLDS)
 
 
@@ -447,6 +462,176 @@ TB_TS_SPACES = {
 }
 
 
+# ---------------------------------------------------------------------------
+# model spaces: one *2psy model per space, on films and tb-enc-ts (tb-nat-encoding read (b))
+# ---------------------------------------------------------------------------
+
+MODEL_PREFIX = "model-"
+#: The read-(b) models: numeric models in both the films' and the TB runs' composed visual
+#: and audio tables. Left out: film-only models (motion, conversation, speech_rate), the
+#: string ``caption``, and ``speech_emotion`` (no comparable TB counterpart). Text models
+#: wait for a word grid (tb-nat-encoding DECIDED 2026-10-15).
+MODEL_TABLES = {
+    "movies_frames": ("aesthetics", "clip", "depth", "dinov2", "ebind", "emonet", "faces", "gist",
+                      "llstat", "places", "resmem", "saliency", "yolo"),
+    "movies_audio_frames": ("clap", "ebind_audio", "egemaps", "loudness", "music_emotion", "onsets",
+                            "pitch", "psychoacoustic", "rhythm", "sound_events", "spectral", "speech",
+                            "timbre", "tonal"),
+}
+MODEL_SPACES = {f"{MODEL_PREFIX}{m}": (t, m) for t, ms in MODEL_TABLES.items() for m in ms}
+TB_TS_SPACES.update({name: {m: (t, m)} for name, (t, m) in MODEL_SPACES.items()})
+#: Model-space fits on both registers: float64 ``eigh``. TB kernels defeat float32 ``eigh``
+#: (``TB_TS_SOLVER_PARAMS``); float64 ``eigh`` is the same decomposition at ~1/30 the cost of
+#: SVD (DECIDED 2026-10-15, so read (b) is one solver on both registers).
+MODEL_DTYPE = "float64"
+#: Alphas scored per batch: float64 over all ~83k columns and the 25-α grid at once asks the
+#: GPU for ~28 GB per block. Batching changes memory, not results (columns and alphas are
+#: scored independently).
+MODEL_SOLVER_PARAMS = {"n_alphas_batch": 5}
+
+
+def model_spec(solver: str = "random_search", n_iter: int | None = None) -> EncodingSpec:
+    """The read-(b) spec: one for both registers (a one-band film fit uses the same
+    eigenvalue solver settings)."""
+    return film_spec(solver, n_iter, MODEL_SOLVER_PARAMS, dtype=MODEL_DTYPE)
+
+
+def declared_undefined(stimfeat: Path) -> dict[str, set[str]]:
+    """Features each model's store declares ``undefined`` (a content gate), from the films'
+    store metadata; the TB tables are composed from the same extractors' stores."""
+    out: dict[str, set[str]] = {}
+    for table in MODEL_TABLES:
+        meta = json.loads((Path(stimfeat) / "psytwill" / f"{table}_features.meta.json").read_text())
+        for model, nulls in meta["model_nulls"].items():
+            out[model] = {f for f, v in nulls.items() if v.get("means") == "undefined"}
+    return out
+
+
+def gated_modulators(w: pd.DataFrame, on: np.ndarray, gated: set[str], name: str = ""
+                     ) -> tuple[np.ndarray, list[str]]:
+    """Modulators of one model, gated features nested (module docstring).
+
+    Columns: every feature in ``w``'s order (ungated: ``modulators``; gated: value minus its
+    mean over the on-bins where it is defined, 0 elsewhere), then one ``<feature>:defined``
+    indicator per gated feature (defined minus its mean over on-bins, 0 where off). A gated
+    feature defined nowhere in this stimulus gives a 0 value column.
+    """
+    f = w.to_numpy(np.float64)
+    cols = list(w.columns)
+    g = np.array([c in gated for c in cols], bool)
+    out = np.zeros_like(f)
+    if (~g).any():
+        out[:, ~g] = modulators(f[:, ~g], on, name)
+    if not g.any():
+        return out, cols
+    fg = f[:, g]
+    if np.isfinite(fg[~on]).any():
+        raise RuntimeError(f"{name}: defined values in bins where its stream is off")
+    d = np.isfinite(fg) & on[:, None]
+    n = d.sum(axis=0)
+    mean = np.where(n > 0, np.where(d, fg, 0.0).sum(axis=0) / np.maximum(n, 1), 0.0)
+    out[:, g] = np.where(d, fg - mean, 0.0)
+    ind = np.where(on[:, None], d - d[on].mean(axis=0), 0.0)
+    return np.concatenate([out, ind], axis=1), cols + [f"{c}:defined" for c, k in zip(cols, g) if k]
+
+
+def prune_indicators(feats: dict[str, FrameFeatures], band: str, names: list[str]
+                     ) -> tuple[dict[str, FrameFeatures], dict]:
+    """Drop ``:defined`` columns of ``band`` that are 0, or equal an earlier one, on every stimulus."""
+    sl = next(iter(feats.values())).bands[band]
+    x = np.concatenate([f.x[:, sl] for f in feats.values()])
+    keep, kept, dropped = np.ones(len(names), bool), [], {"zero": [], "duplicate": {}}
+    for j, nm in enumerate(names):
+        if not nm.endswith(":defined"):
+            continue
+        col = x[:, j]
+        if not np.any(col):
+            keep[j] = False
+            dropped["zero"].append(nm)
+            continue
+        twin = next((k for k in kept if np.array_equal(x[:, k], col)), None)
+        if twin is not None:
+            keep[j] = False
+            dropped["duplicate"][nm] = names[twin]
+        else:
+            kept.append(j)
+    if keep.all():
+        return feats, {"indicators": [names[k] for k in kept], "dropped": dropped}
+    out = {}
+    for sid, f in feats.items():
+        full = np.ones(f.x.shape[1], bool)
+        full[sl] = keep
+        bands, at = {}, 0
+        for b, s_ in f.bands.items():
+            w_ = int(full[s_].sum())
+            bands[b] = slice(at, at + w_)
+            at += w_
+        out[sid] = FrameFeatures(f.stimulus_id, f.times, f.x[:, full], f.frame_s, bands)
+    return out, {"indicators": [names[k] for k in kept], "dropped": dropped}
+
+
+def infer_stamp(times: np.ndarray, window: float = fs_enc.FRAME_S) -> str:
+    """``start`` or ``center``: which point of its bin a store's grid time stamps."""
+    frac = np.round(np.mod(np.asarray(times, float), window) / window, 6) % 1.0
+    if np.all(frac == 0.0):
+        return "start"
+    if np.all(frac == 0.5):
+        return "center"
+    raise RuntimeError(f"times are neither bin starts nor bin centres on the {window} s grid")
+
+
+def window_bins(volume_starts: np.ndarray, tr: float, n_bins: int, delays=fs_enc.DELAYS_TR) -> np.ndarray:
+    """Bins (by start) that a window's FIR spans read: ``[first − max(d)·TR, last − min(d)·TR + TR)``."""
+    lo = volume_starts[0] - max(delays) * tr
+    hi = volume_starts[-1] - min(delays) * tr + tr
+    t = np.arange(n_bins) * fs_enc.FRAME_S
+    return (t >= lo - 1e-6) & (t < hi - 1e-6)
+
+
+def film_model_features(long: pd.DataFrame, rows: pd.DataFrame, model: str, gated: set[str]
+                        ) -> tuple[dict[str, FrameFeatures], list[str]]:
+    """One model's frames per window film, each feature centred over the window's bins.
+
+    ``long`` is the store table's rows for ``model`` and the window films. A film's grid is
+    its own (bins ``0 … max``); the window's bins are the ones its FIR spans read, and every
+    film bin is on (both streams, every film), so the modulator is the feature minus its
+    window mean; gated features are nested (``gated_modulators``). Other undefined values stay
+    undefined (``binned`` averages defined frames).
+    """
+    stamp = infer_stamp(long["time"].to_numpy())
+    out, names = {}, None
+    for r in rows.itertuples(index=False):
+        d = long[long["stimulus_id"] == r.stimulus_id]
+        if d.empty:
+            raise RuntimeError(f"{model}: no rows for film {r.stimulus_id}")
+        start = d["time"].to_numpy(float) - (fs_enc.FRAME_S / 2 if stamp == "center" else 0.0)
+        n_bins = int(np.rint(start.max() / fs_enc.FRAME_S)) + 1
+        w = grid_wide(d, model, stamp, n_bins)
+        present = np.unique(np.rint(start / fs_enc.FRAME_S).astype(int))
+        if present.size != n_bins:  # a bin may hold only NaN values, but it must have rows
+            raise RuntimeError(f"{model} {r.stimulus_id}: {n_bins - present.size} grid bins with no row")
+        tr = float(r.repetition_time)
+        on = window_bins(fs_enc.film_volume_starts(r.onset, r.start, r.n, tr), tr, n_bins)
+        x, nm = gated_modulators(w.where(pd.Series(on, index=w.index), np.nan), on, gated,
+                                 f"{r.stimulus_id} {model}")
+        if names is not None and nm != names:
+            raise RuntimeError(f"{model} {r.stimulus_id}: features differ from the first film's")
+        names = nm
+        out[r.stimulus_id] = FrameFeatures(r.stimulus_id, np.arange(n_bins) * fs_enc.FRAME_S,
+                                           x, fs_enc.FRAME_S, {model: slice(0, x.shape[1])})
+    return out, names
+
+
+def load_film_model(stimfeat: Path, rows: pd.DataFrame, space: str
+                    ) -> tuple[dict[str, FrameFeatures], list[str]]:
+    table, model = MODEL_SPACES[space]
+    src = Path(stimfeat) / "psytwill" / f"{table}_features.parquet"
+    long = pd.read_parquet(src, columns=["stimulus_id", "time", "model", "feature", "value"],
+                           filters=[("model", "==", model),
+                                    ("stimulus_id", "in", sorted(rows["stimulus_id"]))])
+    return film_model_features(long, rows, model, declared_undefined(stimfeat).get(model, set()))
+
+
 def table_stream(table: str) -> str:
     return "audio" if "audio" in table else "visual"
 
@@ -477,7 +662,17 @@ def grid_wide(long: pd.DataFrame, model: str, stamp: str, n_bins: int) -> pd.Dat
     b = np.rint(start / fs_enc.FRAME_S).astype(int)
     if np.abs(b * fs_enc.FRAME_S - start).max() > 1e-6 or b.min() < 0 or b.max() >= n_bins:
         raise RuntimeError(f"{model}: times are not on the {fs_enc.FRAME_S} s grid of {n_bins} bins")
-    w = d.assign(bin=b).pivot(index="bin", columns="feature", values="value")
+    d = d.assign(bin=b)[["bin", "feature", "value"]]
+    dup = d.duplicated(["bin", "feature"], keep=False)
+    if dup.any():
+        # Some composed tables repeat every row under two extractor_version labels. Copies
+        # with one value are one value; copies that disagree are not ours to pool.
+        n_val = d[dup].groupby(["bin", "feature"])["value"].nunique(dropna=False)
+        if (n_val > 1).any():
+            raise RuntimeError(f"{model}: {int((n_val > 1).sum())} (bin, feature) cells have "
+                               "copies with different values")
+        d = d.drop_duplicates(["bin", "feature"])
+    w = d.pivot(index="bin", columns="feature", values="value")
     return w.reindex(index=range(n_bins), columns=sorted(w.columns))
 
 
@@ -512,19 +707,25 @@ def modulators(f: np.ndarray, on: np.ndarray, name: str = "") -> np.ndarray:
 
 
 def run_features(stem: str, tables: dict[str, tuple[pd.DataFrame, str]], space: str,
-                 n_bins: int) -> FrameFeatures:
+                 n_bins: int, gated: dict[str, set[str]] | None = None) -> FrameFeatures:
     """One TB run as one frame stimulus: band ``onoff`` (visual-on, audio-on), then the space's
     bands as centred modulators of their stream's on column.
 
-    ``tables`` maps a composed table name to ``(long rows, stamp)``.
+    ``tables`` maps a composed table name to ``(long rows, stamp)``. With ``gated`` (model
+    spaces), each model's declared-undefined features are nested gates (``gated_modulators``).
     """
     on = {s: stream_on(*tables[t], n_bins) for s, t in TB_TS_ON.items()}
     blocks = [np.stack([on[s] for s in TB_TS_ON], axis=1).astype(np.float64)]
     bands, at = {"onoff": slice(0, len(TB_TS_ON))}, len(TB_TS_ON)
     for band, (table, model) in TB_TS_SPACES[space].items():
         long, stamp = tables[table]
-        w = grid_wide(long, model, stamp, n_bins).to_numpy()
-        blocks.append(modulators(w, on[table_stream(table)], f"{stem} {band}"))
+        if gated is None:
+            w = grid_wide(long, model, stamp, n_bins).to_numpy()
+            blocks.append(modulators(w, on[table_stream(table)], f"{stem} {band}"))
+        else:
+            w, _ = gated_modulators(grid_wide(long, model, stamp, n_bins), on[table_stream(table)],
+                                    gated.get(model, set()), f"{stem} {band}")
+            blocks.append(w)
         bands[band] = slice(at, at + w.shape[1])
         at += w.shape[1]
     return FrameFeatures(stem, np.arange(n_bins) * fs_enc.FRAME_S, np.concatenate(blocks, axis=1),
@@ -535,7 +736,8 @@ def tb_run_dir(stimfeat: Path, sub: str, ses: str, stem: str) -> Path:
     return Path(stimfeat) / "tb" / f"sub-{sub}" / f"ses-{ses}" / stem / "features"
 
 
-def load_run_features(stimfeat: Path, run, space: str, n_bins: int) -> FrameFeatures:
+def load_run_features(stimfeat: Path, run, space: str, n_bins: int,
+                      gated: dict[str, set[str]] | None = None) -> FrameFeatures:
     """Read a run's composed tables (only the models the space and the on/off band need)."""
     d = tb_run_dir(stimfeat, run.sub, run.ses, run.stem)
     need = {t: None for t in TB_TS_ON.values()}
@@ -552,7 +754,15 @@ def load_run_features(stimfeat: Path, run, space: str, n_bins: int) -> FrameFeat
         long = pd.read_parquet(d / f"{table}_features.parquet", columns=cols,
                                filters=None if models is None else [("model", "in", sorted(models))])
         tables[table] = (long, meta["grid"]["stamp"])
-    return run_features(run.stem, tables, space, n_bins)
+    return run_features(run.stem, tables, space, n_bins, gated)
+
+
+def _first_table(stimfeat: Path, run, table: str) -> tuple[pd.DataFrame, str]:
+    """A run's composed table rows and stamp (for its feature names)."""
+    d = tb_run_dir(stimfeat, run.sub, run.ses, run.stem)
+    meta = json.loads((d / f"{table}_features.meta.json").read_text())
+    return (pd.read_parquet(d / f"{table}_features.parquet", columns=["time", "model", "feature", "value"]),
+            meta["grid"]["stamp"])
 
 
 def tb_ts_design(runs: pd.DataFrame, feats: dict[str, FrameFeatures], cleaned: Path):
@@ -608,17 +818,32 @@ class Request:
         from core.config import load_config
 
         self.paths = paths
-        self.spec = film_spec(args.solver, args.n_iter,  # tb registers share the film grid and folds
-                              TB_TS_SOLVER_PARAMS if args.register == "tb-enc-ts" else None)
+        model_space = args.space in MODEL_SPACES
+        if model_space and args.register == "tb-enc":
+            raise SystemExit("model spaces run on the films and tb-enc-ts registers")
+        if model_space:  # read (b): one solver on both registers
+            self.spec = model_spec(args.solver, args.n_iter)
+        else:  # tb registers share the film grid and folds
+            self.spec = film_spec(args.solver, args.n_iter,
+                                  TB_TS_SOLVER_PARAMS if args.register == "tb-enc-ts" else None)
         self.register_name = args.register
         if args.register == "films":
             windows = fm.load_windows(paths.derivatives)
             films = args.films.split(",") if getattr(args, "films", None) else None
             self.rows = alignment_rows(windows, args.sub, films)
-            feats = frame_features(paths.features, args.space, self.rows["stimulus_id"])
-            self.feats = {f.stimulus_id: f for f in feats}
+            if model_space:
+                table, model = MODEL_SPACES[args.space]
+                feats, names = load_film_model(paths.stimfeat, self.rows, args.space)
+                self.feats, gates = prune_indicators(feats, model, names)
+                self.label = {"space": args.space, "source": str(paths.stimfeat / "psytwill" / f"{table}_features.parquet"),
+                              "model": model, "modulators": "feature minus its mean over the film window's bins",
+                              "onoff": "none: every film bin is on in both streams (zero once centred)",
+                              "gates": gates}
+            else:
+                feats = frame_features(paths.features, args.space, self.rows["stimulus_id"])
+                self.feats = {f.stimulus_id: f for f in feats}
+                self.label = _label(paths, args.space)
             self.register = film_register(windows, paths.cleaned, list(self.rows["stimulus_id"]))
-            self.label = _label(paths, args.space)
         elif args.register == "tb-enc-ts":
             if getattr(args, "films", None):
                 raise SystemExit("--films applies to the films register only")
@@ -631,11 +856,18 @@ class Request:
             if len(n_bins) != 1:
                 raise RuntimeError(f"sub-{args.sub}: runs of different lengths {sorted(n_bins)}")
             (n,) = n_bins
-            self.feats = {r.stem: load_run_features(paths.stimfeat, r, args.space, n)
+            gated = declared_undefined(paths.stimfeat) if model_space else None
+            self.feats = {r.stem: load_run_features(paths.stimfeat, r, args.space, n, gated)
                           for r in self.runs.itertuples(index=False)}
             self.register = tb_ts_register(manifest, paths.cleaned)
             self.label = {"space": args.space, "source": str(paths.stimfeat / "tb"),
                           "bands": {b: list(v) for b, v in TB_TS_SPACES[args.space].items()}}
+            if model_space:
+                table, model = MODEL_SPACES[args.space]
+                long, stamp = _first_table(paths.stimfeat, next(self.runs.itertuples(index=False)), table)
+                names = list(grid_wide(long, model, stamp, n).columns)
+                names += [f"{c}:defined" for c in names if c in gated.get(model, set())]
+                self.feats, self.label["gates"] = prune_indicators(self.feats, model, names)
         else:
             if getattr(args, "films", None):
                 raise SystemExit("--films applies to the films register only")
@@ -690,7 +922,8 @@ def cmd_plan(args) -> None:
     cache = ScoreCache(paths.out)
     print(json.dumps({**req.summary(), "space": args.space, "spec_hash": req.key["spec_hash"],
                       "feature_hash": req.key["feature_hash"], "path": str(cache.path(req.key)),
-                      "cached": cache.get(req.key) is not None}, indent=2))
+                      "cached": cache.get(req.key) is not None,
+                      **({"gates": req.label["gates"]} if "gates" in req.label else {})}, indent=2))
 
 
 def cmd_score(args) -> None:
@@ -791,8 +1024,8 @@ def main() -> None:
     for name in ("plan", "score"):
         p = sub.add_parser(name)
         p.add_argument("--register", choices=("films", "tb-enc", "tb-enc-ts"), default="films")
-        p.add_argument("--space", choices=sorted(set(fs_enc.FEATURE_SPACES) | set(TB_SPACES) | set(TB_TS_SPACES)),
-                       required=True)
+        p.add_argument("--space", required=True,
+                       choices=sorted(set(fs_enc.FEATURE_SPACES) | set(TB_SPACES) | set(TB_TS_SPACES)))
         p.add_argument("--sub", required=True)
         p.add_argument("--films", help="comma-separated subset of the alignment pool (default: all of it)")
         p.add_argument("--solver", choices=("random_search", "hyper_gradient"), default="random_search")

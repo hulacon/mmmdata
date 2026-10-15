@@ -347,3 +347,96 @@ def test_the_drop_is_the_first_volume_whose_delays_all_land_in_the_run(harness):
     fir_design(f, np.arange(harness.TB_TS_DROP, 20) * tr, tr, harness.fs_enc.DELAYS_TR, end=n * 0.5)
     with pytest.raises(Exception, match="no frames"):
         fir_design(f, np.arange(harness.TB_TS_DROP - 1, 20) * tr, tr, harness.fs_enc.DELAYS_TR, end=n * 0.5)
+
+
+# ---------------------------------------------------------------------------
+# model spaces (read (b)): gridding, nested gates, film windows
+# ---------------------------------------------------------------------------
+
+def test_model_spaces_are_new_names_on_both_registers(harness):
+    assert len(harness.MODEL_SPACES) == 27
+    assert set(harness.MODEL_SPACES) <= set(harness.TB_TS_SPACES)
+    assert harness.TB_TS_SPACES["ebind"] == {"ebind": ("movies_frames", "ebind")}  # summary space untouched
+    spec = harness.model_spec().to_dict()["ridge"]
+    assert spec["dtype"] == "float64" and "diagonalize_method" not in spec["solver_params"]
+    assert "dtype" not in harness.film_spec().to_dict()["ridge"]  # existing specs keep their hash
+
+
+def test_grid_wide_collapses_identical_copies_and_refuses_differing_ones(harness):
+    import numpy as np
+
+    d = _long([0.0, 0.5], "m", [[1.0], [2.0]])
+    w = harness.grid_wide(pd.concat([d, d]), "m", "start", 3)
+    np.testing.assert_array_equal(w.to_numpy()[:, 0], [1.0, 2.0, np.nan])
+    other = d.assign(value=[1.0, 5.0])
+    with pytest.raises(RuntimeError, match="different values"):
+        harness.grid_wide(pd.concat([d, other]), "m", "start", 3)
+
+
+def test_infer_stamp(harness):
+    import numpy as np
+
+    assert harness.infer_stamp(np.array([0.0, 0.5, 1.0])) == "start"
+    assert harness.infer_stamp(np.array([0.25, 0.75])) == "center"
+    with pytest.raises(RuntimeError):
+        harness.infer_stamp(np.array([0.0, 0.25]))
+
+
+def test_window_bins_are_the_bins_the_fir_spans_read(harness):
+    import numpy as np
+
+    tr = 1.5
+    starts = np.array([10.5, 12.0])  # spans [starts - 7 TR, starts - 3 TR + TR)
+    on = harness.window_bins(starts, tr, 40, delays=(3, 4, 5, 6, 7))
+    t = np.arange(40) * 0.5
+    np.testing.assert_array_equal(t[on], np.arange(0.0, 12.0 - 3 * tr + tr, 0.5))
+
+
+def test_gated_modulators_nest_the_gate(harness):
+    import numpy as np
+
+    on = np.array([False, True, True, True, True, False])
+    w = pd.DataFrame({"a": [np.nan, 1, 2, 3, 6, np.nan],                # ungated
+                      "g": [np.nan, 2, np.nan, 4, np.nan, np.nan]})     # gated: defined on 2 of 4
+    x, names = harness.gated_modulators(w, on, {"g"})
+    assert names == ["a", "g", "g:defined"]
+    np.testing.assert_allclose(x[:, 0], [0, -2, -1, 0, 3, 0])
+    np.testing.assert_allclose(x[:, 1], [0, -1, 0, 1, 0, 0])            # centred over defined, 0 elsewhere
+    np.testing.assert_allclose(x[:, 2], [0, .5, -.5, .5, -.5, 0])       # defined − its on-mean
+    # a gated feature defined nowhere gives a zero value column (and a zero indicator)
+    x, _ = harness.gated_modulators(w.assign(g=np.nan), on, {"g"})
+    assert not x[:, 1:].any()
+    with pytest.raises(RuntimeError, match="stream is off"):
+        harness.gated_modulators(w.assign(g=[9, 2, np.nan, 4, np.nan, np.nan]), on, {"g"})
+
+
+def test_prune_indicators_drops_zero_and_repeated_gates(harness):
+    import numpy as np
+
+    def ff(sid, x):
+        return harness.FrameFeatures(sid, np.arange(3) * 0.5, np.asarray(x, float), 0.5,
+                                     {"onoff": slice(0, 1), "m": slice(1, 5)})
+    names = ["a", "a:defined", "b:defined", "c:defined"]
+    feats = {"r1": ff("r1", [[1, 0, .5, .5, 0], [1, 1, -.5, -.5, 0], [0, 0, 0, 0, 0]]),
+             "r2": ff("r2", [[1, 2, .5, .5, 0], [1, 3, -.5, -.5, 0], [0, 0, 0, 0, 0]])}
+    out, gates = harness.prune_indicators(feats, "m", names)
+    assert gates["indicators"] == ["a:defined"]
+    assert gates["dropped"] == {"zero": ["c:defined"], "duplicate": {"b:defined": "a:defined"}}
+    assert out["r1"].bands == {"onoff": slice(0, 1), "m": slice(1, 3)}
+    np.testing.assert_array_equal(out["r2"].x, [[1, 2, .5], [1, 3, -.5], [0, 0, 0]])
+
+
+def test_film_model_features_centre_over_the_window(harness):
+    import numpy as np
+
+    n = 30  # a 15 s film, audio stamped at bin centres
+    vals = np.arange(n, dtype=float)[:, None]
+    long = _long(np.arange(n) * 0.5 + 0.25, "m", vals).assign(stimulus_id="film-a")
+    tr = 1.5
+    rows = pd.DataFrame([{"stimulus_id": "film-a", "onset": 0.0, "start": 7, "n": 2, "repetition_time": tr}])
+    feats, names = harness.film_model_features(long, rows, "m", set())
+    f = feats["film-a"]
+    on = harness.window_bins(np.array([7, 8]) * tr, tr, n)
+    assert names == ["m_000"] and f.bands == {"m": slice(0, 1)}
+    np.testing.assert_allclose(f.x[on, 0], vals[on, 0] - vals[on, 0].mean())
+    assert not f.x[~on].any()
