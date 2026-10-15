@@ -57,3 +57,16 @@ def test_unreachable_config_still_falls_back(missing_config):
                                     common._FALLBACK_SOURCE_DIR)
     assert beh_io._resolve_bids_root() == beh_io.DEFAULT_BIDS_ROOT
     assert nimg_io._resolve_bids_root() == nimg_io.DEFAULT_BIDS_ROOT
+
+
+@pytest.mark.parametrize("resolve", [
+    lambda: common._load_paths(),
+    lambda: beh_io._resolve_bids_root(),
+    lambda: nimg_io._resolve_bids_root(),
+])
+def test_config_dir_without_base_toml_raises(tmp_path, monkeypatch, resolve):
+    """MMMDATA_CONFIG_DIR naming an existing dir that lacks base.toml is a
+    found-but-broken config, not an unreachable one."""
+    monkeypatch.setenv("MMMDATA_CONFIG_DIR", str(tmp_path))
+    with pytest.raises(FileNotFoundError):
+        resolve()

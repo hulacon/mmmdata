@@ -52,13 +52,15 @@ def _resolve_bids_root(bids_root: Optional[Path] = None) -> Path:
         code_root = Path(__file__).resolve().parents[3]
         if str(code_root) not in sys.path:
             sys.path.insert(0, str(code_root / "src" / "python"))
-        from core.config import load_config
-        config = load_config()
-        return Path(config["paths"]["bids_project_dir"])
+        from core.config import _find_config_dir, load_config
+        config_dir = _find_config_dir()
     except (ImportError, FileNotFoundError):
-        # Config system unreachable. A config that loads but is broken
-        # (bad TOML, missing key) must raise, not silently resolve to GPFS.
+        # Config system unreachable (module or config dir not found). Only
+        # discovery falls back: a found config that is broken (no base.toml,
+        # bad TOML, missing key) must raise, not silently resolve to GPFS.
         return DEFAULT_BIDS_ROOT
+    config = load_config(config_dir)
+    return Path(config["paths"]["bids_project_dir"])
 
 
 # ---------------------------------------------------------------------------
