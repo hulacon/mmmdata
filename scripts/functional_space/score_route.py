@@ -72,6 +72,8 @@ Verbs:
            draw-<draw>/target-<sub>/ (m2b_segments.parquet, segments.json)
            ``--set repeat``: the repeated films' held-out showings, one pool per showing,
            regions A/B/D -> m2b_segments_repeat.parquet beside it
+           ``--regions families``: the held-out set over regions A/B/D, checked against the
+           job's families M2b -> m2b_segments_families.parquet beside it
 
 Usage:
     python score_route.py score --pct 0 --draw 0 --target 03 --n-jobs 16
@@ -917,6 +919,89 @@ def run_segments(args: argparse.Namespace, log=print) -> Path:
     return dest
 
 
+def run_segments_families(args: argparse.Namespace, log=print) -> Path:
+    """Post hoc (2026-10-15): ``run_segments`` over regions of families A, B and D, held-out set.
+
+    Same models, films and per-family shared column set as ``families``
+    (``score_set``), so ``rank_all`` must reproduce the job's saved
+    ``families/m2b.parquet``; a mismatch is an error. Regions are named
+    ``<family>:<roi>`` as in the repeat pool and ``within_subject.py``.
+    """
+    import cha
+    import encoding as enc
+    import families as fam
+    import films as fm
+    import grayordinates as go
+    import partitions as pt
+    import within_subject as ws
+
+    t0 = time.time()
+    paths = enc.Paths()
+    cpaths = cha.Paths()
+    cleaned = cpaths.cleaned
+    parts = pt.load_partitions(paths.derivatives)
+    windows = fm.load_windows(paths.derivatives)
+    subs = sorted(parts.loc[(parts["scenario"] == args.scenario) & (parts["pct"] == args.pct)
+                            & (parts["draw"] == args.draw) & (parts["target"] == args.target), "subject"].unique())
+    if args.target not in subs or len(subs) != 3:
+        raise ValueError(f"job resolves to subjects {subs}; expected the target and two template subjects")
+    template_subs = [s for s in subs if s != args.target]
+    saved = families_dir(paths.derivatives, args.scenario, args.pct, args.draw, args.target, args.arm) / "m2b.parquet"
+    if not saved.exists():
+        raise FileNotFoundError(f"{saved}: run `families` for this job first (the check needs its M2b)")
+    job = {"derivatives": paths.derivatives, "parts": parts, "windows": windows, "scenario": args.scenario,
+           "pct": args.pct, "draw": args.draw, "target": args.target}
+    table = pd.read_csv(go.grayordinates_path(cleaned), sep="\t")
+    n = len(table)
+    labels = fam.family_labels(table, cpaths.atlases)
+    seconds = {}
+
+    t1 = time.time()
+    models, info = build_models(job, template_subs, n, args.n_jobs, cleaned, log, arm=args.arm)
+    seconds["models"] = round(time.time() - t1, 1)
+    log(f"models: {list(models)} ({seconds['models']:.0f} s)")
+
+    t1 = time.time()
+    role = next(r for r, s in FILM_SETS.items() if s == PRIMARY_SET)
+    data = load_films(film_rows(windows, subs, role), subs, args.target,
+                      lambda row, cache: fm.film_series(row, cleaned, cache))
+    proj = project_all(models, data, template_subs, args.target)
+    valid = shared_valid(data[args.target], proj)
+    regs = {r: c[valid[c]] for r, c in ws.region_columns(labels).items()}
+    regs = {r: c for r, c in regs.items() if c.size}
+    seg = pd.concat([sc.m2b_segments(data[args.target], per_film, regs).assign(model=name)
+                     for name, per_film in proj.items()], ignore_index=True)
+    seconds["score"] = round(time.time() - t1, 1)
+
+    ref = pd.read_parquet(saved)
+    ref = ref[(ref["set"] == PRIMARY_SET) & ref["family"].isin(ws.REGION_FAMILIES) & ref["model"].isin(models)]
+    ref = ref.assign(network=ref["family"] + ":" + ref["network"])
+    key = ["model", "network", "film", "segment"]
+    m = seg[key + ["rank_all"]].merge(ref[key + ["rank_acc"]], on=key, validate="1:1")
+    if len(m) != len(seg) or len(m) != len(ref):
+        raise ValueError(f"segment rows {len(seg)} do not pair with the saved families M2b's {len(ref)}")
+    worst = float((m["rank_all"] - m["rank_acc"]).abs().max())
+    if worst > 1e-9:
+        raise ValueError(f"rank_all differs from the saved families M2b by up to {worst:.3g}")
+
+    dest = segments_dir(paths.derivatives, args.scenario, args.pct, args.draw, args.target, args.arm)
+    dest.mkdir(parents=True, exist_ok=True)
+    seg.to_parquet(dest / "m2b_segments_families.parquet", index=False)
+    seconds["total"] = round(time.time() - t0, 1)
+    side = {
+        "description": "post hoc (2026-10-15): M2b's held-out segment matrix with its guesses kept, per model, "
+                       "region of families A/B/D and segment (scoring.m2b_segments)",
+        "job": {"scenario": args.scenario, "pct": args.pct, "draw": args.draw, "target": args.target},
+        "arm": args.arm, "template_subjects": template_subs, "models": sorted(models),
+        "check": {"against": str(saved.relative_to(paths.derivatives)), "max_abs_rank_diff": worst},
+        "segment_trs": sc.SEGMENT_TRS, "code_version": sc._code_version(), "seconds": seconds,
+        "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+    }
+    (dest / "segments_families.json").write_text(json.dumps(side, indent=2) + "\n")
+    log(f"wrote {dest / 'm2b_segments_families.parquet'} (check {worst:.1e}) in {seconds['total']:.0f} s")
+    return dest
+
+
 #: Routes whose smoothness the smoothed-anatomical control matches (§6; Bazeille 2021), where the job has them.
 SMOOTH_MATCH = ("combined", "cha", "srm")
 
@@ -1384,9 +1469,15 @@ def main() -> None:
     g2.add_argument("--n-jobs", type=int, default=1)
     g2.add_argument("--arm", default="ebind", choices=ARMS)
     g2.add_argument("--set", default="heldout", choices=("heldout", "repeat"))
+    g2.add_argument("--regions", default="networks", choices=("networks", "families"),
+                    help="held-out set only: family-A networks (checked against M2b) or families A/B/D "
+                         "(checked against the families M2b); the repeat set always scores A/B/D")
     args = ap.parse_args()
     if args.verb == "segments" and args.set == "repeat":
         run_segments_repeat(args)
+        return
+    if args.verb == "segments" and args.regions == "families":
+        run_segments_families(args)
         return
     {"score": run_score, "m4": run_m4, "mni": run_mni, "decide": run_decide, "families": run_families,
      "segments": run_segments}[args.verb](args)
