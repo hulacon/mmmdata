@@ -124,6 +124,95 @@ def test_permutation_stays_within_blocks(reliability):
     assert sorted(out[:4]) == [0, 0, 1, 1] and sorted(out[4:]) == [2, 2, 3, 3]
 
 
+# --- reliability.py: the time-series ceiling (tb-nat-encoding settle 3) -------------------------
+
+def _tb_events():
+    """A triplet (pairIds 1-3) intact, then broken by a rest, then intact in A-C-B order; one pair."""
+    slots = [(9.0, 1, 3), (13.5, 2, 3), (18.0, 3, 3), (22.5, None, None),
+             (27.0, 1, 3), (31.5, 2, 3), (36.0, None, None), (40.5, 3, 3),
+             (45.0, 1, 3), (49.5, 3, 3), (54.0, 2, 3), (58.5, 7, 2)]
+    rows = []
+    for on, pid, con in slots:
+        if pid is None:
+            rows.append({"onset": on, "onset_actual": float("nan"), "trial_type": "rest",
+                         "pairId": "n/a", "mmmId": "n/a", "enCon": "n/a"})
+            continue
+        for kind in ("image", "word"):
+            rows.append({"onset": on, "onset_actual": on + 0.02, "trial_type": kind,
+                         "pairId": pid, "mmmId": 100 + pid, "enCon": con})
+    return pd.DataFrame(rows)
+
+
+def test_triplet_presentations_split_at_rests_and_keep_item_order(reliability):
+    p = reliability.triplet_presentations(_tb_events(), 1.5)
+    assert list(p["k0"]) == [6, 18, 27, 30]
+    assert list(p["n_slots"]) == [3, 2, 1, 3]
+    assert set(p["seq"]) == {0}
+    assert p["items"].iloc[0] == (101, 102, 103) and p["items"].iloc[3] == (101, 103, 102)
+
+
+def test_triplet_presentations_refuse_an_offgrid_onset(reliability):
+    e = _tb_events()
+    e.loc[e["onset"] == 9.0, "onset"] = 9.2
+    with pytest.raises(RuntimeError, match="off the volume grid"):
+        reliability.triplet_presentations(e, 1.5)
+
+
+def test_identical_volumes_are_those_whose_whole_fir_window_is_inside(reliability):
+    import numpy as np
+
+    tr, delays, k0 = 1.5, (3, 4, 5, 6, 7), 6
+    got = reliability.identical_volumes(k0, 3, 4.5, tr, delays)
+    lo, hi = k0 * tr, k0 * tr + 13.5
+    want = [k for k in range(60) if all(lo <= k * tr - d * tr and k * tr - (d - 1) * tr <= hi for d in delays)]
+    assert list(got) == want == list(np.arange(13, 18))
+
+
+def test_ceiling_pairs_take_intact_same_order_presentations_only(reliability):
+    e = _tb_events()
+    late = e.assign(onset=e["onset"] + 90.0, onset_actual=e["onset_actual"] + 90.0)  # same design, later
+    p = pd.concat([reliability.triplet_presentations(e, 1.5).assign(run="r1"),
+                   reliability.triplet_presentations(late, 1.5).assign(run="r2")]).assign(ses="04")
+    pairs = reliability.ceiling_pairs(p, 1.5, (3, 4, 5, 6, 7), {"r1": 210, "r2": 210}, 7)
+    # intact: (A,B,C)@6 and @66 -> one same-order pair; (A,C,B)@30 and @90 -> another
+    assert pairs["pair"].nunique() == 2 and len(pairs) == 10
+    first = pairs[pairs["pair"] == 0]
+    assert list(first["k_i"]) == [13, 14, 15, 16, 17] and list(first["k_j"]) == [73, 74, 75, 76, 77]
+    assert set(pairs["unit"]) == {"04:0"}
+
+
+def test_pair_products_average_to_mean_pair_corr(reliability):
+    import numpy as np
+
+    rng = np.random.default_rng(2)
+    z = np.stack([reliability._zscore(s) for s in rng.standard_normal((4, 40, 6))])
+    np.testing.assert_allclose(reliability.pair_products(z).mean(axis=0), reliability.mean_pair_corr(z),
+                               atol=1e-12)
+
+
+def test_unit_bootstrap_se(reliability):
+    import numpy as np
+
+    rng = np.random.default_rng(3)
+    same = np.ones((20, 3))
+    assert np.allclose(reliability.unit_bootstrap(same, np.ones(20), rng), 0.0)
+    v = rng.standard_normal((400, 1))
+    se = reliability.unit_bootstrap(v, np.ones(400), rng, n_boot=2000)
+    np.testing.assert_allclose(se, v.std(ddof=1) / np.sqrt(400), rtol=0.1)
+    # strata: units never move between strata, so two constant strata give SE 0
+    strat = np.r_[np.zeros(10), np.ones(10)].astype(int)
+    vals = np.r_[np.zeros(10), np.ones(10)][:, None]
+    assert np.allclose(reliability.unit_bootstrap(vals, np.ones(20), rng, strata=strat), 0.0)
+
+
+def test_ceiling_floor_needs_both_parts(reliability):
+    import numpy as np
+
+    nc = np.array([0.05, 0.12, 0.12, 0.30, np.nan])
+    se = np.array([0.001, 0.05, 0.03, 0.01, 0.01])
+    assert list(reliability.ceiling_floor(nc, se)) == [False, False, True, True, False]
+
+
 def _tb_trials():
     """Two sessions: a triplet shown twice, a repeated pair, a single, and one super repeat x2 per session."""
     rows = []
