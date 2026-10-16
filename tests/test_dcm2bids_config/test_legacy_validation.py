@@ -52,6 +52,27 @@ KNOWN_LEGACY_BUGS: dict[tuple[str, str], dict] = {}
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _task_only(desc: dict) -> str:
+    """``custom_entities`` without the run, as the legacy configs wrote it.
+
+    Legacy configs left run numbering to dcm2bids (by AcquisitionTime); the
+    generator now names each run of a multi-run label itself.
+    """
+    return desc.get("custom_entities", "").split("_run-")[0]
+
+
+def _assert_runs_are_what_dcm2bids_numbered(bolds: list[dict]) -> None:
+    """In a clean session the explicit runs are dcm2bids' own 1..N."""
+    by_task: dict[str, list[str]] = {}
+    for d in bolds:
+        entities = d.get("custom_entities", "")
+        if "_run-" in entities:
+            task, run = entities.split("_run-")
+            by_task.setdefault(task, []).append(run)
+    for task, runs in by_task.items():
+        assert runs == [f"{i:02d}" for i in range(1, len(runs) + 1)], (task, runs)
+
+
 def _extract_mappings(config: dict) -> list[dict]:
     """Extract normalized DICOM→BIDS mappings from a config.
 
@@ -128,8 +149,9 @@ class TestLegacyTemplateConfigs:
 
         # Compare task labels (should match since ses-04 was template-generated)
         legacy_tasks = sorted(d.get("custom_entities", "") for d in legacy_bolds)
-        gen_tasks = sorted(d.get("custom_entities", "") for d in gen_bolds)
+        gen_tasks = sorted(_task_only(d) for d in gen_bolds)
         assert gen_tasks == legacy_tasks
+        _assert_runs_are_what_dcm2bids_numbered(gen_bolds)
 
     def test_ses04_sbref_count(self):
         """ses-04 should have matching SBRef count."""
@@ -178,8 +200,9 @@ class TestLegacyTemplateConfigs:
         assert len(gen_bolds) == len(legacy_bolds)
 
         legacy_tasks = sorted(d.get("custom_entities", "") for d in legacy_bolds)
-        gen_tasks = sorted(d.get("custom_entities", "") for d in gen_bolds)
+        gen_tasks = sorted(_task_only(d) for d in gen_bolds)
         assert gen_tasks == legacy_tasks
+        _assert_runs_are_what_dcm2bids_numbered(gen_bolds)
 
     def test_ses04_fmap_series_numbers(self):
         """Fieldmap series numbers should match the legacy config."""

@@ -28,10 +28,13 @@ class TaskDef:
         Which fieldmap group this task belongs to (e.g. ``"encoding"``,
         ``"retrieval"``). Used for B0FieldSource/B0FieldIdentifier.
     runs : int | tuple[int, ...]
-        Number of runs (int) or explicit run numbers (tuple).  ``1`` means
-        no ``run-`` entity in BIDS filename.  A tuple like ``(4, 5, 6)``
-        produces those specific run numbers (used when a task is split
-        across multiple fieldmap groups).
+        Number of runs (int) or explicit run numbers (tuple).  A tuple like
+        ``(4, 5, 6)`` produces those specific run numbers (used when a task
+        is split across multiple fieldmap groups).  The BIDS ``run-``
+        entity is decided per task label across the whole session: a label
+        with more than one run, over all its TaskDefs, gets ``run-NN`` from
+        these numbers; a label with one run gets none
+        (``config_builder._runs_by_label``).
     has_sbref : bool
         Whether each run has an accompanying SBRef series.
     """
@@ -50,7 +53,11 @@ class TaskDef:
 
     @property
     def is_multi_run(self) -> bool:
-        """Whether filenames should include a ``run-XX`` entity."""
+        """Whether the description ``id`` carries ``run-N``.
+
+        The filename's ``run`` entity is decided per label, not here; see
+        ``config_builder._runs_by_label``.
+        """
         if isinstance(self.runs, (list, tuple)):
             return True
         return self.runs > 1
