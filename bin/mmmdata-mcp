@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# mmmdata-mcp — start the MMMData MCP server (src/python/mmmdata_mcp).
+# Speaks MCP over stdio by default; `--help` lists toolsets and transports.
+#
+# The interpreter needs `mcp` (>= 2.0) plus the mmmdata scientific stack.
+# Set MMMDATA_MCP_PYTHON to choose it; the default is python3 on PATH.
+# Dataset paths come from config/base.toml + config/local.toml, so point
+# local.toml at a copy of the dataset to run this anywhere.
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+repo="$(dirname "$here")"
+export PYTHONPATH="$repo/src/python${PYTHONPATH:+:$PYTHONPATH}"
+exec "${MMMDATA_MCP_PYTHON:-python3}" -m mmmdata_mcp "$@"

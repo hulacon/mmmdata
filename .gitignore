@@ -46,6 +46,9 @@ logs/
 # Pipeline work directories
 work_*/
 
+# MCP plot output ([mcp] figures_dir)
+/output/
+
 # Local caches (atlas downloads, etc.)
 .cache/
 
