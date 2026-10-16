@@ -31,9 +31,14 @@ import pandas as pd
 
 from common import (
     NA, BIDS_ROOT, FR_SESSION_OFFSET, NAT_EVENTS_RUN,
-    bids_ses_fr, bids_sub, int_or_na, resolve_movie,
+    bids_ses_fr, bids_sub, int_or_na, require_times, resolve_movie,
     write_events_tsv, write_json_sidecar,
 )
+
+
+# Timing columns every trial must carry; a NaN here would be a NaN onset.
+RETRIEVAL_TIMES = ("recall1.started", "text_recallany.started",
+                   "text_recallany.stopped", "text_plus.started")
 
 
 def parse_filename(csv_path):
@@ -93,14 +98,19 @@ def convert_file(psychopy_csv, output_tsv, dry_run=False):
 
     bids_ses_num = sess + FR_SESSION_OFFSET
 
+    # Refuse the whole run before building any event if a trial is untimed.
+    for _, row in trial_rows.iterrows():
+        require_times(row, RETRIEVAL_TIMES, psychopy_csv, int(row["trials_recall.thisN"]) + 1)
+
     events_list = []
     for _, row in trial_rows.iterrows():
         trial_num = int(row["trials_recall.thisN"]) + 1
+        times = require_times(row, RETRIEVAL_TIMES, psychopy_csv, trial_num)
 
-        recall1_start = float(row["recall1.started"])
-        prompt_start = float(row["text_recallany.started"])
-        prompt_stop = float(row["text_recallany.stopped"])
-        text_plus_start = float(row["text_plus.started"])
+        recall1_start = times["recall1.started"]
+        prompt_start = times["text_recallany.started"]
+        prompt_stop = times["text_recallany.stopped"]
+        text_plus_start = times["text_plus.started"]
 
         # --- Blank (ISI, ~500ms) ---
         events_list.append({

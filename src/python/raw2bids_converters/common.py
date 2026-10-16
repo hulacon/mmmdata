@@ -214,3 +214,24 @@ def float_or_na(val):
         return float(val)
     except (ValueError, TypeError):
         return NA
+
+
+def require_times(row, columns, source, trial_num):
+    """Return ``{column: float}`` for timing columns a trial cannot lack.
+
+    ``float(nan)`` is a valid float, so a missing PsychoPy timestamp used to
+    pass straight into an events file as a NaN onset. Raise instead, naming
+    the file, the trial and the column, before any event of the trial is built.
+    """
+    missing = [c for c in columns
+               if c not in row or pd.isna(row[c]) or str(row[c]).strip() in ("", "None")]
+    if missing:
+        raise ValueError(
+            f"{os.path.basename(source)}: trial {trial_num} has no "
+            f"{', '.join(missing)}, so its events cannot be placed and no events "
+            f"file was written. Check that this is the run's complete PsychoPy "
+            f".csv (the script also writes an incremental .tsv log that can end "
+            f"before the last trial), or exclude the run from the inventory."
+        )
+    return {c: float(row[c]) for c in columns}
+
