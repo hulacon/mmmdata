@@ -21,12 +21,51 @@ def _b0_id(group: str, subject: str, session: str) -> str:
     return f"B0map_{group}_{sub}_{ses}"
 
 
+def _task_entities(task: TaskDef, run: int, run_entity: bool) -> str:
+    """``custom_entities`` for a BOLD or SBRef: the task, and the run if any.
+
+    The run is written explicitly rather than left to dcm2bids, which numbers
+    same-named files by AcquisitionTime: an aborted series that was repeated
+    would take a number and shift every later run, and a missing run would
+    compress the rest.
+
+    >>> _task_entities(TaskDef("motor", "localizer_motor_run{n}", "first", 2), 2, True)
+    'task-motor_run-02'
+    """
+    entities = f"task-{task.task_label}"
+    if run_entity:
+        entities += f"_run-{run:02d}"
+    return entities
+
+
+def _runs_by_label(tasks: tuple[TaskDef, ...]) -> dict[str, list[int]]:
+    """Run numbers per task label, across every TaskDef carrying that label.
+
+    One label can be split over several TaskDefs (by fieldmap group, or an
+    un-numbered protocol followed by a ``_run2`` one), so whether a label gets
+    a ``run`` entity is decided here, not per TaskDef.
+    """
+    runs: dict[str, list[int]] = {}
+    for task in tasks:
+        for run in task.run_numbers():
+            seen = runs.setdefault(task.task_label, [])
+            if run in seen:
+                raise ValueError(
+                    f"run {run} of task {task.task_label!r} is defined by more "
+                    "than one task entry; give each entry distinct run numbers "
+                    "in the overrides"
+                )
+            seen.append(run)
+    return runs
+
+
 def _build_bold_description(
     task: TaskDef,
     run: int,
     subject: str,
     session: str,
     *,
+    run_entity: bool = False,
     series_number: int | None = None,
     protocol_override: str | None = None,
     series_description: str | None = None,
@@ -34,14 +73,15 @@ def _build_bold_description(
     """Build a single BOLD description entry.
 
     ``series_description`` matches a SeriesDescription that differs from the
-    ProtocolName, e.g. a scanner re-reconstruction (``<protocol>_RR``)."""
+    ProtocolName, e.g. a scanner re-reconstruction (``<protocol>_RR``).
+    ``run_entity`` adds ``run-NN`` (see ``_task_entities``)."""
     protocol = protocol_override if protocol_override else task.protocol_name(run)
     desc: dict = {
         "id": f"task_{task.task_label}"
         + (f"_run-{run}" if task.is_multi_run else ""),
         "datatype": "func",
         "suffix": "bold",
-        "custom_entities": f"task-{task.task_label}",
+        "custom_entities": _task_entities(task, run, run_entity),
         # SeriesDescription, not MultibandAccelerationFactor, separates the
         # BOLD from its SBRef (whose description carries a "_SBRef" suffix).
         # The multiband field is absent from sub-06/07's DICOM export, which
@@ -70,6 +110,7 @@ def _build_sbref_description(
     subject: str,
     session: str,
     *,
+    run_entity: bool = False,
     series_number: int | None = None,
     protocol_override: str | None = None,
     series_description: str | None = None,
@@ -86,7 +127,7 @@ def _build_sbref_description(
         + (f"_run-{run}" if task.is_multi_run else ""),
         "datatype": "func",
         "suffix": "sbref",
-        "custom_entities": f"task-{task.task_label}",
+        "custom_entities": _task_entities(task, run, run_entity),
         "criteria": {
             "SeriesDescription": sbref_desc,
         },
@@ -238,7 +279,7 @@ def build_config(
     ------
     ValueError
         If series_number strategy is used but ``fmap_info`` is missing
-        required groups.
+        required groups, or two task entries define the same run of a label.
     """
     descriptions: list[dict] = []
 
@@ -247,7 +288,11 @@ def build_config(
         descriptions.append(_build_anat_description(anat))
 
     # --- Functional tasks ---
+    # A label with more than one run in the session names each run itself;
+    # a label with one run keeps no run entity, as dcm2bids would give it.
+    runs_by_label = _runs_by_label(session_def.tasks)
     for task in session_def.tasks:
+        run_entity = len(runs_by_label[task.task_label]) > 1
         for run in task.run_numbers():
             proto_ovr = (
                 run_protocols.get(task.task_label, {}).get(run)
@@ -268,6 +313,7 @@ def build_config(
                 _build_bold_description(
                     task, run, subject, session,
                     series_number=bold_sn,
+                    run_entity=run_entity,
                     protocol_override=proto_ovr,
                     series_description=desc_ovr,
                 )
@@ -277,6 +323,7 @@ def build_config(
                     _build_sbref_description(
                         task, run, subject, session,
                         series_number=sbref_sn,
+                        run_entity=run_entity,
                         protocol_override=proto_ovr,
                         series_description=desc_ovr,
                     )

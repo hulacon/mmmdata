@@ -5,14 +5,16 @@ directory structure (``Series_##_<description>/``) to determine:
 - Which fieldmap strategy applies (series_description vs series_number)
 - The actual series numbers for each AP/PA pair
 
-It also provides post-conversion validation:
+It also provides validation before a config is written:
 - Detect truncated/aborted BOLD series (duplicate protocol names with few volumes)
-- Flag duplicate protocol names that may cause run-numbering issues
+- Find functional descriptions (BOLD and SBRef) that match more than one
+  series, which dcm2bids would number on its own (``ambiguous_func_matches``)
 """
 
 from __future__ import annotations
 
 import re
+from fnmatch import fnmatchcase
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -282,3 +284,67 @@ def inspect_bold_series(
             )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Description -> series matching, SBRef included
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SeriesDir:
+    """One ``Series_##_<description>`` directory: number, description, size."""
+
+    series_number: int
+    description: str
+    dicom_count: int
+
+
+def list_series(dicom_dir: Path) -> list[SeriesDir]:
+    """Every ``Series_##_<description>`` directory, SBRef and PhysioLog included.
+
+    The directory name carries the SeriesDescription, which is what the BOLD
+    and SBRef descriptions match on (the SBRef's carries ``_SBRef``).
+    """
+    found = []
+    for item in sorted(dicom_dir.iterdir()):
+        m = re.match(r"Series_(\d+)_(.+)", item.name)
+        if not (item.is_dir() and m):
+            continue
+        found.append(SeriesDir(
+            series_number=int(m.group(1)),
+            description=m.group(2),
+            dicom_count=sum(1 for f in item.iterdir() if f.suffix == ".dcm"),
+        ))
+    return found
+
+
+def ambiguous_func_matches(
+    descriptions: list[dict], series: list[SeriesDir],
+) -> list[tuple[dict, list[SeriesDir]]]:
+    """Functional descriptions that match more than one series.
+
+    A description matches a series when its ``SeriesDescription`` criterion
+    matches the directory's description (fnmatch, as dcm2bids does) and, if
+    the description carries a ``SeriesNumber`` (a ``run_series`` pin), the
+    number is equal. dcm2bids converts every match and numbers the extras
+    itself, after any explicit ``run`` entity, so two matches end in a
+    renumbered or colliding file. Pairs are returned in config order.
+    """
+    ambiguous = []
+    for desc in descriptions:
+        if desc.get("datatype") != "func":
+            continue
+        criteria = desc.get("criteria", {})
+        pattern = criteria.get("SeriesDescription") or criteria.get("ProtocolName")
+        if pattern is None:
+            continue
+        pinned = criteria.get("SeriesNumber")
+        hits = [
+            s for s in series
+            if fnmatchcase(s.description, pattern)
+            and (pinned is None or str(s.series_number) == str(pinned))
+        ]
+        if len(hits) > 1:
+            ambiguous.append((desc, hits))
+    return ambiguous

@@ -18,11 +18,18 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..core.config import load_config
 from .config_builder import build_config
-from .dicom_inspect import inspect_bold_series, inspect_fieldmaps
+from .dicom_inspect import (
+    SeriesDir,
+    ambiguous_func_matches,
+    inspect_bold_series,
+    inspect_fieldmaps,
+    list_series,
+)
 from .overrides import apply_overrides, load_overrides
 from .session_defs import SESSION_SCHEDULE, get_session_def
 
@@ -60,6 +67,56 @@ def _resolve_output_path(
     if layout == "mmmdata":
         return config_dir / subject / f"{session}_conf.json"
     raise ValueError(f"unknown layout {layout!r}; expected one of {LAYOUTS}")
+
+
+@dataclass
+class _DuplicateCheck:
+    errors: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+def _series_list(hits: list[SeriesDir]) -> str:
+    return ", ".join(
+        f"Series {s.series_number} ({s.dicom_count} DICOMs)" for s in hits
+    )
+
+
+def _check_duplicate_series(
+    config: dict, series: list[SeriesDir], overrides_path: Path, session: str,
+) -> _DuplicateCheck:
+    """Refuse a BOLD/SBRef description that matches more than one series.
+
+    dcm2bids converts every series a description matches and appends its own
+    run numbers to the duplicates, ordered by AcquisitionTime, so an aborted
+    and repeated run would shift or collide with the explicit ``run-NN``. The
+    fix is a ``run_series`` pin naming the series to keep, for the BOLD and
+    its SBRef. A pinned description whose name alone matches several series
+    is reported as resolved.
+    """
+    check = _DuplicateCheck()
+    for desc, hits in ambiguous_func_matches(config["descriptions"], series):
+        task = desc["sidecar_changes"]["TaskName"]
+        check.errors.append(
+            f"{desc['custom_entities']} {desc['suffix']}: "
+            f"{desc['criteria'].get('SeriesDescription')!r} matches "
+            f"{_series_list(hits)}. Pin the series to keep in "
+            f"{overrides_path} as [{session}.run_series.{task}] "
+            f"<run> = {{bold = N, sbref = M}}, or exclude the task."
+        )
+    pinned = [d for d in config["descriptions"]
+              if d.get("datatype") == "func" and "SeriesNumber" in d["criteria"]]
+    unpinned = [
+        {**d, "criteria": {k: v for k, v in d["criteria"].items()
+                           if k != "SeriesNumber"}}
+        for d in pinned
+    ]
+    for desc, hits in ambiguous_func_matches(unpinned, series):
+        check.notes.append(
+            f"{desc['custom_entities']} {desc['suffix']}: "
+            f"{_series_list(hits)} share a description; resolved by "
+            f"SeriesNumber pin"
+        )
+    return check
 
 
 def generate_one(
@@ -163,28 +220,25 @@ def generate_one(
 
     result["config"] = config
 
-    # 5b. Check for truncated / duplicate BOLD series
+    # 5b. Truncated series warn; a description matching two series refuses.
     dicom_dir = _resolve_dicom_dir(source_root, subject, session)
     if dicom_dir.is_dir():
         bold_check = inspect_bold_series(dicom_dir)
-        if bold_check.truncated or bold_check.duplicates:
-            result["warnings"].extend(bold_check.warnings)
-            # Check if run_series overrides cover the duplicates
-            if ovr_result.run_series and bold_check.duplicates:
-                covered_tasks = set(ovr_result.run_series.keys())
-                for proto, entries in bold_check.duplicates.items():
-                    # Check if any task's protocol base matches
-                    task_covered = any(
-                        proto.rstrip("0123456789").rstrip("_run")
-                        in t.protocol_base.replace("{n}", "")
-                        for t in session_def.tasks
-                        if t.task_label in covered_tasks
-                    )
-                    if task_covered:
-                        result["warnings"].append(
-                            f"  -> Duplicate '{proto}' is handled by "
-                            f"run_series override"
-                        )
+        result["warnings"].extend(
+            w for w in bold_check.warnings if w.startswith("Truncated")
+        )
+        ambiguous = _check_duplicate_series(
+            config, list_series(dicom_dir), overrides_path, session,
+        )
+        result["warnings"].extend(ambiguous.notes)
+        if ambiguous.errors:
+            result["status"] = "error"
+            result["warnings"].extend(ambiguous.errors)
+            return result
+    else:
+        result["warnings"].append(
+            f"DICOM dir not found: {dicom_dir}; duplicate-series check skipped"
+        )
 
     # 6. Write or preview
     output_path = _resolve_output_path(out_dir or config_dir, subject, session, layout)
