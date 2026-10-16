@@ -77,13 +77,29 @@ RE_FR_MATH = re.compile(
 )
 
 # PsychoPy encoding: {subj}_{sess}_{run}_mem_search_recall_{datetime}.{ext}
+# The .csv is the data file the converter reads. From the second cohort on the
+# script also writes a .tsv: an incremental data log saved as the run goes,
+# which can stop before the last trial is timed, so it is never converted.
 RE_PSYCHOPY_ENC = re.compile(
-    r"(\d+)_(\d+)_(\d+)_mem_search_recall_[\d\-_h.]+\.(csv|log|psydat)$"
+    r"(\d+)_(\d+)_(\d+)_mem_search_recall_[\d\-_h.]+\.(csv|log|psydat|tsv)$"
 )
 
 # PsychoPy retrieval: {subj}_{sess}_free_recall_recall_{datetime}.{ext}
 RE_PSYCHOPY_RET = re.compile(
-    r"(\d+)_(\d+)_free_recall_recall_[\d\-_h.]+\.(csv|log|psydat)$"
+    r"(\d+)_(\d+)_free_recall_recall_[\d\-_h.]+\.(csv|log|psydat|tsv)$"
+)
+
+# Side files the second-cohort NAT script writes beside its data files. No
+# converter reads them; they are inventoried so they are not "unclassified".
+#   {subj}_{sess}_{run}_mem_search_recall_{datetime}_timings.txt  per-run movie log
+#   {subj}_{datetime}_timings.txt                                 retrieval-session movie log
+#   {subj}_{sess}_free_recall_recall_{datetime}trials_recall.csv  trial-handler export
+RE_PSYCHOPY_ENC_TIMINGS = re.compile(
+    r"(\d+)_(\d+)_(\d+)_mem_search_recall_[\d\-_h.]+_timings\.txt$"
+)
+RE_PSYCHOPY_SES_TIMINGS = re.compile(r"(\d+)_\d{4}-\d{2}-\d{2}_[\dh.]+_timings\.txt$")
+RE_PSYCHOPY_RET_TRIALS = re.compile(
+    r"(\d+)_(\d+)_free_recall_recall_[\d\-_h.]+trials_recall\.csv$"
 )
 
 # Final cued recall: final_cued_recall_subj{N}_sess{S}_run{R}[_timing].csv
@@ -239,8 +255,10 @@ def classify_free_recall_behavioral(filename, subj_num, bids_ses_num):
                 "conversion_type": "psychopy_encoding",
             }
         else:
+            what = ("incremental tsv data log (the csv is converted)"
+                    if ext == "tsv" else f"{ext} file")
             return {
-                "description": f"PsychoPy encoding {ext} file, {sub} {ses} run {run}",
+                "description": f"PsychoPy encoding {what}, {sub} {ses} run {run}",
                 "bids_destination": f"n/a (PsychoPy session file)",
                 "conversion_type": "no_conversion",
             }
@@ -258,11 +276,34 @@ def classify_free_recall_behavioral(filename, subj_num, bids_ses_num):
                 "conversion_type": "psychopy_retrieval",
             }
         else:
+            what = ("incremental tsv data log (the csv is converted)"
+                    if ext == "tsv" else f"{ext} file")
             return {
-                "description": f"PsychoPy retrieval {ext} file, {sub} {ses}",
+                "description": f"PsychoPy retrieval {what}, {sub} {ses}",
                 "bids_destination": f"n/a (PsychoPy session file)",
                 "conversion_type": "no_conversion",
             }
+
+    # Second-cohort side files (movie timing logs, trial-handler export)
+    m = RE_PSYCHOPY_ENC_TIMINGS.match(filename)
+    if m:
+        return {
+            "description": f"PsychoPy encoding movie timing log, {sub} {ses} run {int(m.group(3))}",
+            "bids_destination": "n/a (PsychoPy session file)",
+            "conversion_type": "no_conversion",
+        }
+    if RE_PSYCHOPY_SES_TIMINGS.match(filename):
+        return {
+            "description": f"PsychoPy retrieval movie timing log, {sub} {ses}",
+            "bids_destination": "n/a (PsychoPy session file)",
+            "conversion_type": "no_conversion",
+        }
+    if RE_PSYCHOPY_RET_TRIALS.match(filename):
+        return {
+            "description": f"PsychoPy retrieval trial-handler export, {sub} {ses}",
+            "bids_destination": "n/a (PsychoPy session file)",
+            "conversion_type": "no_conversion",
+        }
 
     return None
 
@@ -416,6 +457,21 @@ def classify_final_session_file(filename, subj_num, subdir):
     return None
 
 
+def classify_calibration_file(filename, subj_num, bids_ses_num):
+    """Eye-tracker calibration timing CSV, wherever it was filed.
+
+    The final session keeps it in ``behavioral/eyetracking/``; other sessions
+    have it loose in ``behavioral/``.
+    """
+    if RE_ET_CALIB.match(filename):
+        return {
+            "description": f"Eyetracking calibration timing, {bids_sub(subj_num)} {bids_ses(bids_ses_num)}",
+            "bids_destination": "n/a (calibration data)",
+            "conversion_type": "supplementary",
+        }
+    return None
+
+
 def determine_bids_session(ses_num):
     """Determine session type from BIDS session number."""
     if 4 <= ses_num <= 18:
@@ -522,6 +578,8 @@ def walk_subject(subj_num):
                         )
                     else:
                         info = None
+                    if info is None:
+                        info = classify_calibration_file(fname, subj_num, ses_num)
 
                     if info is None:
                         info = {
@@ -534,41 +592,83 @@ def walk_subject(subj_num):
         # ── Eyetracking directory ──
         et_dir = os.path.join(ses_dir, "eyetracking")
         if os.path.isdir(et_dir):
-            for fname in sorted(os.listdir(et_dir)):
-                fpath = os.path.join(et_dir, fname)
-                if os.path.isdir(fpath):
-                    # AOI subdirectory
-                    if fname == "aoi":
-                        for aoi_file in sorted(os.listdir(fpath)):
-                            aoi_path = os.path.join(fpath, aoi_file)
-                            if os.path.isfile(aoi_path):
-                                rel_path = os.path.relpath(
-                                    aoi_path, SOURCE_ROOT
-                                )
-                                info = classify_eyetracking_file(
-                                    aoi_file, subj_num, ses_num, "aoi"
-                                )
-                                if info is None:
-                                    info = {
-                                        "description": f"Unclassified AOI file: {aoi_file}",
-                                        "bids_destination": "n/a (unclassified)",
-                                        "conversion_type": "no_conversion",
-                                    }
-                                rows.append({"source_file": rel_path, **info})
-                    continue
+            rows.extend(walk_eyetracking(et_dir, subj_num, ses_num))
 
-                if not os.path.isfile(fpath):
-                    continue
-                rel_path = os.path.relpath(fpath, SOURCE_ROOT)
-                info = classify_eyetracking_file(fname, subj_num, ses_num)
-                if info is None:
-                    info = {
-                        "description": f"Unclassified eyetracking file: {fname}",
-                        "bids_destination": "n/a (unclassified)",
-                        "conversion_type": "no_conversion",
-                    }
-                rows.append({"source_file": rel_path, **info})
+    return rows
 
+
+def _unclassified(path, what):
+    return {
+        "source_file": os.path.relpath(path, SOURCE_ROOT),
+        "description": f"Unclassified {what}: {os.path.basename(path)}",
+        "bids_destination": "n/a (unclassified)",
+        "conversion_type": "no_conversion",
+    }
+
+
+def _eyetracking_rows(dir_path, subj_num, ses_num):
+    """Rows for the files directly in ``dir_path`` plus its ``aoi/``."""
+    rows = []
+    for fname in sorted(os.listdir(dir_path)):
+        fpath = os.path.join(dir_path, fname)
+        if os.path.isdir(fpath):
+            if fname == "aoi":
+                for aoi_file in sorted(os.listdir(fpath)):
+                    aoi_path = os.path.join(fpath, aoi_file)
+                    if not os.path.isfile(aoi_path):
+                        rows.extend(_unclassified_tree(aoi_path))
+                        continue
+                    info = classify_eyetracking_file(aoi_file, subj_num, ses_num, "aoi")
+                    if info is None:
+                        rows.append(_unclassified(aoi_path, "AOI file"))
+                    else:
+                        rows.append({"source_file": os.path.relpath(aoi_path, SOURCE_ROOT), **info})
+            # Other directories are the caller's business.
+            continue
+        info = classify_eyetracking_file(fname, subj_num, ses_num)
+        if info is None:
+            rows.append(_unclassified(fpath, "eyetracking file"))
+        else:
+            rows.append({"source_file": os.path.relpath(fpath, SOURCE_ROOT), **info})
+    return rows
+
+
+def _unclassified_tree(dir_path):
+    """An unclassified row per file under ``dir_path``, or one for the dir."""
+    rows = [_unclassified(os.path.join(root, f), "eyetracking file")
+            for root, _, files in sorted(os.walk(dir_path)) for f in sorted(files)]
+    return rows or [_unclassified(dir_path, "eyetracking directory")]
+
+
+def is_recording_dir(name, subj_num, ses_num):
+    """A per-recording directory is named after the EDF it holds."""
+    info = classify_eyetracking_file(name + ".EDF", subj_num, ses_num)
+    return info is not None and info["conversion_type"] == "edf_to_physio"
+
+
+def walk_eyetracking(et_dir, subj_num, ses_num):
+    """Classify everything under a session's ``eyetracking/`` directory.
+
+    Two layouts exist: flat (``eyetracking/<stem>.EDF`` plus ``aoi/``) and one
+    directory per recording (``eyetracking/<stem>/<stem>.EDF``, AOI files under
+    ``<stem>/aoi/``). Both classify identically. Any other directory, or a
+    directory nested inside a recording directory, becomes unclassified rows
+    rather than being skipped: a skipped directory is how whole sessions of
+    eyetracking went missing from the inventory without a message.
+    """
+    rows = _eyetracking_rows(et_dir, subj_num, ses_num)
+    for name in sorted(os.listdir(et_dir)):
+        path = os.path.join(et_dir, name)
+        if not os.path.isdir(path) or name == "aoi":
+            continue
+        if not is_recording_dir(name, subj_num, ses_num):
+            rows.extend(_unclassified_tree(path))
+            continue
+        rows.extend(_eyetracking_rows(path, subj_num, ses_num))
+        for inner in sorted(os.listdir(path)):
+            inner_path = os.path.join(path, inner)
+            if os.path.isdir(inner_path) and inner != "aoi":
+                rows.extend(_unclassified_tree(inner_path))
     return rows
 
 
@@ -599,12 +699,27 @@ def load_edf_triage(required=True):
     return triage
 
 
-def apply_edf_triage(rows, triage):
+def apply_edf_triage(rows, triage, required=True):
     """Apply EDF triage decisions to inventory rows.
 
     - Excluded files: conversion_type -> 'edf_excluded', description updated
     - Included pupil_only files: description notes gaze unavailable
+    - An EDF with no triage row is refused while triage is required: it would
+      otherwise convert unexamined, the same as an EDF triage had passed.
+      ``required=False`` (``--no-triage``) is the deliberate opt-out.
     """
+    if required:
+        untriaged = [r["source_file"] for r in rows
+                     if r.get("conversion_type") == "edf_to_physio"
+                     and r["source_file"] not in triage]
+        if untriaged:
+            raise ValueError(
+                f"{len(untriaged)} EDF file(s) have no row in {EDF_TRIAGE_CSV}: "
+                + ", ".join(untriaged)
+                + ". Re-run the triage (`sbatch scripts/edf_triage.sbatch`, which "
+                "covers every EDF under the source tree), or pass --no-triage to "
+                "build an inventory without triage on purpose."
+            )
     if not triage:
         return rows
     for row in rows:
@@ -899,8 +1014,8 @@ def main():
     # only --no-triage reaches the skip, so an inventory built without
     # exclusions is always something someone chose.
     triage = load_edf_triage(required=not args.no_triage)
+    all_rows = apply_edf_triage(all_rows, triage, required=not args.no_triage)
     if triage:
-        all_rows = apply_edf_triage(all_rows, triage)
         n_excluded = sum(1 for r in all_rows if r["conversion_type"] == "edf_excluded")
         n_edf = sum(1 for r in all_rows if r["conversion_type"] in ("edf_to_physio", "edf_excluded"))
         print(f"EDF triage applied: {n_excluded}/{n_edf} files excluded")

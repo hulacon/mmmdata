@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Triage all 87 EDF files: extract scanner triggers, compute scan-window
-quality for gaze and pupil channels, and write edf_triage.csv.
+"""Triage every EDF under the source tree: extract scanner triggers, compute
+scan-window quality for gaze and pupil channels, and write edf_triage.csv.
 
 Viability threshold: a channel must have >=60% valid samples within the
 scan window (first to last scanner trigger) to be considered viable.
@@ -9,24 +9,34 @@ Decision logic:
   - gaze viable OR pupil viable  -> include (channels = gaze+pupil | pupil_only)
   - neither viable               -> exclude
 
+EDFs are found anywhere under ``<source_dir>/sub-*/ses-*/eyetracking/``, both
+flat (``eyetracking/<stem>.EDF``) and in a per-recording directory
+(``eyetracking/<stem>/<stem>.EDF``). ``source_file`` is the path relative to
+the configured ``paths.source_dir``, which is the key generate_inventory.py
+matches on; an EDF the table lacks is refused there.
+
 Output: raw2bids_converters/edf_triage.csv
 
-Designed to run as a SLURM job (~10 min, <200 MB RAM, single core).
+Designed to run as a SLURM job (~10 min, <200 MB RAM, single core):
+``sbatch scripts/edf_triage.sbatch``.
 """
 
+import argparse
 import csv
 import gc
-import glob
 import os
 import re
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
-from eyelinkio import read_edf
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT / "src" / "python") not in sys.path:  # idempotent: tests import this module
+    sys.path.insert(0, str(REPO_ROOT / "src" / "python"))
 
 # --- Config ---
-SOURCEDATA = "/gpfs/projects/hulacon/shared/mmmdata/sourcedata"
 # Written beside the converters, which is where generate_inventory.py reads it.
 # Not tracked in git: it is generated data keyed on raw source filenames.
 OUTPUT_CSV = os.path.join(
@@ -36,11 +46,32 @@ OUTPUT_CSV = os.path.join(
 VIABILITY_THRESHOLD = 0.60  # >=60% valid to keep a channel
 
 # --- EDF filename parsing (mirrors edf_to_physio.py) ---
-def parse_edf_path(edf_path):
-    """Return (sub, ses, run, phase) from an EDF path."""
+def source_root():
+    """The raw source tree, from config (``paths.source_dir``)."""
+    from core.config import load_config
+    return Path(load_config()["paths"]["source_dir"])
+
+
+def find_edfs(root):
+    """Every EDF under ``<root>/sub-*/ses-*/eyetracking/``, at any depth.
+
+    Incomplete recordings (``.EDF.tmp``) are left out.
+    """
+    root = Path(root)
+    return sorted(str(p) for p in root.glob("sub-*/ses-*/eyetracking/**/*.EDF"))
+
+
+def source_key(edf_path, root):
+    """``source_file`` key: the path relative to the source root."""
+    return Path(edf_path).relative_to(root).as_posix()
+
+
+def parse_edf_path(edf_path, root):
+    """Return (sub, ses, run, phase) from an EDF path under ``root``."""
     fname = os.path.basename(edf_path)
-    # Derive sub/ses from directory structure
-    parts = edf_path.split("/sourcedata/")[1].split("/")
+    # sub/ses are the first two components below the source root, whether the
+    # EDF sits directly in eyetracking/ or in a per-recording directory.
+    parts = Path(edf_path).relative_to(root).parts
     sub = parts[0]  # sub-XX
     ses = parts[1]  # ses-YY
 
@@ -64,11 +95,15 @@ def parse_edf_path(edf_path):
     return sub, ses, 0, "unknown"
 
 
-def triage_one(edf_path):
+def triage_one(edf_path, root):
     """Read one EDF, return a dict of triage metrics."""
-    sub, ses, run, phase = parse_edf_path(edf_path)
+    # Imported here so the path helpers above load without the EDF reader
+    # (it lives in the stimfeat env, not in mmmdata's own venv).
+    from eyelinkio import read_edf
+
+    sub, ses, run, phase = parse_edf_path(edf_path, root)
     row = {
-        "source_file": os.path.relpath(edf_path, SOURCEDATA),
+        "source_file": source_key(edf_path, root),
         "sub": sub, "ses": ses, "phase": phase, "run": run,
         "sfreq": "", "n_samples": "", "duration_s": "",
         "n_triggers": 0, "scan_start_s": "", "scan_dur_s": "",
@@ -170,10 +205,16 @@ def triage_one(edf_path):
 
 
 def main():
-    # Find all EDF files (exclude .EDF.tmp)
-    pattern = os.path.join(SOURCEDATA, "sub-*/ses-*/eyetracking/*.EDF")
-    edf_files = sorted(f for f in glob.glob(pattern) if not f.endswith(".EDF.tmp"))
-    print(f"Found {len(edf_files)} EDF files")
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--source-root", type=Path, default=None,
+                    help="raw source tree (default: config paths.source_dir)")
+    ap.add_argument("--output", type=Path, default=Path(OUTPUT_CSV),
+                    help="triage table to write (default: beside the converters)")
+    args = ap.parse_args()
+    root = args.source_root or source_root()
+
+    edf_files = find_edfs(root)
+    print(f"Found {len(edf_files)} EDF files under {root}")
 
     fieldnames = [
         "source_file", "sub", "ses", "phase", "run", "sfreq",
@@ -186,7 +227,7 @@ def main():
     t0 = time.time()
     for i, fp in enumerate(edf_files, 1):
         t_file = time.time()
-        row = triage_one(fp)
+        row = triage_one(fp, root)
         elapsed = time.time() - t_file
         status = f"[{i:>2}/{len(edf_files)}] {row['decision']:>7} "
         status += f"gaze={row['gaze_valid_pct']:>5}% pupil={row['pupil_valid_pct']:>5}%"
@@ -195,8 +236,8 @@ def main():
         rows.append(row)
 
     # Write CSV
-    os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
-    with open(OUTPUT_CSV, "w", newline="") as f:
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with open(args.output, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
@@ -214,7 +255,7 @@ def main():
     print(f"  Include: {n_include}  (gaze+pupil: {n_gaze_pupil}, "
           f"pupil_only: {n_pupil_only}, gaze_only: {n_gaze_only})")
     print(f"  Exclude: {n_exclude}")
-    print(f"Output: {OUTPUT_CSV}")
+    print(f"Output: {args.output}")
 
 
 if __name__ == "__main__":

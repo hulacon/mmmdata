@@ -30,9 +30,14 @@ import pandas as pd
 
 from common import (
     BIDS_ROOT, FR_SESSION_OFFSET,
-    bids_ses_fr, bids_sub, int_or_na, resolve_movie,
+    bids_ses_fr, bids_sub, int_or_na, require_times, resolve_movie,
     write_events_tsv, write_json_sidecar,
 )
+
+
+# Timing columns every trial must carry; a NaN here would be a NaN onset.
+ENCODING_TIMES = ("movie_title.started", "movie_title.stopped",
+                  "movies.started", "movies.stopped")
 
 
 def parse_filename(csv_path):
@@ -92,13 +97,18 @@ def convert_file(psychopy_csv, output_tsv, dry_run=False):
 
     bids_ses_num = sess + FR_SESSION_OFFSET
 
+    # Refuse the whole run before building any event if a trial is untimed.
+    for _, row in trial_rows.iterrows():
+        require_times(row, ENCODING_TIMES, psychopy_csv, int(row["movie_loop.thisN"]) + 1)
+
     events_list = []
     for _, row in trial_rows.iterrows():
         trial_num = int(row["movie_loop.thisN"]) + 1
+        times = require_times(row, ENCODING_TIMES, psychopy_csv, trial_num)
 
         # --- Title event ---
-        title_start = float(row["movie_title.started"])
-        title_stop = float(row["movie_title.stopped"])
+        title_start = times["movie_title.started"]
+        title_stop = times["movie_title.stopped"]
         events_list.append({
             "onset": title_start - scanner_ref,
             "duration": title_stop - title_start,
@@ -143,8 +153,8 @@ def convert_file(psychopy_csv, output_tsv, dry_run=False):
 
         # --- Movie event ---
         stimulus_id, movie_name = resolve_movie(row["movie_name"])
-        movie_start = float(row["movies.started"])
-        movie_stop = float(row["movies.stopped"])
+        movie_start = times["movies.started"]
+        movie_stop = times["movies.stopped"]
         events_list.append({
             "onset": movie_start - scanner_ref,
             "duration": movie_stop - movie_start,
