@@ -14,6 +14,17 @@
 # [paths]
 # bids_project_dir = "/path/to/your/mmmdata"
 
+# Example: a copy of the dataset outside Talapas. The MCP server
+# (bin/mmmdata-mcp) reads these roots too; every one it uses must exist.
+# [paths]
+# bids_project_dir = "/path/to/mmmdata"
+# output_dir = "/path/to/mmmdata/derivatives"
+# inventory_dir = "/path/to/mmmdata/inventory"
+
+# Example: every MCP toolset, including the ones that write (maintainers)
+# [mcp]
+# toolsets = ["all"]
+
 # Example: set your email for SLURM notifications
 # [slurm]
 # email = "your.email@domain.com"

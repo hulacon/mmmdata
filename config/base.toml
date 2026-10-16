@@ -42,6 +42,10 @@ fit_corpora_dir = "/gpfs/projects/hulacon/shared/psytwill/fit-corpora"
 analyzeprf_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/external/analyzePRF"
 knkutils_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/external/knkutils"
 
+# viz2psy checkout. Optional: the MCP stimulus plots read feature-name
+# metadata from it and fall back to bare column names without it.
+viz2psy_dir = "/gpfs/projects/hulacon/shared/mmmdata/code/viz2psy"
+
 # Output directories
 output_dir = "/gpfs/projects/hulacon/shared/mmmdata/derivatives"
 inventory_dir = "/gpfs/projects/hulacon/shared/mmmdata/inventory"
@@ -77,6 +81,16 @@ investigate_threshold = 0.5
 # Multiplier for the Tukey IQR fence used to flag outlier runs.
 # 1.5 is the standard fence; 3.0 flags only extreme values.
 iqr_multiplier = 1.5
+
+[mcp]
+# MMMData MCP server (src/python/mmmdata_mcp, launched by bin/mmmdata-mcp).
+# Toolsets registered when --toolsets is not given. These five only read
+# the dataset. The opt-in sets are qc_write (writes QC decisions and
+# dashboards into the dataset tree), sourcedata (the PII source tree),
+# conversion (writes BIDS files) and slurm (cluster job status).
+toolsets = ["bids", "catalog", "qc", "stimuli", "viz"]
+# Where plot tools write HTML. Relative to the repo root; gitignored.
+figures_dir = "output/figures"
 
 [slurm]
 # Default SLURM configuration
