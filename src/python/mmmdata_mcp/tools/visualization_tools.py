@@ -13,14 +13,19 @@ Three domains:
 - Stimulus: viz2psy feature timelines, similarity matrices
 """
 
+import functools
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable
 
 from pydantic import Field
 
 from ..paths import get_paths
+
+
+class UnsafeFilename(ValueError):
+    """An output name that would land outside its figures subdirectory."""
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +44,35 @@ def _ensure_dir(subdir: str) -> Path:
     return d
 
 
+def _save_path(out_dir: Path, fname: str) -> Path:
+    """``out_dir / fname``, refusing anything that is not a plain filename.
+
+    Callers choose ``filename``, and their subject/task/feature values feed
+    the default names, so either can carry ``..``, a separator, or an
+    absolute path. The resolved file must sit directly in ``out_dir``.
+    """
+    target = (out_dir / fname).resolve()
+    if Path(fname).name != fname or target.parent != out_dir.resolve():
+        raise UnsafeFilename(
+            f"Output name {fname!r} must be a plain filename (no directories, "
+            f"'..' or absolute path); plots are written to {out_dir}."
+        )
+    return target
+
+
+def _reports_unsafe_filename(fn: Callable[..., str]) -> Callable[..., str]:
+    """Return UnsafeFilename as a JSON error instead of raising it, so the
+    caller sees the reason rather than a bare MCP tool error."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except UnsafeFilename as exc:
+            return json.dumps({"error": str(exc)})
+
+    return wrapper
+
+
 def _result(file_path: str, plot_type: str, description: str,
             **extra: Any) -> str:
     """Standard JSON response for all visualization tools."""
@@ -54,6 +88,7 @@ def _result(file_path: str, plot_type: str, description: str,
 # BEHAVIORAL VISUALIZATION TOOLS
 # ===================================================================
 
+@_reports_unsafe_filename
 def plot_accuracy_by_condition(
     subjects: Annotated[
         list[str] | None,
@@ -83,7 +118,7 @@ def plot_accuracy_by_condition(
     paths = get_paths()
     out_dir = _ensure_dir("behavioral")
     fname = filename or f"accuracy_by_condition_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     try:
         res = reports.accuracy_by_condition_report(
@@ -100,6 +135,7 @@ def plot_accuracy_by_condition(
     )
 
 
+@_reports_unsafe_filename
 def plot_learning_curve(
     subjects: Annotated[
         list[str] | None,
@@ -128,7 +164,7 @@ def plot_learning_curve(
     paths = get_paths()
     out_dir = _ensure_dir("behavioral")
     fname = filename or f"learning_curve_{metric}_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     try:
         res = reports.learning_curve_report(
@@ -146,6 +182,7 @@ def plot_learning_curve(
     )
 
 
+@_reports_unsafe_filename
 def plot_rt_distribution(
     subjects: list[str] | None = None,
     sessions: list[str] | None = None,
@@ -168,7 +205,7 @@ def plot_rt_distribution(
     paths = get_paths()
     out_dir = _ensure_dir("behavioral")
     fname = filename or f"rt_distribution_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     try:
         res = reports.rt_distribution_report(
@@ -185,6 +222,7 @@ def plot_rt_distribution(
     )
 
 
+@_reports_unsafe_filename
 def plot_dprime_curve(
     subjects: list[str] | None = None,
     sessions: list[str] | None = None,
@@ -203,7 +241,7 @@ def plot_dprime_curve(
     paths = get_paths()
     out_dir = _ensure_dir("behavioral")
     fname = filename or f"dprime_curve_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     try:
         res = reports.dprime_curve_report(
@@ -220,6 +258,7 @@ def plot_dprime_curve(
     )
 
 
+@_reports_unsafe_filename
 def plot_subsequent_memory(
     subjects: list[str] | None = None,
     group_by: Annotated[
@@ -237,7 +276,7 @@ def plot_subsequent_memory(
     paths = get_paths()
     out_dir = _ensure_dir("behavioral")
     fname = filename or f"subsequent_memory_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     try:
         res = reports.subsequent_memory_report(
@@ -253,6 +292,7 @@ def plot_subsequent_memory(
     )
 
 
+@_reports_unsafe_filename
 def plot_confidence_accuracy(
     subjects: list[str] | None = None,
     sessions: list[str] | None = None,
@@ -267,7 +307,7 @@ def plot_confidence_accuracy(
     paths = get_paths()
     out_dir = _ensure_dir("behavioral")
     fname = filename or f"confidence_accuracy_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     try:
         res = reports.confidence_accuracy_report(
@@ -283,6 +323,7 @@ def plot_confidence_accuracy(
     )
 
 
+@_reports_unsafe_filename
 def plot_fin_comparison(
     subjects: list[str] | None = None,
     group_by: Annotated[
@@ -300,7 +341,7 @@ def plot_fin_comparison(
     paths = get_paths()
     out_dir = _ensure_dir("behavioral")
     fname = filename or f"fin_comparison_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     try:
         res = reports.fin_comparison_report(
@@ -316,6 +357,7 @@ def plot_fin_comparison(
     )
 
 
+@_reports_unsafe_filename
 def plot_timeline_responses(
     subjects: list[str] | None = None,
     group_by: Annotated[
@@ -333,7 +375,7 @@ def plot_timeline_responses(
     paths = get_paths()
     out_dir = _ensure_dir("behavioral")
     fname = filename or f"timeline_responses_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     try:
         res = reports.timeline_responses_report(
@@ -354,6 +396,7 @@ def plot_timeline_responses(
 # NEUROIMAGING VISUALIZATION TOOLS
 # ===================================================================
 
+@_reports_unsafe_filename
 def plot_brain_map(
     stat_map_path: Annotated[
         str, Field(description="Path to NIfTI statistical map file.")
@@ -377,7 +420,7 @@ def plot_brain_map(
 
     out_dir = _ensure_dir("neuroimaging")
     fname = filename or f"brain_map_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     _plot(stat_map_path, threshold=threshold, title=title,
           colormap=colormap, save_path=str(save_path))
@@ -388,6 +431,7 @@ def plot_brain_map(
     )
 
 
+@_reports_unsafe_filename
 def plot_bold_timeseries(
     subject: Annotated[str, Field(description="Subject ID (e.g., '##').")],
     session: Annotated[str, Field(description="Session ID (e.g., '13').")],
@@ -426,7 +470,7 @@ def plot_bold_timeseries(
 
     out_dir = _ensure_dir("neuroimaging")
     fname = filename or f"bold_ts_sub-{subject}_ses-{session}_{task}_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     _plot(
         str(bold_path), roi_name=roi_name, atlas_scale=atlas_scale,
@@ -441,6 +485,7 @@ def plot_bold_timeseries(
     )
 
 
+@_reports_unsafe_filename
 def plot_motion_qc(
     subject: str,
     session: str,
@@ -471,7 +516,7 @@ def plot_motion_qc(
 
     out_dir = _ensure_dir("neuroimaging")
     fname = filename or f"motion_sub-{subject}_ses-{session}_{task}_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     _plot(str(confounds_path), title=title, save_path=str(save_path))
 
@@ -481,6 +526,7 @@ def plot_motion_qc(
     )
 
 
+@_reports_unsafe_filename
 def plot_carpet(
     subject: str,
     session: str,
@@ -517,7 +563,7 @@ def plot_carpet(
 
     out_dir = _ensure_dir("neuroimaging")
     fname = filename or f"carpet_sub-{subject}_ses-{session}_{task}_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     _plot(
         str(bold_path),
@@ -535,6 +581,7 @@ def plot_carpet(
 # STIMULUS FEATURE VISUALIZATION TOOLS
 # ===================================================================
 
+@_reports_unsafe_filename
 def plot_movie_features(
     movie_name: Annotated[
         str,
@@ -569,7 +616,7 @@ def plot_movie_features(
 
     out_dir = _ensure_dir("stimuli")
     fname = filename or f"movie_features_{movie_name}_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     _plot(
         str(store), movie_name, group=group, features=features,
@@ -584,6 +631,7 @@ def plot_movie_features(
     )
 
 
+@_reports_unsafe_filename
 def plot_image_features(
     feature: Annotated[
         str,
@@ -614,7 +662,7 @@ def plot_image_features(
 
     out_dir = _ensure_dir("stimuli")
     fname = filename or f"image_features_{feature}_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     _plot(
         str(store), feature, group=group, top_n=top_n,
@@ -628,6 +676,7 @@ def plot_image_features(
     )
 
 
+@_reports_unsafe_filename
 def plot_stimulus_similarity(
     group: Annotated[
         str,
@@ -660,7 +709,7 @@ def plot_stimulus_similarity(
 
     out_dir = _ensure_dir("stimuli")
     fname = filename or f"similarity_{model}_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     _plot(
         str(store), group=group, model=model, n_stimuli=n_stimuli,
@@ -674,6 +723,7 @@ def plot_stimulus_similarity(
     )
 
 
+@_reports_unsafe_filename
 def plot_feature_distribution(
     feature: Annotated[
         str,
@@ -704,7 +754,7 @@ def plot_feature_distribution(
 
     out_dir = _ensure_dir("stimuli")
     fname = filename or f"feature_dist_{feature}_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     _plot(
         str(store), feature, group=group, group_by=group_by,
@@ -718,6 +768,7 @@ def plot_feature_distribution(
     )
 
 
+@_reports_unsafe_filename
 def plot_embedding_scatter(
     group: Annotated[
         str,
@@ -757,7 +808,7 @@ def plot_embedding_scatter(
 
     out_dir = _ensure_dir("stimuli")
     fname = filename or f"scatter_{model}_{method}_{_timestamp()}.html"
-    save_path = out_dir / fname
+    save_path = _save_path(out_dir, fname)
 
     _plot(
         str(store), group=group, model=model, method=method,

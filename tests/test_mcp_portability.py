@@ -176,6 +176,40 @@ class TestRelocatedByConfigOnly:
         assert result["totals"] == {"behavioral": 1}
 
 
+class TestCallerInputStaysInBounds:
+    """Default-toolset tools must not read or write outside their roots."""
+
+    def test_catalog_sql_cannot_read_the_source_tree(self, relocated):
+        log = relocated["source"] / f"sub-{SUB}" / f"ses-{SES}" / "behavioral" / "log.csv"
+        result = call("query_catalog", {"sql": f"SELECT * FROM read_csv('{log}')"})
+        assert "error" in result
+        assert "rows" not in result
+
+    @pytest.mark.parametrize("args", [
+        {"filename": "../escaped.html"},
+        {"filename": "<ABSOLUTE>"},
+        {"filename": "nested/escaped.html"},
+        {"task": "../../escaped"},
+    ])
+    def test_plot_output_stays_in_the_figures_dir(self, relocated, tmp_path, args):
+        """A caller-chosen filename, or a value that feeds the default
+        name, must not place the file outside [mcp] figures_dir."""
+        absolute = tmp_path / "escaped-absolute.html"
+        args = {k: (str(absolute) if v == "<ABSOLUTE>" else v) for k, v in args.items()}
+        base = {"subject": SUB, "session": SES, "task": TASK, "run": RUN}
+        result = call("plot_motion_qc", {**base, **args})
+        assert "error" in result, result
+        figures = relocated["figures"]
+        stray = [p for p in tmp_path.rglob("*.html") if figures not in p.parents]
+        assert not stray, stray
+
+    def test_plain_custom_filename_still_works(self, relocated):
+        result = call("plot_motion_qc", {"subject": SUB, "session": SES,
+                                         "task": TASK, "run": RUN,
+                                         "filename": "motion.html"})
+        assert Path(result["file_path"]) == relocated["figures"] / "neuroimaging" / "motion.html"
+
+
 class TestAbsentCopy:
     def test_missing_root_reports_the_key(self, tmp_path, monkeypatch):
         """A config naming a root that is not there says which key to fix."""

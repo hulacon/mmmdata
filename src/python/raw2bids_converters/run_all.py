@@ -8,7 +8,8 @@ and task filtering.
 Usage:
     python run_all.py [--dry-run] [--subjects sub-03,sub-04] [--tasks encoding,math]
     python run_all.py --subjects sub-06 --sessions ses-10,ses-11
-    python run_all.py --validate [--subjects sub-03]
+    python run_all.py --validate [--subjects sub-##]   # convert, then validate
+    python validate.py [--subjects sub-##]              # validate only
 """
 
 import argparse
@@ -180,7 +181,7 @@ PROCESSORS = {
 SKIP_TYPES = {"timing_input", "supplementary", "no_conversion", "edf_excluded"}
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Run all BIDS converters")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print actions without writing files")
@@ -194,11 +195,7 @@ def main():
     parser.add_argument("--validate", action="store_true",
                         help="Run validation against metainformation after conversion")
     parser.add_argument("--verbose", action="store_true")
-    args = parser.parse_args()
-
-    if args.validate:
-        subjects_arg = args.subjects if args.subjects else None
-        sys.exit(validate.main())
+    args = parser.parse_args(argv)
 
     rows = load_inventory()
     subjects = args.subjects.split(",") if args.subjects else None
@@ -258,7 +255,14 @@ def main():
     print(f"SUMMARY: {success} succeeded, {failure} failed, {success + failure} total")
     print(f"{'='*60}")
 
-    return 0 if failure == 0 else 1
+    rc = 0 if failure == 0 else 1
+    if args.validate:
+        # validate.py has its own parser: pass only the flags it accepts.
+        validate_argv = ["--subjects", args.subjects] if args.subjects else []
+        if args.verbose:
+            validate_argv.append("--verbose")
+        rc = max(rc, validate.main(validate_argv))
+    return rc
 
 
 if __name__ == "__main__":
