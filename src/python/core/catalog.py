@@ -68,7 +68,17 @@ def connect_readonly(db_path: Path | str) -> duckdb.DuckDBPyConnection:
             "-m duckbrain.catalog rebuild --root <bids_root> "
             "(or sbatch mmmdata/scripts/catalog_rebuild.sbatch)."
         )
-    return duckdb.connect(str(db), read_only=True)
+    # read_only protects the catalog itself, not the filesystem: DuckDB's
+    # file functions (read_csv, glob, COPY ... TO) would otherwise reach any
+    # path the process can, from caller-supplied SQL. The catalog's views
+    # read only its own tables (external files are loaded at build time),
+    # so nothing here needs external access. DuckDB refuses to re-enable it
+    # at runtime; lock_configuration also freezes every other setting
+    # against a later statement in the same query.
+    return duckdb.connect(str(db), read_only=True, config={
+        "enable_external_access": False,
+        "lock_configuration": True,
+    })
 
 
 def run_select(

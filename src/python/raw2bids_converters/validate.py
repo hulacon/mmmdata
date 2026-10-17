@@ -225,7 +225,9 @@ def validate_subject(sub_num, tolerance=TIMING_TOLERANCE, verbose=False):
     return results
 
 
-def main():
+def main(argv=None):
+    """CLI entry. ``argv`` defaults to sys.argv[1:]; run_all passes its own
+    list so its flags (--validate, --dry-run, --tasks) never reach here."""
     parser = argparse.ArgumentParser(
         description="Validate generated cued recall events vs metainformation"
     )
@@ -235,7 +237,7 @@ def main():
                         help=f"Timing tolerance in seconds (default: {TIMING_TOLERANCE})")
     parser.add_argument("--verbose", action="store_true",
                         help="Show detailed mismatch info")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.subjects:
         subjects = [int(s.replace("sub-", "").replace("sub_", ""))

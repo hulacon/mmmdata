@@ -144,6 +144,26 @@ class TestRunSelect:
         with pytest.raises(ValueError, match="read-only"):
             catalog.run_select(mini_catalog, "DELETE FROM files")
 
+    @pytest.mark.parametrize("fn", ["read_csv", "read_csv_auto", "read_text", "glob"])
+    def test_cannot_read_files_outside_the_catalog(self, mini_catalog, tmp_path, fn):
+        """Caller SQL reaches the catalog only. DuckDB's file functions would
+        otherwise read any path the process can, e.g. the raw source tree."""
+        outside = tmp_path / "outside.csv"
+        outside.write_text("col\nprivate\n")
+        # PermissionException specifically: a missing optional module can
+        # make some file functions fail for unrelated reasons.
+        with pytest.raises(duckdb.PermissionException):
+            catalog.run_select(mini_catalog, f"SELECT * FROM {fn}('{outside}')")
+
+    def test_cannot_write_files_via_a_second_statement(self, mini_catalog, tmp_path):
+        """The prefix gate sees only the first statement; a read-only
+        database still lets COPY write an external file."""
+        target = tmp_path / "copied.csv"
+        with pytest.raises(duckdb.PermissionException):
+            catalog.run_select(
+                mini_catalog, f"SELECT 1; COPY files TO '{target}' (HEADER)")
+        assert not target.exists()
+
     def test_missing_db_names_fix(self, tmp_path):
         # the engine migrated into duckbrain 2026-08-17; the fix the error
         # names must point there, not at the retired mmmdata scripts
