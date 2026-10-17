@@ -14,19 +14,20 @@
 #==============================================================================
 # rescue.py project | read (no GPU)
 #==============================================================================
-#   sbatch --export=ALL,VERB=project,ARGS="--block V --corpus movies --manifest <fit>.json" rescue_cpu.sbatch
-#   sbatch --export=ALL,VERB=read,ARGS="--block V --members m1,m2 --register films --out <dir>" rescue_cpu.sbatch
+#   sbatch rescue_cpu.sbatch project --block V --corpus movies --manifest <fit>.json
+#   sbatch rescue_cpu.sbatch read --block V --members m1,m2 --register films --out <dir>
+# The verb and flags are script arguments, not --export: sbatch --export splits on
+# commas, which would cut a comma-separated --members list.
 #==============================================================================
 
 set -euo pipefail
 
 REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
 PY="/gpfs/projects/hulacon/shared/envs/functional-space/bin/python"
-: "${VERB:?set VERB (project|read)}" "${ARGS:?set ARGS}"
+[ $# -ge 1 ] || { echo "usage: sbatch rescue_cpu.sbatch project|read <flags>" >&2; exit 2; }
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 export PYTHONNOUSERSITE=1
 
-echo "Job ${SLURM_JOB_ID} ${VERB} ${ARGS} on ${SLURMD_NODENAME}; start $(date)"
-# shellcheck disable=SC2086  # ARGS is a list of flags
-/usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/braintwill_encoding/rescue.py" "${VERB}" ${ARGS}
+echo "Job ${SLURM_JOB_ID} $* on ${SLURMD_NODENAME}; start $(date)"
+/usr/bin/time -v "${PY}" "${REPO_ROOT}/scripts/braintwill_encoding/rescue.py" "$@"
 echo "End $(date)"
