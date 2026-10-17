@@ -440,3 +440,136 @@ def test_film_model_features_centre_over_the_window(harness):
     assert names == ["m_000"] and f.bands == {"m": slice(0, 1)}
     np.testing.assert_allclose(f.x[on, 0], vals[on, 0] - vals[on, 0].mean())
     assert not f.x[~on].any()
+
+
+# --- rescue spaces (psytwill-space-next settle 2) ---------------------------------------------
+
+RESCUE = HARNESS.with_name("rescue.py")
+
+
+@pytest.fixture(scope="module")
+def rescue():
+    spec = importlib.util.spec_from_file_location("braintwill_encoding_rescue", RESCUE)
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except (ImportError, SyntaxError) as exc:
+        pytest.skip(f"braintwill.encoding not importable here: {exc}")
+    return mod
+
+
+def test_parse_rescue_names_a_block_and_an_optional_member(harness):
+    assert harness.parse_rescue("rescue-V") == ("V", None)
+    assert harness.parse_rescue("rescue-V+clip") == ("V", "clip")
+    assert harness.parse_rescue("rescue-A+loudness") == ("A", "loudness")
+    for bad in ("rescue-L", "rescue-V+", "rescue-V+loudness", "rescue-A+clip", "model-clip"):
+        with pytest.raises(ValueError):
+            harness.parse_rescue(bad)
+
+
+def _film_row(start=7, n=2, tr=1.5):
+    return pd.DataFrame([{"stimulus_id": "film-a", "onset": 0.0, "start": start, "n": n,
+                          "repetition_time": tr}])
+
+
+def test_film_rescue_base_is_the_same_band_with_or_without_a_member(harness):
+    import numpy as np
+
+    n = 30
+    rng = np.random.default_rng(0)
+    base = pd.DataFrame({"stimulus_id": "film-a", "time": np.arange(n) * 0.5,
+                         "V_000": rng.standard_normal(n), "V_001": rng.standard_normal(n)})
+    vals = np.arange(n, dtype=float)[:, None]
+    long = _long(np.arange(n) * 0.5, "m", vals).assign(stimulus_id="film-a")
+    rows = _film_row()
+    alone, _ = harness.film_rescue_features(base, rows, None, None, set())
+    both, names = harness.film_rescue_features(base, rows, long, "m", set())
+    a, b = alone["film-a"], both["film-a"]
+    assert a.bands == {"base": slice(0, 2)} and b.bands == {"base": slice(0, 2), "m": slice(2, 3)}
+    np.testing.assert_array_equal(a.x, b.x[:, :2])
+    on = harness.window_bins(np.array([7, 8]) * 1.5, 1.5, n)
+    np.testing.assert_allclose(b.x[on, 2], vals[on, 0] - vals[on, 0].mean())
+    np.testing.assert_allclose(b.x[on, :2].mean(axis=0), 0, atol=1e-6)  # float32 frames
+    assert not b.x[~on].any() and names == ["m_000"]
+
+
+def test_film_rescue_refuses_a_window_bin_without_a_row(harness):
+    import numpy as np
+
+    n = 30
+    base = pd.DataFrame({"stimulus_id": "film-a", "time": np.arange(n) * 0.5, "V_000": np.arange(n, dtype=float)})
+    on = harness.window_bins(np.array([7, 8]) * 1.5, 1.5, n)
+    hole = int(np.flatnonzero(on)[1])
+    with pytest.raises(RuntimeError, match="window bins have no row"):
+        harness.film_rescue_features(base.drop(index=hole), _film_row(), None, None, set())
+    long = _long(np.arange(n) * 0.5, "m", np.ones((n, 1))).assign(stimulus_id="film-a")
+    with pytest.raises(RuntimeError, match="window bins have no row"):
+        harness.film_rescue_features(base, _film_row(), long[long["time"] != hole * 0.5], "m", set())
+
+
+def test_image_rescue_joins_raw_values_and_refuses_gaps(harness):
+    import numpy as np
+
+    base = pd.DataFrame({"stimulus_id": ["i1", "i2"], "V_000": [1.0, 2.0], "V_001": [3.0, 4.0]})
+    long = pd.DataFrame({"stimulus_id": ["i2", "i1"], "model": "m", "feature": "f", "value": [20.0, 10.0]})
+    got = harness.image_rescue_features(base, long, "m")
+    assert got["i1"].bands == {"base": slice(0, 2), "m": slice(2, 3)}
+    np.testing.assert_array_equal(got["i2"].x, [[2.0, 4.0, 20.0]])
+    with pytest.raises(RuntimeError, match="differ"):
+        harness.image_rescue_features(base, long.iloc[:1], "m")
+    with pytest.raises(RuntimeError, match="undefined"):
+        harness.image_rescue_features(base, long.assign(value=[np.nan, 1.0]), "m")
+
+
+def test_holm_steps_down_and_stays_monotone(rescue):
+    adj = rescue.holm({"a": 0.01, "b": 0.04, "c": 0.03})
+    assert adj == pytest.approx({"a": 0.03, "c": 0.06, "b": 0.06})
+    assert rescue.holm({"a": 0.6, "b": 0.5}) == pytest.approx({"b": 1.0, "a": 1.0})
+
+
+def _group_sums(res_scale, n_groups=30, rows=50, n_cols=6, seed=0):
+    """Per-group sums of z-scored responses whose residual is ``res_scale`` x SS per column."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    y = rng.standard_normal((n_groups, rows, n_cols))
+    p = y * (1 - np.sqrt(np.asarray(res_scale))) + 0.05 * rng.standard_normal(y.shape)
+    return {"labels": [f"g{i}" for i in range(n_groups)], "n": np.full(n_groups, rows),
+            "sy": y.sum(1), "syy": (y ** 2).sum(1), "res": ((y - p) ** 2).sum(1)}
+
+
+def test_roi_deltas_see_a_gain_only_where_the_member_adds_one(rescue):
+    import numpy as np
+
+    base = _group_sums([0.9] * 6)
+    member = _group_sums([0.8, 0.8, 0.8, 0.9, 0.9, 0.9])  # gain in columns 0-2 only
+    rois = {"gain": np.arange(3), "none": np.arange(3, 6)}
+    counts = rescue.draw_counts(30, 500, 0)
+    assert (counts.sum(axis=1) == 30).all()
+    d = rescue.roi_deltas(base, member, rois, counts)
+    assert d["gain"]["delta"] > 0.05 and d["gain"]["p"] < 0.01
+    assert abs(d["none"]["delta"]) < 1e-12 and d["none"]["p"] > 0.5
+    with pytest.raises(RuntimeError, match="different CV groups"):
+        rescue.roi_deltas(base, {**member, "labels": member["labels"][::-1]}, rois, counts)
+
+
+def test_verdict_needs_two_subjects_and_the_floor_in_one_roi(rescue):
+    def r(delta, p):
+        return {"delta": delta, "p": p, "p_holm": p, "n_cols": 50}
+
+    two = {"03": {"x": r(0.003, 0.001)}, "04": {"x": r(0.004, 0.01)}, "05": {"x": r(-0.001, 0.4)}}
+    assert rescue.verdict(two)["rescued"] and rescue.verdict(two)["rescued_by"] == ["x"]
+    small = {s: {"x": r(0.001, 0.001)} for s in ("03", "04", "05")}
+    assert not rescue.verdict(small)["rescued"]  # reliable but under the .002 floor
+    one = {"03": {"x": r(0.01, 0.001)}, "04": {"x": r(0.01, 0.2)}, "05": {"y": r(0.01, 0.001)}}
+    assert not rescue.verdict(one)["rescued"]  # passes in one subject per ROI
+
+
+def test_roi_columns_keep_masked_valid_columns_and_drop_small_rois(rescue):
+    import numpy as np
+
+    labels = np.array(["a"] * 5 + ["b"] * 2 + [""] * 3, dtype=object)
+    mask = np.array([1, 1, 1, 0, 1, 1, 1, 1, 1, 1], bool)
+    valid = np.array([1, 1, 1, 1, 0, 1, 1, 1, 1, 1], bool)
+    got = rescue.roi_columns(labels, mask, valid, min_cols=3)
+    assert list(got) == ["a"] and got["a"].tolist() == [0, 1, 2]

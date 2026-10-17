@@ -48,6 +48,15 @@ not, because every film bin is on in both streams, so on/off is zero once centre
 registers fit model spaces in float64 with ``eigh`` (``MODEL_DTYPE``), so read (b) has one
 solver on both sides.
 
+Rescue spaces (``rescue-<B>`` and ``rescue-<B>+<member>``, psytwill-space-next settle 2): a
+reduced psytwill block's scores as band ``base``, alone or beside one member's model space
+as a second band, so one member's unique variance is the difference of two cached scores.
+The base is ``rescue.py project``'s projection of the reduced block's manifest; the member
+must be one of the block's stream's ``MODEL_TABLES``. On films both bands are window-centred
+modulators (as model spaces); on tb-enc (V only, image-keyed as ``TB_SPACES``) both are raw
+per-image values. Their spec keeps per-group sums (``RESCUE_SPEC``), so ``rescue.py read``
+bootstraps over groups without refitting.
+
 Feature sets: for films, the per-stimulus caches ``functional_space/encoding.py cache``
 writes (``<derivatives>/functional_space/features/<space>/``), only the register's films;
 for tb-enc, the shared1000 image tables under ``<derivatives>/stimuli_features/``. Either
@@ -70,6 +79,7 @@ Usage:
     python harness.py score --register tb-enc --space psytwill --sub ##
     python harness.py plan --register tb-enc-ts --space ebind --sub ##
     python harness.py score --register films --space model-clip --sub ##
+    python harness.py score --register films --space rescue-V+clip --sub ##
     python harness.py equivalence --space ebind --scenario primary --pct 0 --draw 0 --target ##
 """
 
@@ -124,18 +134,20 @@ OUTER_FOLDS = 5
 
 
 def film_spec(solver: str = "random_search", n_iter: int | None = None,
-              solver_params: dict | None = None, dtype: str = "float32") -> EncodingSpec:
+              solver_params: dict | None = None, dtype: str = "float32",
+              group_sums: bool = False) -> EncodingSpec:
     """functional-space's encoder settings, wrapped in the outer CV.
 
     ``random_search`` with functional-space's ``N_ITER_BANDS`` is the default and the only
     setting the equivalence covers; ``hyper_gradient`` is opt-in for fits with many bands.
     ``solver_params`` go to himalaya verbatim (``TB_TS_SOLVER_PARAMS`` for tb-enc-ts);
-    ``dtype`` is the fit's precision (``MODEL_DTYPE`` for model spaces).
+    ``dtype`` is the fit's precision (``MODEL_DTYPE`` for model spaces); ``group_sums`` keeps
+    per-held-out-group sums (rescue spaces).
     """
     ridge = RidgeSpec(alphas=tuple(fs_enc.ALPHAS), inner_folds=fs_enc.N_FOLDS, solver=solver,
                       n_iter=fs_enc.N_ITER_BANDS if n_iter is None else n_iter, random_state=0,
                       solver_params=dict(solver_params or {}), dtype=dtype)
-    return EncodingSpec(ridge=ridge, outer_folds=OUTER_FOLDS)
+    return EncodingSpec(ridge=ridge, outer_folds=OUTER_FOLDS, group_sums=group_sums)
 
 
 class Paths:
@@ -490,10 +502,11 @@ MODEL_DTYPE = "float64"
 MODEL_SOLVER_PARAMS = {"n_alphas_batch": 5}
 
 
-def model_spec(solver: str = "random_search", n_iter: int | None = None) -> EncodingSpec:
+def model_spec(solver: str = "random_search", n_iter: int | None = None,
+               group_sums: bool = False) -> EncodingSpec:
     """The read-(b) spec: one for both registers (a one-band film fit uses the same
     eigenvalue solver settings)."""
-    return film_spec(solver, n_iter, MODEL_SOLVER_PARAMS, dtype=MODEL_DTYPE)
+    return film_spec(solver, n_iter, MODEL_SOLVER_PARAMS, dtype=MODEL_DTYPE, group_sums=group_sums)
 
 
 def declared_undefined(stimfeat: Path) -> dict[str, set[str]]:
@@ -622,14 +635,146 @@ def film_model_features(long: pd.DataFrame, rows: pd.DataFrame, model: str, gate
     return out, names
 
 
+def load_model_long(stimfeat: Path, table: str, model: str, rows: pd.DataFrame) -> pd.DataFrame:
+    """One model's store rows for the window films."""
+    src = Path(stimfeat) / "psytwill" / f"{table}_features.parquet"
+    return pd.read_parquet(src, columns=["stimulus_id", "time", "model", "feature", "value"],
+                           filters=[("model", "==", model),
+                                    ("stimulus_id", "in", sorted(rows["stimulus_id"]))])
+
+
 def load_film_model(stimfeat: Path, rows: pd.DataFrame, space: str
                     ) -> tuple[dict[str, FrameFeatures], list[str]]:
     table, model = MODEL_SPACES[space]
-    src = Path(stimfeat) / "psytwill" / f"{table}_features.parquet"
-    long = pd.read_parquet(src, columns=["stimulus_id", "time", "model", "feature", "value"],
-                           filters=[("model", "==", model),
-                                    ("stimulus_id", "in", sorted(rows["stimulus_id"]))])
+    long = load_model_long(stimfeat, table, model, rows)
     return film_model_features(long, rows, model, declared_undefined(stimfeat).get(model, set()))
+
+
+# ---------------------------------------------------------------------------
+# rescue spaces: a reduced block alone, or beside one member (psytwill-space-next settle 2)
+# ---------------------------------------------------------------------------
+
+RESCUE_PREFIX = "rescue-"
+#: A block's members' film stream: the composed table its member models come from.
+RESCUE_FILM_TABLE = {"V": "movies_frames", "A": "movies_audio_frames"}
+#: Blocks scored on tb-enc: image-keyed only, for the reason at ``TB_SPACES``.
+RESCUE_TB_BLOCKS = ("V",)
+#: The shared1000 image table a V member is read from on tb-enc.
+RESCUE_TB_TABLE = "shared1000_image"
+#: Where ``rescue.py project`` writes a reduced block's scores, under the harness tree.
+RESCUE_PROJECTION = Path("rescue") / "projection"
+#: Register corpus -> the projection's corpus label (``rescue.py project --corpus``).
+RESCUE_CORPUS = {"films": "movies", "tb-enc": "shared1000"}
+
+
+def parse_rescue(space: str) -> tuple[str, str | None]:
+    """``rescue-<B>`` -> (B, None); ``rescue-<B>+<member>`` -> (B, member). Loud on anything else."""
+    if not space.startswith(RESCUE_PREFIX):
+        raise ValueError(f"{space!r} is not a rescue space")
+    block, _, member = space[len(RESCUE_PREFIX):].partition("+")
+    if block not in RESCUE_FILM_TABLE:
+        raise ValueError(f"{space}: block {block!r} is not one of {sorted(RESCUE_FILM_TABLE)}")
+    if not member:
+        if "+" in space:
+            raise ValueError(f"{space}: no member after '+'")
+        return block, None
+    if member not in MODEL_TABLES[RESCUE_FILM_TABLE[block]]:
+        raise ValueError(f"{space}: {member!r} is not a model of {RESCUE_FILM_TABLE[block]} "
+                         f"({', '.join(MODEL_TABLES[RESCUE_FILM_TABLE[block]])})")
+    return block, member
+
+
+def rescue_projection(out: Path, block: str, corpus: str) -> Path:
+    return Path(out) / RESCUE_PROJECTION / f"{corpus}_{block}.parquet"
+
+
+def read_projection(path: Path) -> pd.DataFrame:
+    """A ``rescue.py project`` table; missing is an error naming the verb that writes it."""
+    if not Path(path).exists():
+        raise SystemExit(f"{path} is missing; run rescue.py project for this block and corpus")
+    side = Path(path).with_suffix(".json")
+    if not side.exists():
+        raise SystemExit(f"{side} is missing: a projection without its sidecar has no provenance")
+    w = pd.read_parquet(path)
+    if "time" in w.columns:  # `psytwill space project` writes time as a string
+        w = w.assign(time=w["time"].astype(np.float64))
+    return w
+
+
+def film_rescue_features(base: pd.DataFrame, rows: pd.DataFrame, member_long: pd.DataFrame | None,
+                         member: str | None, gated: set[str]) -> tuple[dict[str, FrameFeatures], list[str]]:
+    """Per window film: band ``base`` (the projection), then the member's band if any.
+
+    Each band is centred over the film window's bins and 0 outside them (``gated_modulators``),
+    on the base table's grid, so the base band is identical with or without a member. Every
+    window bin must have a row in each table; a member's rows past the base grid are outside
+    every window and are dropped.
+    """
+    comps = [c for c in base.columns if c not in ("stimulus_id", "time")]
+    out, names = {}, None
+    for r in rows.itertuples(index=False):
+        b = base[base["stimulus_id"] == r.stimulus_id]
+        if b.empty:
+            raise RuntimeError(f"base: no rows for film {r.stimulus_id}")
+        bins = np.rint(b["time"].to_numpy(float) / fs_enc.FRAME_S).astype(int)
+        if np.abs(bins * fs_enc.FRAME_S - b["time"].to_numpy(float)).max() > 1e-6:
+            raise RuntimeError(f"base {r.stimulus_id}: times are not bin starts on the {fs_enc.FRAME_S} s grid")
+        n_bins = int(bins.max()) + 1
+        tr = float(r.repetition_time)
+        on = window_bins(fs_enc.film_volume_starts(r.onset, r.start, r.n, tr), tr, n_bins)
+        lost = sorted(set(np.flatnonzero(on)) - set(bins))
+        if lost:
+            raise RuntimeError(f"base {r.stimulus_id}: {len(lost)} window bins have no row")
+        wb = pd.DataFrame(b[comps].to_numpy(np.float64), index=bins, columns=comps).reindex(range(n_bins))
+        xb, _ = gated_modulators(wb.where(pd.Series(on, index=wb.index), np.nan), on, set(),
+                                 f"{r.stimulus_id} base")
+        blocks, bands = [xb], {"base": slice(0, xb.shape[1])}
+        nm = []
+        if member is not None:
+            d = member_long[member_long["stimulus_id"] == r.stimulus_id]
+            if d.empty:
+                raise RuntimeError(f"{member}: no rows for film {r.stimulus_id}")
+            stamp = infer_stamp(d["time"].to_numpy())
+            start = d["time"].to_numpy(float) - (fs_enc.FRAME_S / 2 if stamp == "center" else 0.0)
+            mb = np.rint(start / fs_enc.FRAME_S).astype(int)
+            lost = sorted(set(np.flatnonzero(on)) - set(mb))
+            if lost:
+                raise RuntimeError(f"{member} {r.stimulus_id}: {len(lost)} window bins have no row")
+            w = grid_wide(d[mb < n_bins], member, stamp, n_bins)
+            xm, nm = gated_modulators(w.where(pd.Series(on, index=w.index), np.nan), on, gated,
+                                      f"{r.stimulus_id} {member}")
+            blocks.append(xm)
+            bands[member] = slice(xb.shape[1], xb.shape[1] + xm.shape[1])
+        if names is not None and nm != names:
+            raise RuntimeError(f"{member} {r.stimulus_id}: features differ from the first film's")
+        names = nm
+        out[r.stimulus_id] = FrameFeatures(r.stimulus_id, np.arange(n_bins) * fs_enc.FRAME_S,
+                                           np.concatenate(blocks, axis=1), fs_enc.FRAME_S, bands)
+    return out, names
+
+
+def image_rescue_features(base: pd.DataFrame, member_long: pd.DataFrame | None, member: str | None
+                          ) -> dict[str, FrameFeatures]:
+    """Per image: band ``base`` (raw projection scores), then the member's raw features, as
+    ``image_features`` does for ``TB_SPACES``. An undefined value or an unmatched image is an
+    error: a one-frame stimulus has no defined frame to average over."""
+    if base["stimulus_id"].duplicated().any():
+        raise RuntimeError("base: an image appears twice")
+    comps = [c for c in base.columns if c != "stimulus_id"]
+    wide, bands = base.set_index("stimulus_id")[comps], {"base": slice(0, len(comps))}
+    if member is not None:
+        w = member_long[member_long["model"] == member].pivot(index="stimulus_id", columns="feature",
+                                                              values="value")
+        if w.empty:
+            raise KeyError(f"no rows for model {member!r}")
+        if set(w.index) != set(wide.index):
+            raise RuntimeError(f"{member}: {len(set(w.index) ^ set(wide.index))} images differ from the base's")
+        wide = wide.join(w[sorted(w.columns)], how="inner")
+        bands[member] = slice(len(comps), wide.shape[1])
+    x = wide.to_numpy(np.float32)
+    if not np.isfinite(x).all():
+        raise RuntimeError(f"rescue {member or 'base'}: {int((~np.isfinite(x)).sum())} undefined image values")
+    return {sid: FrameFeatures(sid, [0.0], x[i:i + 1], 1.0, bands) for i, sid in enumerate(wide.index)}
 
 
 def table_stream(table: str) -> str:
@@ -819,9 +964,23 @@ class Request:
 
         self.paths = paths
         model_space = args.space in MODEL_SPACES
+        rescue = None
+        if args.space.startswith(RESCUE_PREFIX):
+            try:
+                rescue = parse_rescue(args.space)
+            except ValueError as exc:
+                raise SystemExit(str(exc))
+            if args.register == "tb-enc-ts" or (args.register == "tb-enc" and rescue[0] not in RESCUE_TB_BLOCKS):
+                raise SystemExit(f"rescue-{rescue[0]} runs on films"
+                                 + (" and tb-enc" if rescue[0] in RESCUE_TB_BLOCKS else ""))
+        elif args.space not in KNOWN_SPACES:
+            raise SystemExit(f"unknown space {args.space!r}: one of {sorted(KNOWN_SPACES)}, or "
+                             f"{RESCUE_PREFIX}<block>[+<member>]")
         if model_space and args.register == "tb-enc":
             raise SystemExit("model spaces run on the films and tb-enc-ts registers")
-        if model_space:  # read (b): one solver on both registers
+        if rescue:  # two bands at read (b)'s solver, with per-group sums for the bootstrap
+            self.spec = model_spec(args.solver, args.n_iter, group_sums=True)
+        elif model_space:  # read (b): one solver on both registers
             self.spec = model_spec(args.solver, args.n_iter)
         else:  # tb registers share the film grid and folds
             self.spec = film_spec(args.solver, args.n_iter,
@@ -831,7 +990,25 @@ class Request:
             windows = fm.load_windows(paths.derivatives)
             films = args.films.split(",") if getattr(args, "films", None) else None
             self.rows = alignment_rows(windows, args.sub, films)
-            if model_space:
+            if rescue:
+                block, member = rescue
+                src = rescue_projection(paths.out, block, RESCUE_CORPUS["films"])
+                base = read_projection(src)
+                long, gated = None, set()
+                if member is not None:
+                    long = load_model_long(paths.stimfeat, RESCUE_FILM_TABLE[block], member, self.rows)
+                    gated = declared_undefined(paths.stimfeat).get(member, set())
+                feats, names = film_rescue_features(base, self.rows, long, member, gated)
+                gates = None
+                if member is not None:
+                    feats, gates = prune_indicators(feats, member, names)
+                self.feats = feats
+                self.label = {"space": args.space, "base": str(src),
+                              "base_sidecar": json.loads(src.with_suffix(".json").read_text()),
+                              "member": member, "modulators": "each band minus its mean over the film window's bins",
+                              **({"member_source": str(paths.stimfeat / "psytwill" / f"{RESCUE_FILM_TABLE[block]}_features.parquet"),
+                                  "gates": gates} if member else {})}
+            elif model_space:
                 table, model = MODEL_SPACES[args.space]
                 feats, names = load_film_model(paths.stimfeat, self.rows, args.space)
                 self.feats, gates = prune_indicators(feats, model, names)
@@ -873,15 +1050,32 @@ class Request:
                 raise SystemExit("--films applies to the films register only")
             self.bids_root = Path(load_config()["paths"]["bids_project_dir"])
             self.trials = tb_trials(paths.derivatives, self.bids_root, args.sub)
-            images = image_features(paths.stimfeat, args.space)
+            if rescue:
+                block, member = rescue
+                src = rescue_projection(paths.out, block, RESCUE_CORPUS["tb-enc"])
+                long = None
+                if member is not None:
+                    long = pd.read_parquet(paths.stimfeat / "psytwill" / f"{RESCUE_TB_TABLE}_features.parquet",
+                                           columns=["stimulus_id", "model", "feature", "value"],
+                                           filters=[("model", "==", member)])
+                images = image_rescue_features(read_projection(src), long, member)
+            else:
+                images = image_features(paths.stimfeat, args.space)
             used = sorted(set(self.trials["stimulus_id"]))
             missing = sorted(set(used) - set(images))
             if missing:
                 raise RuntimeError(f"{args.space}: {len(missing)} TB images have no features, e.g. {missing[0]}")
             self.feats = {sid: images[sid] for sid in used}
             self.register = tb_register(paths.derivatives)
-            self.label = {"space": args.space, "source": str(paths.stimfeat / next(
-                v for k, v in TB_SPACES[args.space].items() if k in ("csv", "parquet")))}
+            if rescue:
+                self.label = {"space": args.space, "base": str(src),
+                              "base_sidecar": json.loads(src.with_suffix(".json").read_text()),
+                              "member": member, "values": "raw per image, as TB_SPACES",
+                              **({"member_source": str(paths.stimfeat / "psytwill" / f"{RESCUE_TB_TABLE}_features.parquet")}
+                                 if member else {})}
+            else:
+                self.label = {"space": args.space, "source": str(paths.stimfeat / next(
+                    v for k, v in TB_SPACES[args.space].items() if k in ("csv", "parquet")))}
         self.sub = args.sub
         self.key = cache_key(feature_set_hash(self.feats.values()), self.register, self.spec, f"sub-{args.sub}")
 
@@ -1018,6 +1212,9 @@ def cmd_equivalence(args) -> None:
     print(f"{'PASS' if record['pass'] else 'FAIL'} -> {dest}")
 
 
+KNOWN_SPACES = set(fs_enc.FEATURE_SPACES) | set(TB_SPACES) | set(TB_TS_SPACES)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="verb", required=True)
@@ -1025,7 +1222,7 @@ def main() -> None:
         p = sub.add_parser(name)
         p.add_argument("--register", choices=("films", "tb-enc", "tb-enc-ts"), default="films")
         p.add_argument("--space", required=True,
-                       choices=sorted(set(fs_enc.FEATURE_SPACES) | set(TB_SPACES) | set(TB_TS_SPACES)))
+                       help=f"one of {', '.join(sorted(KNOWN_SPACES))}, or {RESCUE_PREFIX}<block>[+<member>]")
         p.add_argument("--sub", required=True)
         p.add_argument("--films", help="comma-separated subset of the alignment pool (default: all of it)")
         p.add_argument("--solver", choices=("random_search", "hyper_gradient"), default="random_search")
