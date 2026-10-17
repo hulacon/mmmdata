@@ -635,7 +635,11 @@ def plot_movie_features(
 def plot_image_features(
     feature: Annotated[
         str,
-        Field(description="Feature to plot (e.g., 'memorability', 'valence')."),
+        Field(description=(
+            "Feature column, with its model prefix (e.g., "
+            "'resmem_memorability', 'aesthetics_score', 'emonet_awe'); "
+            "describe_features lists them."
+        )),
     ],
     group: Annotated[
         str,
@@ -652,7 +656,7 @@ def plot_image_features(
     title: str | None = None,
     filename: str | None = None,
 ) -> str:
-    """Plot a feature value (e.g., memorability, valence) across
+    """Plot a feature value (e.g., resmem_memorability) across
     images in a stimulus set. Optionally show only top N.
     """
     from stimuli.plotting import plot_image_feature_comparison as _plot
@@ -727,7 +731,11 @@ def plot_stimulus_similarity(
 def plot_feature_distribution(
     feature: Annotated[
         str,
-        Field(description="Feature name (e.g., 'memorability', 'valence')."),
+        Field(description=(
+            "Feature column, with its model prefix (e.g., "
+            "'resmem_memorability', 'aesthetics_score'); describe_features "
+            "lists them."
+        )),
     ],
     group: Annotated[
         str,
@@ -739,7 +747,10 @@ def plot_feature_distribution(
     ] = "shared1000_image",
     group_by: Annotated[
         str | None,
-        Field(description="Column to group by (e.g., 'category')."),
+        Field(description=(
+            "Column to colour the histogram by, e.g. 'voice' in the "
+            "twp1000 groups."
+        )),
     ] = None,
     title: str | None = None,
     filename: str | None = None,
@@ -789,7 +800,10 @@ def plot_embedding_scatter(
     ] = "pca",
     color_by: Annotated[
         str | None,
-        Field(description="Column to color points by (e.g., 'memorability')."),
+        Field(description=(
+            "Feature column to colour points by, with its model prefix "
+            "(e.g., 'resmem_memorability')."
+        )),
     ] = None,
     n_stimuli: Annotated[
         int | None, Field(description="Subsample to N stimuli.")

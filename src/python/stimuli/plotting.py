@@ -262,7 +262,8 @@ def plot_image_feature_comparison(
     group : str
         Feature group. Default "shared1000_image".
     feature : str
-        Feature column name (e.g., "memorability", "Awe").
+        Feature column name, with its model prefix (e.g.,
+        "resmem_memorability", "emonet_awe").
     top_n : int, optional
         Show only the top N images.
     title : str, optional
@@ -466,7 +467,8 @@ def plot_embedding_scatter(
     method : str, default "pca"
         DR method: "pca", "umap", "tsne", "mds".
     color_by : str, optional
-        Column to color points by (e.g., "memorability").
+        Feature column to color points by, with its model prefix
+        (e.g., "resmem_memorability"); the prefix names the model loaded.
     n_stimuli : int, optional
         Subsample to this many stimuli.
     title : str, optional
