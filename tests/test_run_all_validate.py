@@ -62,8 +62,48 @@ def test_validate_main_takes_an_argv(monkeypatch):
     """The parser reads the list it is given, not the caller's sys.argv."""
     seen = []
     monkeypatch.setattr(validate, "validate_subject",
-                        lambda sub, tol, verbose: seen.append(sub) or [])
+                        lambda sub, tol, verbose: seen.append(sub) or [_result("MATCH")])
     monkeypatch.setattr(sys, "argv", ["run_all.py", "--validate", "--dry-run"])
 
     assert validate.main(["--subjects", "sub-07"]) == 0
     assert seen == [7]
+
+
+# validate.main used to return 0 unless a pair MISMATCHED. Its filename
+# patterns can miss every generated file (task labels renamed), and then it
+# compared nothing and passed, which made `run_all --validate` a false pass.
+
+def _result(status):
+    return {"generated": "gen.tsv" if status != "MISSING_GENERATED" else None,
+            "reference": "ref.tsv" if status != "MISSING_REFERENCE" else None,
+            "status": status, "issues": []}
+
+
+def test_validate_fails_when_nothing_was_compared(monkeypatch, capsys):
+    monkeypatch.setattr(validate, "validate_subject", lambda sub, tol, verbose: [])
+
+    assert validate.main(["--subjects", "07"]) != 0
+    assert "compared no files" in capsys.readouterr().out
+
+
+def test_validate_fails_when_only_unmatched_references_were_found(monkeypatch):
+    monkeypatch.setattr(validate, "validate_subject",
+                        lambda sub, tol, verbose: [_result("MISSING_REFERENCE")])
+
+    assert validate.main(["--subjects", "07"]) != 0
+
+
+def test_validate_fails_when_a_reference_has_no_generated_file(monkeypatch):
+    monkeypatch.setattr(validate, "validate_subject",
+                        lambda sub, tol, verbose: [_result("MATCH"),
+                                                   _result("MISSING_GENERATED")])
+
+    assert validate.main(["--subjects", "07"]) != 0
+
+
+def test_validate_passes_when_every_compared_pair_matches(monkeypatch):
+    monkeypatch.setattr(validate, "validate_subject",
+                        lambda sub, tol, verbose: [_result("MATCH"),
+                                                   _result("MISSING_REFERENCE")])
+
+    assert validate.main(["--subjects", "07"]) == 0

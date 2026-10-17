@@ -14,6 +14,9 @@ Session mapping:
   Metainformation uses ses-01 to ses-15 (cued recall session number).
   BIDS output uses ses-04 to ses-18 (cued recall session + 3).
 
+Exit status: 0 when every compared pair matches; 1 on any mismatch, on a
+reference with no generated file, or when no pair was compared at all.
+
 Usage:
     python validate.py [--subjects SUB1,SUB2,...] [--tolerance 0.01] [--verbose]
 """
@@ -291,6 +294,20 @@ def main(argv=None):
         pct = 100 * total_match / total
         print(f"  Match rate:      {pct:.1f}% ({total_match}/{total})")
 
+    # A run that compared nothing has validated nothing. The filename
+    # patterns in find_generated_file / find_metainfo_file name the tasks
+    # encoding, math, retrieval and recognition; if the dataset's events use
+    # other task labels, every lookup misses and this is where it shows.
+    if total_match + total_mismatch == 0:
+        print("\nFAIL: compared no files. No generated events file had a "
+              "reference to compare against; check that the task labels in "
+              f"find_generated_file match the events under {BIDS_ROOT} and "
+              f"that references exist under {METAINFO_DIR}.")
+        return 1
+    if total_missing_gen:
+        print(f"\nFAIL: {total_missing_gen} reference file(s) have no "
+              "generated events file.")
+        return 1
     return 0 if total_mismatch == 0 else 1
 
 
