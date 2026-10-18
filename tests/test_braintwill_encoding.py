@@ -312,6 +312,23 @@ def test_run_features_build_onoff_then_modulators(harness):
     assert not f.x[[0, 1, 6, 7], 2:].any()
 
 
+def test_onoff_space_is_the_onoff_band_alone(harness):
+    import numpy as np
+
+    n = 6
+    vis = np.full((n, 1), np.nan)
+    vis[1:4] = 2.0
+    aud = np.full((n, 1), np.nan)
+    aud[2] = 1.0
+    tables = {"movies_frames": (_long(np.arange(n) * 0.5, "ebind", vis), "start"),
+              "movies_audio_frames": (_long(np.arange(n) * 0.5 + 0.25, "clap", aud), "center")}
+    f = harness.run_features("run-x", tables, harness.ONOFF_SPACE, n)
+    assert list(f.bands) == ["onoff"] and f.x.shape == (n, 2)
+    np.testing.assert_array_equal(f.x[:, 0], [0, 1, 1, 1, 0, 0])
+    np.testing.assert_array_equal(f.x[:, 1], [0, 0, 1, 0, 0, 0])
+    assert harness.ONOFF_SPACE not in harness.MODEL_SPACES
+
+
 def _manifest(rows):
     base = {"sub": "01", "task": "TBencoding", "n_vol": "210", "n_nss": "0", "RepetitionTime": "1.5"}
     return pd.DataFrame([{**base, **r, "path": f"sub-01/ses-{r['ses']}/func/sub-01_ses-{r['ses']}_task-TBencoding"
@@ -360,6 +377,12 @@ def test_model_spaces_are_new_names_on_both_registers(harness):
     spec = harness.model_spec().to_dict()["ridge"]
     assert spec["dtype"] == "float64" and "diagonalize_method" not in spec["solver_params"]
     assert "dtype" not in harness.film_spec().to_dict()["ridge"]  # existing specs keep their hash
+
+
+def test_group_sums_is_its_own_model_spec(harness):
+    plain, kept = harness.model_spec().to_dict(), harness.model_spec(group_sums=True).to_dict()
+    assert kept.get("group_sums") is True and "group_sums" not in plain
+    assert {k: v for k, v in kept.items() if k != "group_sums"} == plain
 
 
 def test_grid_wide_collapses_identical_copies_and_refuses_differing_ones(harness):

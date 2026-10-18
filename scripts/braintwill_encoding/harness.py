@@ -492,6 +492,11 @@ MODEL_TABLES = {
 }
 MODEL_SPACES = {f"{MODEL_PREFIX}{m}": (t, m) for t, ms in MODEL_TABLES.items() for m in ms}
 TB_TS_SPACES.update({name: {m: (t, m)} for name, (t, m) in MODEL_SPACES.items()})
+#: Read (a): the ``onoff`` band alone, on tb-enc-ts only (every film bin is on in both
+#: streams, so on films the band is zero once centred). Fitted at read (b)'s spec, so a
+#: model's R² above on/off compares two fits of one solver.
+ONOFF_SPACE = "onoff"
+TB_TS_SPACES[ONOFF_SPACE] = {}
 #: Model-space fits on both registers: float64 ``eigh``. TB kernels defeat float32 ``eigh``
 #: (``TB_TS_SOLVER_PARAMS``); float64 ``eigh`` is the same decomposition at ~1/30 the cost of
 #: SVD (DECIDED 2026-10-15, so read (b) is one solver on both registers).
@@ -978,10 +983,13 @@ class Request:
                              f"{RESCUE_PREFIX}<block>[+<member>]")
         if model_space and args.register == "tb-enc":
             raise SystemExit("model spaces run on the films and tb-enc-ts registers")
+        if args.space == ONOFF_SPACE and args.register != "tb-enc-ts":
+            raise SystemExit(f"{ONOFF_SPACE} runs on tb-enc-ts only: every film bin is on, and "
+                             "tb-enc has no time course")
         if rescue:  # two bands at read (b)'s solver, with per-group sums for the bootstrap
             self.spec = model_spec(args.solver, args.n_iter, group_sums=True)
-        elif model_space:  # read (b): one solver on both registers
-            self.spec = model_spec(args.solver, args.n_iter)
+        elif model_space or args.space == ONOFF_SPACE:  # reads (a) and (b): one solver
+            self.spec = model_spec(args.solver, args.n_iter, group_sums=getattr(args, "group_sums", False))
         else:  # tb registers share the film grid and folds
             self.spec = film_spec(args.solver, args.n_iter,
                                   TB_TS_SOLVER_PARAMS if args.register == "tb-enc-ts" else None)
@@ -1228,6 +1236,9 @@ def main() -> None:
         p.add_argument("--solver", choices=("random_search", "hyper_gradient"), default="random_search")
         p.add_argument("--n-iter", type=int, default=None)
         p.add_argument("--backend", default="torch_cuda")
+        p.add_argument("--group-sums", action="store_true",
+                       help="model and onoff spaces: keep per-group sums (a separate spec hash), e.g. to "
+                            "check how much of the held-out loss one group carries")
     e = sub.add_parser("equivalence")
     e.add_argument("--space", choices=list(fs_enc.FEATURE_SPACES), required=True)
     e.add_argument("--scenario", default="primary")
