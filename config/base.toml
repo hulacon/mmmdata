@@ -92,6 +92,13 @@ toolsets = ["bids", "catalog", "qc", "stimuli", "viz"]
 # Where plot tools write HTML. Relative to the repo root; gitignored.
 figures_dir = "output/figures"
 
+[release]
+# Release-time de-identification (scripts/release_export.py, src/python/release).
+# Per participant, the first session date in sub-##_sessions.tsv acq_time is
+# shifted to this epoch, intervals preserved. Must be YYYY-MM-DD in 1925 or
+# earlier (BIDS recommendation; year <= 1925 also marks a date as shifted).
+date_epoch = "1900-01-01"
+
 [slurm]
 # Default SLURM configuration
 partition = "medium"
