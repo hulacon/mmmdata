@@ -349,6 +349,36 @@ def test_voice_features_one_column_per_voice_on_the_word_bins(harness):
         harness.voice_features(f, words.assign(voice=["nova", "alloy", "nova"]))
 
 
+def test_tb_ret_ts_onoff_is_audio_only_and_voice_follows_it(harness):
+    import numpy as np
+
+    n = 6
+    aud = np.full((n, 1), np.nan)
+    aud[[1, 4]] = 1.0
+    tables = {"movies_audio_frames": (_long(np.arange(n) * 0.5 + 0.25, "clap", aud), "center")}
+    f = harness.run_features("run-x", tables, harness.ONOFF_SPACE, n, on_tables=harness.TB_RET_ON)
+    assert list(f.bands) == ["onoff"] and f.x.shape == (n, 1)
+    np.testing.assert_array_equal(f.x[:, 0], [0, 1, 0, 0, 1, 0])
+    words = pd.DataFrame({"onset_actual": [0.6, 2.1], "voice": ["onyx", "echo"]})
+    g = harness.voice_features(f, words, tuple(harness.TB_RET_ON))
+    np.testing.assert_allclose(g.x[[1, 4], 1 + harness.VOICES.index("onyx")], [.5, -.5])
+    assert harness.RET_SPACES >= {harness.ONOFF_SPACE, harness.VOICE_SPACE, "model-clap"}
+    assert "model-clip" not in harness.RET_SPACES and len(harness.RET_SPACES) == 16
+
+
+def test_run_cue_reads_one_modality_per_run(harness, tmp_path):
+    func = tmp_path / "sub-01" / "ses-04" / "func"
+    func.mkdir(parents=True)
+    stem = "sub-01_ses-04_task-TBretrieval_run-01"
+    pd.DataFrame({"trial_type": ["word", "rest", "word"], "modality": ["auditory", "n/a", "auditory"]}) \
+        .to_csv(func / f"{stem}_events.tsv", sep="\t", index=False)
+    assert harness.run_cue(tmp_path, "01", "04", stem) == "auditory"
+    pd.DataFrame({"trial_type": ["word", "image"], "modality": ["auditory", "visual"]}) \
+        .to_csv(func / f"{stem}_events.tsv", sep="\t", index=False)
+    with pytest.raises(RuntimeError, match="one per run"):
+        harness.run_cue(tmp_path, "01", "04", stem)
+
+
 def _manifest(rows):
     base = {"sub": "01", "task": "TBencoding", "n_vol": "210", "n_nss": "0", "RepetitionTime": "1.5"}
     return pd.DataFrame([{**base, **r, "path": f"sub-01/ses-{r['ses']}/func/sub-01_ses-{r['ses']}_task-TBencoding"

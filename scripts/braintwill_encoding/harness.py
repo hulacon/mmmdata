@@ -458,6 +458,14 @@ TB_TS_DROP = max(fs_enc.DELAYS_TR)
 #: the run's composed generic table (any model defined), so every feature space gets the same
 #: on/off band.
 TB_TS_ON = {"visual": "movies_frames", "audio": "movies_audio_frames"}
+#: tb-ret-ts: the word-cued TBretrieval runs, where the TTS word plays alone (no image), so the
+#: on/off band is audio-only and only audio spaces apply. No noise ceiling: a cue is one 4.5 s
+#: slot and almost no word repeats (tb-nat-encoding log, 2026-10-18).
+TB_RET_TASK = "TBretrieval"
+TB_RET_CUE = "auditory"
+TB_RET_ON = {"audio": "movies_audio_frames"}
+#: Time-series TB registers: name -> (task, on/off streams, cue modality kept or None).
+TS_REGISTERS = {"tb-enc-ts": (TB_TS_TASK, TB_TS_ON, None), "tb-ret-ts": (TB_RET_TASK, TB_RET_ON, TB_RET_CUE)}
 #: Feature spaces for tb-enc-ts: band -> (composed table, model). A band's stream (and so the
 #: on column it is modulated by) is the table's: ``audio`` in the name means audio.
 #: himalaya's kernel decomposition for tb-enc-ts fits. float32 ``eigh`` on the GPU fails to
@@ -503,6 +511,8 @@ TB_TS_SPACES[ONOFF_SPACE] = {}
 VOICE_SPACE = "voice"
 VOICES = ("echo", "nova", "onyx", "shimmer")
 TB_TS_SPACES[VOICE_SPACE] = {}
+#: tb-ret-ts's spaces: onoff, voice, and the audio model spaces.
+RET_SPACES = {ONOFF_SPACE, VOICE_SPACE} | {n for n, (t, _) in MODEL_SPACES.items() if t == "movies_audio_frames"}
 #: Model-space fits on both registers: float64 ``eigh``. TB kernels defeat float32 ``eigh``
 #: (``TB_TS_SOLVER_PARAMS``); float64 ``eigh`` is the same decomposition at ~1/30 the cost of
 #: SVD (DECIDED 2026-10-15, so read (b) is one solver on both registers).
@@ -792,13 +802,13 @@ def table_stream(table: str) -> str:
     return "audio" if "audio" in table else "visual"
 
 
-def tb_ts_runs(manifest: pd.DataFrame, sub: str) -> pd.DataFrame:
-    """The subject's cleaned TBencoding runs in (session, run) order; held-out sessions refused."""
-    m = manifest[(manifest["sub"] == sub) & (manifest["task"] == TB_TS_TASK)].copy()
+def tb_ts_runs(manifest: pd.DataFrame, sub: str, task: str = TB_TS_TASK) -> pd.DataFrame:
+    """The subject's cleaned ``task`` runs in (session, run) order; held-out sessions refused."""
+    m = manifest[(manifest["sub"] == sub) & (manifest["task"] == task)].copy()
     if m.empty:
-        raise RuntimeError(f"sub-{sub}: no cleaned {TB_TS_TASK} runs in the manifest")
+        raise RuntimeError(f"sub-{sub}: no cleaned {task} runs in the manifest")
     if m["ses"].isin(fm.HELDOUT_SESSIONS).any() or not m["ses"].isin(TB_SESSIONS).all():
-        raise RuntimeError(f"sub-{sub}: {TB_TS_TASK} runs outside the trial-based sessions: "
+        raise RuntimeError(f"sub-{sub}: {task} runs outside the trial-based sessions: "
                            f"{sorted(set(m['ses']) - set(TB_SESSIONS))}")
     if m.duplicated(["ses", "run"]).any():
         raise RuntimeError(f"sub-{sub}: a (session, run) appears twice in the manifest")
@@ -807,6 +817,22 @@ def tb_ts_runs(manifest: pd.DataFrame, sub: str) -> pd.DataFrame:
         raise RuntimeError(f"sub-{sub}: runs with >= {TB_TS_DROP} non-steady-state volumes: {list(bad['path'])}")
     m["stem"] = m["path"].map(lambda p: Path(p).name.split("_space-")[0])
     return m.sort_values(["ses", "run"]).reset_index(drop=True)
+
+
+def run_cue(bids: Path, sub: str, ses: str, stem: str) -> str:
+    """A retrieval run's cue modality: the events' ``modality`` on its trials (one per run)."""
+    ev = pd.read_csv(Path(bids) / f"sub-{sub}" / f"ses-{ses}" / "func" / f"{stem}_events.tsv", sep="\t")
+    mods = set(ev.loc[ev["trial_type"] != "rest", "modality"])
+    if len(mods) != 1:
+        raise RuntimeError(f"{stem}: cue modalities {sorted(mods)}; expected one per run")
+    return mods.pop()
+
+
+def cue_paths(manifest: pd.DataFrame, bids: Path, task: str, cue: str) -> set[str]:
+    """Manifest paths of every subject's ``task`` runs whose cue modality is ``cue``."""
+    m = manifest[manifest["task"] == task]
+    return {r.path for r in m.itertuples(index=False)
+            if run_cue(bids, r.sub, r.ses, Path(r.path).name.split("_space-")[0]) == cue}
 
 
 def grid_wide(long: pd.DataFrame, model: str, stamp: str, n_bins: int) -> pd.DataFrame:
@@ -863,16 +889,17 @@ def modulators(f: np.ndarray, on: np.ndarray, name: str = "") -> np.ndarray:
 
 
 def run_features(stem: str, tables: dict[str, tuple[pd.DataFrame, str]], space: str,
-                 n_bins: int, gated: dict[str, set[str]] | None = None) -> FrameFeatures:
+                 n_bins: int, gated: dict[str, set[str]] | None = None,
+                 on_tables: dict[str, str] = TB_TS_ON) -> FrameFeatures:
     """One TB run as one frame stimulus: band ``onoff`` (visual-on, audio-on), then the space's
     bands as centred modulators of their stream's on column.
 
     ``tables`` maps a composed table name to ``(long rows, stamp)``. With ``gated`` (model
     spaces), each model's declared-undefined features are nested gates (``gated_modulators``).
     """
-    on = {s: stream_on(*tables[t], n_bins) for s, t in TB_TS_ON.items()}
-    blocks = [np.stack([on[s] for s in TB_TS_ON], axis=1).astype(np.float64)]
-    bands, at = {"onoff": slice(0, len(TB_TS_ON))}, len(TB_TS_ON)
+    on = {s: stream_on(*tables[t], n_bins) for s, t in on_tables.items()}
+    blocks = [np.stack([on[s] for s in on_tables], axis=1).astype(np.float64)]
+    bands, at = {"onoff": slice(0, len(on_tables))}, len(on_tables)
     for band, (table, model) in TB_TS_SPACES[space].items():
         long, stamp = tables[table]
         if gated is None:
@@ -888,10 +915,11 @@ def run_features(stem: str, tables: dict[str, tuple[pd.DataFrame, str]], space: 
                          fs_enc.FRAME_S, bands)
 
 
-def voice_features(f: FrameFeatures, words: pd.DataFrame) -> FrameFeatures:
+def voice_features(f: FrameFeatures, words: pd.DataFrame, streams: tuple = tuple(TB_TS_ON)) -> FrameFeatures:
     """``f`` (an onoff-only run) plus band ``voice``: per voice, (is that voice − its mean over
-    the run's audio-on bins) × audio-on. ``words`` are the run's word events."""
-    audio_on = f.x[:, f.bands["onoff"]][:, list(TB_TS_ON).index("audio")] > 0
+    the run's audio-on bins) × audio-on. ``words`` are the run's word events; ``streams`` the
+    on/off band's column order."""
+    audio_on = f.x[:, f.bands["onoff"]][:, list(streams).index("audio")] > 0
     on = np.flatnonzero(audio_on)
     w = words.sort_values("onset_actual")
     bins = np.floor(w["onset_actual"].to_numpy(float) / fs_enc.FRAME_S + 1e-9).astype(int)
@@ -912,12 +940,13 @@ def tb_run_dir(stimfeat: Path, sub: str, ses: str, stem: str) -> Path:
 
 
 def load_run_features(stimfeat: Path, run, space: str, n_bins: int,
-                      gated: dict[str, set[str]] | None = None) -> FrameFeatures:
+                      gated: dict[str, set[str]] | None = None,
+                      on_tables: dict[str, str] = TB_TS_ON) -> FrameFeatures:
     """Read a run's composed tables (only the models the space and the on/off band need)."""
     d = tb_run_dir(stimfeat, run.sub, run.ses, run.stem)
-    need = {t: None for t in TB_TS_ON.values()}
+    need = {t: None for t in on_tables.values()}
     for table, model in TB_TS_SPACES[space].values():
-        if table not in TB_TS_ON.values():
+        if table not in on_tables.values():
             need[table] = need.get(table) or set()
             need[table].add(model)
     tables = {}
@@ -929,7 +958,7 @@ def load_run_features(stimfeat: Path, run, space: str, n_bins: int,
         long = pd.read_parquet(d / f"{table}_features.parquet", columns=cols,
                                filters=None if models is None else [("model", "in", sorted(models))])
         tables[table] = (long, meta["grid"]["stamp"])
-    return run_features(run.stem, tables, space, n_bins, gated)
+    return run_features(run.stem, tables, space, n_bins, gated, on_tables)
 
 
 def _first_table(stimfeat: Path, run, table: str) -> tuple[pd.DataFrame, str]:
@@ -960,18 +989,26 @@ def tb_ts_design(runs: pd.DataFrame, feats: dict[str, FrameFeatures], cleaned: P
     return np.concatenate(xs), np.concatenate(ys), np.array(groups), bands
 
 
-def tb_ts_register(manifest: pd.DataFrame, cleaned: Path) -> dict:
-    """What fixes tb-enc-ts's responses, hashed over every subject's TBencoding manifest rows."""
-    m = manifest[manifest["task"] == TB_TS_TASK].sort_values("path")
+def tb_ts_register(manifest: pd.DataFrame, cleaned: Path, name: str = "tb-enc-ts",
+                   keep: set[str] | None = None) -> dict:
+    """What fixes a time-series TB register's responses, hashed over every subject's manifest
+    rows of its task (``keep``: only these paths, e.g. one cue modality). tb-enc-ts's record is
+    unchanged by the other registers' keys."""
+    task, on_tables, cue = TS_REGISTERS[name]
+    m = manifest[manifest["task"] == task].sort_values("path")
+    if keep is not None:
+        m = m[m["path"].isin(keep)]
     trs = sorted(set(m["RepetitionTime"].astype(float)))
     if len(trs) != 1:
-        raise RuntimeError(f"{TB_TS_TASK} runs have several TRs {trs}")
+        raise RuntimeError(f"{task} runs have several TRs {trs}")
     cols = ["path", "n_vol", "n_nss", "regime", "regime_version", "code_version", "created"]
     n_columns = len(pd.read_csv(go.grayordinates_path(cleaned), sep="\t"))
+    extra = {} if cue is None else {"task": task, "cue_modality": cue,
+                                    "ceiling": "none: a cue is one 4.5 s slot and almost no word repeats"}
     return {
-        "name": "tb-enc-ts", "design": "fir", "tr": trs[0], "frame_s": fs_enc.FRAME_S,
+        "name": name, "design": "fir", "tr": trs[0], "frame_s": fs_enc.FRAME_S,
         "delays_tr": list(fs_enc.DELAYS_TR), "groups": "session", "drop_leading_volumes": TB_TS_DROP,
-        "onoff": {"band": "onoff", "columns": list(TB_TS_ON), "source": "composed table NaN pattern"},
+        "onoff": {"band": "onoff", "columns": list(on_tables), "source": "composed table NaN pattern"}, **extra,
         "modulators": "feature minus its mean over the run's on-bins of its stream, times on",
         "responses": {"tree": str(Path(cleaned).name), "columns": "grayordinates", "n_columns": n_columns,
                       "standardize": "z-score per run after the drop",
@@ -1000,7 +1037,7 @@ class Request:
                 rescue = parse_rescue(args.space)
             except ValueError as exc:
                 raise SystemExit(str(exc))
-            if args.register == "tb-enc-ts" or (args.register == "tb-enc" and rescue[0] not in RESCUE_TB_BLOCKS):
+            if args.register in TS_REGISTERS or (args.register == "tb-enc" and rescue[0] not in RESCUE_TB_BLOCKS):
                 raise SystemExit(f"rescue-{rescue[0]} runs on films"
                                  + (" and tb-enc" if rescue[0] in RESCUE_TB_BLOCKS else ""))
         elif args.space not in KNOWN_SPACES:
@@ -1008,9 +1045,11 @@ class Request:
                              f"{RESCUE_PREFIX}<block>[+<member>]")
         if model_space and args.register == "tb-enc":
             raise SystemExit("model spaces run on the films and tb-enc-ts registers")
-        if args.space in (ONOFF_SPACE, VOICE_SPACE) and args.register != "tb-enc-ts":
-            raise SystemExit(f"{args.space} runs on tb-enc-ts only: every film bin is on, and "
-                             "tb-enc has no time course")
+        if args.space in (ONOFF_SPACE, VOICE_SPACE) and args.register not in TS_REGISTERS:
+            raise SystemExit(f"{args.space} runs on the time-series TB registers only: every film bin is "
+                             "on, and tb-enc has no time course")
+        if args.register == "tb-ret-ts" and args.space not in RET_SPACES:
+            raise SystemExit(f"tb-ret-ts plays the word alone, so its spaces are audio: {sorted(RET_SPACES)}")
         if rescue:  # two bands at read (b)'s solver, with per-group sums for the bootstrap
             self.spec = model_spec(args.solver, args.n_iter, group_sums=True)
         elif model_space or args.space in (ONOFF_SPACE, VOICE_SPACE):  # reads (a) and (b): one solver
@@ -1054,27 +1093,35 @@ class Request:
                 self.feats = {f.stimulus_id: f for f in feats}
                 self.label = _label(paths, args.space)
             self.register = film_register(windows, paths.cleaned, list(self.rows["stimulus_id"]))
-        elif args.register == "tb-enc-ts":
+        elif args.register in TS_REGISTERS:
             if getattr(args, "films", None):
                 raise SystemExit("--films applies to the films register only")
             if args.space not in TB_TS_SPACES:
-                raise SystemExit(f"tb-enc-ts spaces: {sorted(TB_TS_SPACES)}")
+                raise SystemExit(f"{args.register} spaces: {sorted(TB_TS_SPACES)}")
+            task, on_tables, cue = TS_REGISTERS[args.register]
             manifest = pd.read_csv(Path(paths.cleaned) / "manifest.tsv", sep="\t", dtype=str)
-            self.runs = tb_ts_runs(manifest, args.sub)
+            self.runs = tb_ts_runs(manifest, args.sub, task)
+            keep = None
+            if cue is not None:
+                keep = cue_paths(manifest, Path(load_config()["paths"]["bids_project_dir"]), task, cue)
+                self.runs = self.runs[self.runs["path"].isin(keep)].reset_index(drop=True)
+                if self.runs.empty:
+                    raise RuntimeError(f"sub-{args.sub}: no cleaned {task} runs cued by {cue}")
             n_bins = {int(round(int(r.n_vol) * float(r.RepetitionTime) / fs_enc.FRAME_S))
                       for r in self.runs.itertuples(index=False)}
             if len(n_bins) != 1:
                 raise RuntimeError(f"sub-{args.sub}: runs of different lengths {sorted(n_bins)}")
             (n,) = n_bins
             gated = declared_undefined(paths.stimfeat) if model_space else None
-            self.feats = {r.stem: load_run_features(paths.stimfeat, r, args.space, n, gated)
+            self.feats = {r.stem: load_run_features(paths.stimfeat, r, args.space, n, gated, on_tables)
                           for r in self.runs.itertuples(index=False)}
             if args.space == VOICE_SPACE:
                 bids = Path(load_config()["paths"]["bids_project_dir"])
                 for r in self.runs.itertuples(index=False):
                     ev = pd.read_csv(bids / f"sub-{r.sub}" / f"ses-{r.ses}" / "func" / f"{r.stem}_events.tsv", sep="\t")
-                    self.feats[r.stem] = voice_features(self.feats[r.stem], ev[ev["trial_type"] == "word"])
-            self.register = tb_ts_register(manifest, paths.cleaned)
+                    self.feats[r.stem] = voice_features(self.feats[r.stem], ev[ev["trial_type"] == "word"],
+                                                        tuple(on_tables))
+            self.register = tb_ts_register(manifest, paths.cleaned, args.register, keep)
             self.label = {"space": args.space, "source": str(paths.stimfeat / "tb"),
                           "bands": {b: list(v) for b, v in TB_TS_SPACES[args.space].items()}}
             if args.space == VOICE_SPACE:
@@ -1122,7 +1169,7 @@ class Request:
     def design(self):
         if self.register_name == "films":
             return film_design(self.rows, self.feats, self.paths.cleaned)
-        if self.register_name == "tb-enc-ts":
+        if self.register_name in TS_REGISTERS:
             return tb_ts_design(self.runs, self.feats, self.paths.cleaned)
         table = pd.read_csv(go.grayordinates_path(self.paths.cleaned), sep="\t")
         rows, y = tb_rows(self.trials, tb_betas(self.paths.derivatives, self.sub, self.trials, table))
@@ -1136,7 +1183,7 @@ class Request:
                "bands": {b: (sl.stop - sl.start) * width for b, sl in first.bands.items()}}
         if self.register_name == "films":
             out.update(films=len(self.rows), volumes=int(self.rows["n"].sum()))
-        elif self.register_name == "tb-enc-ts":
+        elif self.register_name in TS_REGISTERS:
             out.update(runs=len(self.runs), sessions=int(self.runs["ses"].nunique()),
                        volumes=int((self.runs["n_vol"].astype(int) - TB_TS_DROP).sum()))
         else:
@@ -1260,7 +1307,7 @@ def main() -> None:
     sub = ap.add_subparsers(dest="verb", required=True)
     for name in ("plan", "score"):
         p = sub.add_parser(name)
-        p.add_argument("--register", choices=("films", "tb-enc", "tb-enc-ts"), default="films")
+        p.add_argument("--register", choices=("films", "tb-enc", *TS_REGISTERS), default="films")
         p.add_argument("--space", required=True,
                        help=f"one of {', '.join(sorted(KNOWN_SPACES))}, or {RESCUE_PREFIX}<block>[+<member>]")
         p.add_argument("--sub", required=True)
