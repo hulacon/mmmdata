@@ -60,9 +60,10 @@ from neuroimaging.confounds import get_regime, regime_design  # noqa: E402
 from neuroimaging.io import FmriprepRun, find_fmriprep_runs, load_confounds  # noqa: E402
 
 #: Tasks whose runs are cleaned: films and every rest run feed alignment (pre-registration
-#: §3.1); TBencoding feeds the encoding harness's time-series TB register. Consumers select
-#: runs by task from manifest.tsv, so a task added here reaches no other consumer.
-TASKS = ("NATencoding", "TBencoding", "INITresting", "TBresting", "NATresting", "FINresting")
+#: §3.1); TBencoding feeds the encoding harness's time-series TB register, TBretrieval its
+#: word-cued retrieval register. Consumers select runs by task from manifest.tsv, so a task
+#: added here reaches no other consumer.
+TASKS = ("NATencoding", "TBencoding", "TBretrieval", "INITresting", "TBresting", "NATresting", "FINresting")
 SUBJECTS = ("03", "04", "05")
 DEFAULT_REGIME = "reference"
 #: The MPRAGE hippunfold took as its T1w (its config: ses-01 acq-MPR run-01).
