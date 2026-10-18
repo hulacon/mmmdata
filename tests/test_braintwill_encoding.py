@@ -329,6 +329,26 @@ def test_onoff_space_is_the_onoff_band_alone(harness):
     assert harness.ONOFF_SPACE not in harness.MODEL_SPACES
 
 
+def test_voice_features_one_column_per_voice_on_the_word_bins(harness):
+    import numpy as np
+
+    n = 8
+    x = np.zeros((n, 2))
+    x[[1, 4, 6], 1] = 1                                   # audio-on bins
+    f = harness.FrameFeatures("run-x", np.arange(n) * 0.5, x, 0.5, {"onoff": slice(0, 2)})
+    words = pd.DataFrame({"onset_actual": [3.1, 0.52, 2.01], "voice": ["nova", "echo", "nova"]})
+    g = harness.voice_features(f, words)
+    assert list(g.bands) == ["onoff", "voice"] and g.x.shape == (n, 2 + len(harness.VOICES))
+    v = g.x[:, g.bands["voice"]]
+    np.testing.assert_allclose(v[[1, 4, 6], 0], np.array([1, 0, 0]) - 1 / 3)   # echo
+    np.testing.assert_allclose(v[[1, 4, 6], 1], np.array([0, 1, 1]) - 2 / 3)   # nova
+    assert not v[[0, 2, 3, 5, 7]].any() and not v[:, 2:].any()
+    with pytest.raises(RuntimeError, match="do not land"):
+        harness.voice_features(f, words.assign(onset_actual=[3.6, 0.52, 2.01]))
+    with pytest.raises(RuntimeError, match="outside"):
+        harness.voice_features(f, words.assign(voice=["nova", "alloy", "nova"]))
+
+
 def _manifest(rows):
     base = {"sub": "01", "task": "TBencoding", "n_vol": "210", "n_nss": "0", "RepetitionTime": "1.5"}
     return pd.DataFrame([{**base, **r, "path": f"sub-01/ses-{r['ses']}/func/sub-01_ses-{r['ses']}_task-TBencoding"

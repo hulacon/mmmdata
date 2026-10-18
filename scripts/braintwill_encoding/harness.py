@@ -497,6 +497,12 @@ TB_TS_SPACES.update({name: {m: (t, m)} for name, (t, m) in MODEL_SPACES.items()}
 #: model's R² above on/off compares two fits of one solver.
 ONOFF_SPACE = "onoff"
 TB_TS_SPACES[ONOFF_SPACE] = {}
+#: The TTS voice of each TB word as its own band: one column per voice, a centred modulator
+#: of audio-on, read from the run's events (``voice``). A word's audio-on bin is the 0.5 s bin
+#: holding its ``onset_actual``; a run where the two disagree is refused.
+VOICE_SPACE = "voice"
+VOICES = ("echo", "nova", "onyx", "shimmer")
+TB_TS_SPACES[VOICE_SPACE] = {}
 #: Model-space fits on both registers: float64 ``eigh``. TB kernels defeat float32 ``eigh``
 #: (``TB_TS_SOLVER_PARAMS``); float64 ``eigh`` is the same decomposition at ~1/30 the cost of
 #: SVD (DECIDED 2026-10-15, so read (b) is one solver on both registers).
@@ -882,6 +888,25 @@ def run_features(stem: str, tables: dict[str, tuple[pd.DataFrame, str]], space: 
                          fs_enc.FRAME_S, bands)
 
 
+def voice_features(f: FrameFeatures, words: pd.DataFrame) -> FrameFeatures:
+    """``f`` (an onoff-only run) plus band ``voice``: per voice, (is that voice − its mean over
+    the run's audio-on bins) × audio-on. ``words`` are the run's word events."""
+    audio_on = f.x[:, f.bands["onoff"]][:, list(TB_TS_ON).index("audio")] > 0
+    on = np.flatnonzero(audio_on)
+    w = words.sort_values("onset_actual")
+    bins = np.floor(w["onset_actual"].to_numpy(float) / fs_enc.FRAME_S + 1e-9).astype(int)
+    if not np.array_equal(bins, on):
+        raise RuntimeError(f"{f.stimulus_id}: {len(w)} word events do not land on the {on.size} audio-on bins")
+    unknown = set(w["voice"]) - set(VOICES)
+    if unknown:
+        raise RuntimeError(f"{f.stimulus_id}: voices {sorted(unknown)} outside {VOICES}")
+    v = np.full((audio_on.size, len(VOICES)), np.nan)
+    v[on] = (w["voice"].to_numpy()[:, None] == np.array(VOICES)[None, :]).astype(float)
+    x = np.concatenate([f.x, modulators(v, audio_on, f"{f.stimulus_id} voice")], axis=1)
+    return FrameFeatures(f.stimulus_id, f.times, x, f.frame_s,
+                         {**f.bands, VOICE_SPACE: slice(f.x.shape[1], x.shape[1])})
+
+
 def tb_run_dir(stimfeat: Path, sub: str, ses: str, stem: str) -> Path:
     return Path(stimfeat) / "tb" / f"sub-{sub}" / f"ses-{ses}" / stem / "features"
 
@@ -983,12 +1008,12 @@ class Request:
                              f"{RESCUE_PREFIX}<block>[+<member>]")
         if model_space and args.register == "tb-enc":
             raise SystemExit("model spaces run on the films and tb-enc-ts registers")
-        if args.space == ONOFF_SPACE and args.register != "tb-enc-ts":
-            raise SystemExit(f"{ONOFF_SPACE} runs on tb-enc-ts only: every film bin is on, and "
+        if args.space in (ONOFF_SPACE, VOICE_SPACE) and args.register != "tb-enc-ts":
+            raise SystemExit(f"{args.space} runs on tb-enc-ts only: every film bin is on, and "
                              "tb-enc has no time course")
         if rescue:  # two bands at read (b)'s solver, with per-group sums for the bootstrap
             self.spec = model_spec(args.solver, args.n_iter, group_sums=True)
-        elif model_space or args.space == ONOFF_SPACE:  # reads (a) and (b): one solver
+        elif model_space or args.space in (ONOFF_SPACE, VOICE_SPACE):  # reads (a) and (b): one solver
             self.spec = model_spec(args.solver, args.n_iter, group_sums=getattr(args, "group_sums", False))
         else:  # tb registers share the film grid and folds
             self.spec = film_spec(args.solver, args.n_iter,
@@ -1044,9 +1069,16 @@ class Request:
             gated = declared_undefined(paths.stimfeat) if model_space else None
             self.feats = {r.stem: load_run_features(paths.stimfeat, r, args.space, n, gated)
                           for r in self.runs.itertuples(index=False)}
+            if args.space == VOICE_SPACE:
+                bids = Path(load_config()["paths"]["bids_project_dir"])
+                for r in self.runs.itertuples(index=False):
+                    ev = pd.read_csv(bids / f"sub-{r.sub}" / f"ses-{r.ses}" / "func" / f"{r.stem}_events.tsv", sep="\t")
+                    self.feats[r.stem] = voice_features(self.feats[r.stem], ev[ev["trial_type"] == "word"])
             self.register = tb_ts_register(manifest, paths.cleaned)
             self.label = {"space": args.space, "source": str(paths.stimfeat / "tb"),
                           "bands": {b: list(v) for b, v in TB_TS_SPACES[args.space].items()}}
+            if args.space == VOICE_SPACE:
+                self.label.update(voices=list(VOICES), voice_source="events `voice`, word rows")
             if model_space:
                 table, model = MODEL_SPACES[args.space]
                 long, stamp = _first_table(paths.stimfeat, next(self.runs.itertuples(index=False)), table)
