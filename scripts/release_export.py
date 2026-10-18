@@ -21,6 +21,10 @@ Usage:
   release_export.py sweep    ROOT [--names-file NAMES.txt] [--epoch YYYY-MM-DD] [--ext .tsv ...]
   release_export.py export   STAGE --offsets-out PRIV.tsv --pronoun-report PRIV.tsv
                              [--redactions SPEC.tsv] [--names-file NAMES.txt] [--epoch ...] [--dry-run]
+                             [--commit-with-findings]
+
+export sweeps the planned result first and writes nothing if the sweep finds
+anything, unless --commit-with-findings is given.
 
 Exit codes: 0 success / clean sweep, 1 sweep findings, 2 refused or failed.
 """
@@ -145,6 +149,7 @@ def cmd_export(args, cfg):
         redaction_spec=Path(args.redactions) if args.redactions else None,
         names_file=Path(args.names_file) if args.names_file else None,
         dry_run=args.dry_run,
+        commit_with_findings=args.commit_with_findings,
     )
     code, _ = run_export(args.stage, cfg, opts)
     return code
@@ -205,6 +210,9 @@ def build_parser():
     s.add_argument("--names-file")
     s.add_argument("--epoch")
     s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--commit-with-findings", action="store_true",
+                   help="write even if the sweep of the planned result finds "
+                        "something (default: write nothing; exit is still 1)")
     s.set_defaults(func=cmd_export)
     return p
 

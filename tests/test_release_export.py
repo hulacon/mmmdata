@@ -3,7 +3,10 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 from release.export import ExportOptions, run_export
+from release.stage import StageError
 from tests.release_fixtures import (EPOCH, TRANSCRIPT_REL, make_env, snapshot,
                                     write_config)
 
@@ -83,6 +86,58 @@ def test_failed_plan_writes_nothing(tmp_path, capsys):
     rc = release_export.main(_argv(cdir, stage, private, spec, names))
     assert rc == 2
     assert "span not found" in capsys.readouterr().err
+    assert {p: snapshot(p) for p in (stage, private)} == before
+
+
+def test_sweep_findings_block_every_write(tmp_path, capsys):
+    """A real export whose planned result still has findings writes nothing:
+    neither the private outputs nor the staged files."""
+    cfg, work, stage, private = make_env(tmp_path)
+    _, names = _inputs(private)                      # names present, no redaction
+    before = {p: snapshot(p) for p in (stage, private)}
+    code, findings = run_export(stage, cfg, ExportOptions(
+        epoch=EPOCH, offsets_out=private / "o.tsv", pronoun_report=private / "p.tsv",
+        names_file=names))
+    out = capsys.readouterr().out
+    assert code == 1 and findings
+    assert "nothing written" in out
+    assert {p: snapshot(p) for p in (stage, private)} == before
+
+
+def test_commit_with_findings_writes_and_still_reports(tmp_path, capsys):
+    cfg, work, stage, private = make_env(tmp_path)
+    _, names = _inputs(private)
+    code, findings = run_export(stage, cfg, ExportOptions(
+        epoch=EPOCH, offsets_out=private / "o.tsv", pronoun_report=private / "p.tsv",
+        names_file=names, commit_with_findings=True))
+    assert code == 1 and findings
+    assert "1900-01-01" in (stage / "sub-01/sub-01_sessions.tsv").read_text()
+    assert (private / "o.tsv").exists()
+
+
+def test_cli_commit_with_findings_flag(tmp_path, capsys):
+    cfg, work, stage, private = make_env(tmp_path)
+    _, names = _inputs(private)
+    cdir = write_config(tmp_path, cfg)
+    argv = ["--config-dir", str(cdir), "export", str(stage),
+            "--offsets-out", str(private / "o.tsv"),
+            "--pronoun-report", str(private / "p.tsv"), "--names-file", str(names)]
+    before = snapshot(stage)
+    assert release_export.main(argv) == 1
+    assert snapshot(stage) == before
+    assert release_export.main(argv + ["--commit-with-findings"]) == 1
+    assert snapshot(stage) != before
+
+
+@pytest.mark.parametrize("report_name", ["o.tsv", "o.tsv/p.tsv"])
+def test_colliding_private_outputs_are_refused_up_front(tmp_path, report_name):
+    """Same path, or one inside the other: refused before anything is written."""
+    cfg, work, stage, private = make_env(tmp_path)
+    before = {p: snapshot(p) for p in (stage, private)}
+    with pytest.raises(StageError, match="collide"):
+        run_export(stage, cfg, ExportOptions(
+            epoch=EPOCH, offsets_out=private / "o.tsv",
+            pronoun_report=private / report_name))
     assert {p: snapshot(p) for p in (stage, private)} == before
 
 

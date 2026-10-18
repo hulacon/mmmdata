@@ -21,7 +21,10 @@ Expected usage
            --names-file <private-dir>/names.txt
 
    ``--dry-run`` plans every step in memory, reports what would change, and
-   runs the sweep against the planned result without writing anything.
+   runs the sweep against the planned result without writing anything. A
+   real run also sweeps the planned result first, and writes nothing if the
+   sweep finds anything (``--commit-with-findings`` overrides that once every
+   finding has been judged acceptable), so a failed run can simply be rerun.
 3. Have a person read the pronoun review report; fix any grammar it flags
    with a follow-up redaction-style edit, never in the working tree.
 4. Ship the stage only when the sweep exits 0.
