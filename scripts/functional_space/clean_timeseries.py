@@ -57,7 +57,9 @@ import grayordinates as go  # noqa: E402
 from core.config import load_config  # noqa: E402
 from neuroimaging import data_quality as dq  # noqa: E402
 from neuroimaging.confounds import get_regime, regime_design  # noqa: E402
-from neuroimaging.io import FmriprepRun, find_fmriprep_runs, load_confounds  # noqa: E402
+from neuroimaging.io import FmriprepRun, load_confounds  # noqa: E402
+
+import mmmget  # noqa: E402
 
 #: Tasks whose runs are cleaned: films and every rest run feed alignment (pre-registration
 #: §3.1); TBencoding feeds the encoding harness's time-series TB register, TBretrieval its
@@ -89,7 +91,7 @@ def find_runs(sub=None, ses=None, task=None, run=None) -> list[FmriprepRun]:
     out = []
     for s in subs:
         for t in tasks:
-            out += find_fmriprep_runs(subject=s, session=ses, task=t, run=run, allow_mixed_designs=True)
+            out += mmmget.runs(subject=s, session=ses, task=t, run=run, allow_mixed_designs=True)
     return [r for r in out if r.confounds is not None]
 
 

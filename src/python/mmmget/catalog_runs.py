@@ -137,10 +137,10 @@ def runs(
     """Preprocessed BOLD runs, from the catalog, with QC exclusions applied.
 
     A run is one fMRIPrep confounds TSV in the catalog (the same anchor as
-    ``find_fmriprep_runs``); its BOLD, mask, boldref and surfaces in
-    *space*, and its raw events file, are attached when catalogued. Nothing
-    is globbed: a run the catalog does not list is not returned, so rebuild
-    the catalog after new preprocessing.
+    ``neuroimaging.io.fmriprep_runs_on_disk``); its BOLD, mask, boldref and
+    surfaces in *space*, and its raw events file, are attached when
+    catalogued. Nothing is globbed: a run the catalog does not list is not
+    returned, so rebuild the catalog after new preprocessing.
 
     Runs a person has marked ``exclude`` in the QC record are dropped unless
     ``include_excluded=True``, in which case they are returned with
@@ -168,7 +168,7 @@ def runs(
         Some localizer task labels cover two protocols acquired in different
         session groups (``LOCALIZER_DESIGNS`` in ``neuroimaging.constants``).
         When ``task`` names one and the returned runs span both, this raises
-        ``MixedLocalizerDesignError`` unless True, as ``find_fmriprep_runs``
+        ``MixedLocalizerDesignError`` unless True, as ``fmriprep_runs_on_disk``
         does. Pooling that way is recorded as non-standard; the usual fix is
         a ``session`` filter.
 

@@ -44,7 +44,7 @@ from equivalence import derivatives_dir, parse_noise  # noqa: E402
 
 from braintwill import RunBlockGLM, RunDesign  # noqa: E402
 
-from neuroimaging.io import find_fmriprep_runs  # noqa: E402
+import mmmget  # noqa: E402
 
 TYPED = "TYPED_FITHRF_GLMDENOISE_RR.npy"
 
@@ -103,8 +103,10 @@ def main(argv=None) -> int:
     # run_labels look like "ses-##/run-##[subgroup]"
     wanted = [tuple(x.removeprefix("ses-").removeprefix("run-") for x in lab.split("[")[0].split("/"))
               for lab in meta["run_labels"]]
-    found = {(r.session, r.run): r for r in find_fmriprep_runs(subject=subject, task=task, space=args.space,
-                                                               bids_root=config_bids_root())}
+    # include_excluded: the GLMsingle fit's recorded run list decides, so a run QC
+    # has excluded since must still be found, not reported missing
+    found = {(r.session, r.run): r for r in mmmget.runs(subject=subject, task=task, space=args.space,
+                                                        bids_root=config_bids_root(), include_excluded=True)}
     missing = [w for w in wanted if w not in found]
     if missing:
         raise SystemExit(f"ERROR: GLMsingle runs not found now: {missing}")

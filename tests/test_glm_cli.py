@@ -1,6 +1,7 @@
 """The runner end to end on a synthetic two-run fMRIPrep tree.
 
-Dry run needs only the tree; the full fit needs nilearn and writes maps whose
+Runs come from the catalog (mmmget.runs), so every seeding helper re-indexes
+the tree. Dry run needs only the tree; the full fit needs nilearn and writes maps whose
 names carry Contract A keys, plus the tree's dataset_description.
 """
 
@@ -15,6 +16,7 @@ import pytest
 nib = pytest.importorskip("nibabel")
 
 from neuroimaging.constants import ACOMPCOR_6, MOTION_6  # noqa: E402
+from tests.mmmget_fixtures import _decision, _entry, index_tree  # noqa: E402
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -58,6 +60,7 @@ def _seed_run(root: Path, sub: str, ses: str, run: str, seed: int, events=True, 
     cols = MOTION_6 + (ACOMPCOR_6 if acompcor else []) + ["cosine00"]
     conf = pd.DataFrame(rng.normal(scale=0.05, size=(N_SCANS, len(cols))), columns=cols)
     conf.to_csv(fp / f"{prefix}_desc-confounds_timeseries.tsv", sep="\t", index=False)
+    index_tree(root)
 
 
 @pytest.fixture
@@ -85,8 +88,19 @@ def test_run_without_events_is_refused_before_any_fit(tree):
 
 
 def test_no_runs_is_a_named_error(tree):
-    with pytest.raises(SystemExit, match="no fMRIPrep runs"):
+    with pytest.raises(SystemExit, match="no fMRIPrep runs.*sub='zz' does not occur"):
         glm_contrast_maps.main(["--subject", "zz", "--model", "motor", "--dry-run", "--bids-root", str(tree)])
+
+
+def test_a_run_qc_excluded_is_not_fitted(tree, capsys):
+    pytest.importorskip("nilearn")
+    key = "sub-aa_ses-30_task-motor_run-02_bold"
+    _decision(tree / "derivatives" / "duckbrain" / "qc" / "decisions" / f"{key}_decision.json",
+              {"run_key": key, "decisions": [_entry("exclude")]})
+    assert glm_contrast_maps.main(["--subject", "aa", "--model", "motor", "--dry-run",
+                                   "--bids-root", str(tree)]) == 0
+    out = capsys.readouterr().out
+    assert "runs (1)" in out and "run-02" not in out
 
 
 def test_full_fit_writes_contract_a_named_maps_and_description(tree):
@@ -119,11 +133,11 @@ def test_split_design_guard_reaches_the_cli(tree):
     from neuroimaging.constants import MixedLocalizerDesignError
 
     # Subject bb has ses-02 only, subject aa ses-30 only; a subject filter never
-    # spans both, so exercise the guard through find_fmriprep_runs directly.
-    from neuroimaging.io import find_fmriprep_runs
+    # spans both, so exercise the guard through mmmget.runs directly.
+    import mmmget
 
     with pytest.raises(MixedLocalizerDesignError):
-        find_fmriprep_runs(task="motor", bids_root=tree)
+        mmmget.runs(task="motor", bids_root=tree)
     assert glm_contrast_maps.main(["--subject", "bb", "--model", "motor", "--dry-run",
                                    "--bids-root", str(tree)]) == 0
 

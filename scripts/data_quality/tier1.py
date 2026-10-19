@@ -91,7 +91,10 @@ from neuroimaging.confounds import (  # noqa: E402
     load_regimes,
 )
 from neuroimaging.constants import DEFAULT_SPACE, DEFAULT_VARIANT  # noqa: E402
-from neuroimaging.io import FmriprepRun, find_fmriprep_runs  # noqa: E402
+# Run discovery here is on disk, not mmmget.runs: tier-1 measures every run, the
+# ones QC has excluded included (its numbers feed those decisions), and plan/run
+# must see fMRIPrep output the catalog has not swept yet.
+from neuroimaging.io import FmriprepRun, fmriprep_runs_on_disk  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +136,7 @@ def selected_regimes(args: argparse.Namespace) -> list:
 
 
 def runs_for(args: argparse.Namespace, paths: Paths) -> list[FmriprepRun]:
-    runs = find_fmriprep_runs(
+    runs = fmriprep_runs_on_disk(
         subject=args.sub, session=args.ses, task=args.task, run=args.run,
         variant=paths.variant, space=DEFAULT_SPACE, bids_root=paths.bids_root,
         allow_mixed_designs=True,
@@ -147,7 +150,7 @@ def unit_line(run: FmriprepRun) -> str:
 
 def run_from_unit(line: str, paths: Paths) -> FmriprepRun:
     sub, ses, task, run = (line.rstrip("\n").split("\t") + [""])[:4]
-    runs = find_fmriprep_runs(
+    runs = fmriprep_runs_on_disk(
         subject=sub, session=ses, task=task, run=run or None,
         variant=paths.variant, space=DEFAULT_SPACE, bids_root=paths.bids_root,
         allow_mixed_designs=True,
@@ -490,9 +493,9 @@ def cmd_glmsingle(args: argparse.Namespace) -> None:
     ti = pd.read_csv(fdir / "trial_info.csv")
     mask, affine, mask_shas = None, None, {}
     for ses, task, run in dqgs.fit_runs(ti):
-        found = [r for r in find_fmriprep_runs(subject=sub, session=ses, task=task, run=run,
-                                               variant=paths.variant, space=DEFAULT_SPACE,
-                                               bids_root=paths.bids_root, allow_mixed_designs=True)
+        found = [r for r in fmriprep_runs_on_disk(subject=sub, session=ses, task=task, run=run,
+                                                  variant=paths.variant, space=DEFAULT_SPACE,
+                                                  bids_root=paths.bids_root, allow_mixed_designs=True)
                  if r.mask is not None and (r.run or "") == run]
         if len(found) != 1:
             sys.exit(f"sub-{sub} ses-{ses} task-{task} run-{run}: {len(found)} fMRIPrep masks under "
@@ -540,7 +543,7 @@ def cmd_prf(args: argparse.Namespace) -> None:
 
 
 def t1w_runs(args: argparse.Namespace, paths: Paths) -> list[FmriprepRun]:
-    runs = find_fmriprep_runs(
+    runs = fmriprep_runs_on_disk(
         subject=args.sub, session=getattr(args, "ses", None), task=getattr(args, "task", None),
         run=getattr(args, "run", None), variant=paths.variant, space=dqv.VOLUME_SPACE,
         bids_root=paths.bids_root, allow_mixed_designs=True,

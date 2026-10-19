@@ -31,7 +31,8 @@ vertices with signal in every run, and writes `hemi-L`/`hemi-R` `.func.gii`
 maps (neuroimaging.glm.surface); the estimator and fixed effects are the
 volume ones.
 
-Run discovery goes through neuroimaging.io.find_fmriprep_runs, which
+Run discovery goes through mmmget.runs: the catalog, with runs QC has
+excluded dropped, so rebuild the catalog after new preprocessing. It
 refuses a task-motor or task-auditory selection spanning both session
 groups unless --sessions or --allow-mixed-designs says so. For motor the
 two-protocol claim behind that guard was withdrawn 2026-09-08
@@ -88,7 +89,9 @@ from neuroimaging.glm.surface import (  # noqa: E402
     surface_bold_path,
     surface_mask_intersection,
 )
-from neuroimaging.io import FmriprepRun, find_fmriprep_runs, load_confounds, mask_intersection  # noqa: E402
+from neuroimaging.io import FmriprepRun, load_confounds, mask_intersection  # noqa: E402
+
+import mmmget  # noqa: E402
 
 
 def _bare(label: str, prefix: str) -> str:
@@ -122,7 +125,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="mm; 0 or unset = unsmoothed (the reference)")
     p.add_argument("--output-tree", default="nilearn_glm")
     p.add_argument("--allow-mixed-designs", action="store_true",
-                   help="pool a split-design task across both session groups (see find_fmriprep_runs)")
+                   help="pool a split-design task across both session groups (see mmmget.runs)")
     p.add_argument("--per-run-maps", action="store_true", help="also write each run's maps")
     p.add_argument("--dry-run", action="store_true", help="discover, build designs, print the plan; fit nothing")
     # Path overrides, for tests and off-config trees. Production reads config/*.toml.
@@ -135,18 +138,23 @@ def select_runs(args: argparse.Namespace, task: str, bids_root: Path) -> list[Fm
     subject = _bare(args.subject, "sub")
     sessions = {_bare(s, "ses") for s in args.sessions} if args.sessions else None
     runs: list[FmriprepRun] = []
-    if sessions and len(sessions) == 1:
-        runs = find_fmriprep_runs(subject=subject, session=next(iter(sessions)), task=task,
-                                  variant=args.variant, space=args.space, bids_root=bids_root,
-                                  allow_mixed_designs=args.allow_mixed_designs)
-    else:
-        runs = find_fmriprep_runs(subject=subject, task=task, variant=args.variant, space=args.space,
-                                  bids_root=bids_root, allow_mixed_designs=args.allow_mixed_designs)
-        if sessions:
-            runs = [r for r in runs if r.session in sessions]
+    unknown = ""
+    try:
+        if sessions and len(sessions) == 1:
+            runs = mmmget.runs(subject=subject, session=next(iter(sessions)), task=task,
+                               variant=args.variant, space=args.space, bids_root=bids_root,
+                               allow_mixed_designs=args.allow_mixed_designs)
+        else:
+            runs = mmmget.runs(subject=subject, task=task, variant=args.variant, space=args.space,
+                               bids_root=bids_root, allow_mixed_designs=args.allow_mixed_designs)
+            if sessions:
+                runs = [r for r in runs if r.session in sessions]
+    except LookupError as exc:  # a label the catalog does not have
+        unknown = f" {exc}."
     if not runs:
         sys.exit(f"ERROR: no fMRIPrep runs for sub-{subject} task-{task} in {args.variant} "
-                 f"(space {args.space}) under {bids_root}. Check the tree, the variant, and the space.")
+                 f"(space {args.space}) under {bids_root}.{unknown} Check the tree, the variant, the space, "
+                 "and that the catalog has been rebuilt since preprocessing.")
     missing = [r.entity_prefix for r in runs if r.events is None]
     if missing:
         sys.exit("ERROR: runs without an events.tsv cannot be modelled: " + ", ".join(missing)
