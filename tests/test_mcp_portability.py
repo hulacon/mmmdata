@@ -210,6 +210,26 @@ class TestCallerInputStaysInBounds:
         assert Path(result["file_path"]) == relocated["figures"] / "neuroimaging" / "motion.html"
 
 
+class TestMissingCatalog:
+    """A copy without inventory/catalog.duckdb: every catalog tool says
+    which file is missing and how to build it, instead of the MCP layer's
+    bare "Error executing tool"."""
+
+    @pytest.mark.parametrize("tool,args", [
+        ("query_catalog", {"sql": "SELECT 1"}),
+        ("validate_dataset", {}),
+        ("get_session_summary", {"subject": SUB, "session": SES}),
+        ("get_file_expectations", {}),
+    ])
+    def test_tool_names_the_missing_file_and_the_fix(self, relocated, tool, args):
+        db = relocated["bids"] / "inventory" / "catalog.duckdb"
+        db.unlink()
+        result = call(tool, args)       # call() asserts the MCP result is not an error
+        assert result["catalog_available"] is False
+        assert str(db) in result["error"]
+        assert "duckbrain.catalog" in result["error"]
+
+
 class TestAbsentCopy:
     def test_missing_root_reports_the_key(self, tmp_path, monkeypatch):
         """A config naming a root that is not there says which key to fix."""

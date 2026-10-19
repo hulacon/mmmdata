@@ -63,10 +63,10 @@ def connect_readonly(db_path: Path | str) -> duckdb.DuckDBPyConnection:
     if not db.exists():
         raise FileNotFoundError(
             f"Catalog database not found: {db}. "
-            "Build it with the duckbrain engine: "
-            "/gpfs/projects/hulacon/shared/envs/duckbrain/bin/python "
-            "-m duckbrain.catalog rebuild --root <bids_root> "
-            "(or sbatch mmmdata/scripts/catalog_rebuild.sbatch)."
+            "Build it with the duckbrain engine, in an environment that has "
+            "duckbrain installed: "
+            "python -m duckbrain.catalog rebuild --root <bids_root> "
+            "(on the lab cluster: sbatch scripts/catalog_rebuild.sbatch)."
         )
     # read_only protects the catalog itself, not the filesystem: DuckDB's
     # file functions (read_csv, glob, COPY ... TO) would otherwise reach any

@@ -26,6 +26,24 @@ def _catalog():
     return get_paths().catalog_db, catalog
 
 
+def _missing_catalog(db, catalog) -> str | None:
+    """A JSON error if catalog.duckdb does not exist, else None.
+
+    Checked up front by every tool: a raised FileNotFoundError reaches an
+    MCP client only as "Error executing tool", and the inventory directory
+    can exist (so the toolset guard passes) without the catalog built in it.
+    The message is core.catalog's own, which names the path and the build
+    command.
+    """
+    if db.exists():
+        return None
+    try:
+        catalog.connect_readonly(db).close()
+    except FileNotFoundError as exc:
+        return json.dumps({"error": str(exc), "catalog_available": False})
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Tool functions
 # ---------------------------------------------------------------------------
@@ -61,13 +79,13 @@ def query_catalog(
     columns and rows as JSON.
     """
     db, catalog = _catalog()
+    if missing := _missing_catalog(db, catalog):
+        return missing
     try:
         columns, rows = catalog.run_select(db, sql, params)
     except ValueError as e:
         # read-only gate (enforced in core.catalog.run_select)
         return json.dumps({"error": str(e)})
-    except FileNotFoundError:
-        raise
     except Exception as e:
         return json.dumps({"error": str(e)})
     return json.dumps({"columns": columns, "row_count": len(rows), "rows": rows},
@@ -117,6 +135,8 @@ def validate_dataset(
     a status summary plus the reported unit rows.
     """
     db, catalog = _catalog()
+    if missing := _missing_catalog(db, catalog):
+        return missing
     try:
         report = catalog.resolution_report(
             db, subjects=subjects, sessions=sessions,
@@ -143,6 +163,8 @@ def get_session_summary(
     present).
     """
     db, catalog = _catalog()
+    if missing := _missing_catalog(db, catalog):
+        return missing
     summary = catalog.session_summary(db, subject, session)
     return json.dumps(summary, default=str)
 
@@ -175,6 +197,8 @@ def get_file_expectations(
     datasets carrying expectations, and total unit count.
     """
     db, catalog = _catalog()
+    if missing := _missing_catalog(db, catalog):
+        return missing
     result = catalog.lookup_expectations(
         db, task=task, session_type=session_type
     )
