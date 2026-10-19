@@ -5,8 +5,16 @@ The working tree is never edited by this package. Every transform runs on a
 configured BIDS root (or anything inside it), at the source-data directory,
 or at a directory that contains either of them.
 
-Expected usage
---------------
+Two uses
+--------
+* **A copy for collaborators** needs checks, not transforms: anatomical
+  images defaced (``scripts/deface_anat.py audit``) and no recordings of
+  participants' voices (``release_export.py media <copy>``, exit 0 when the
+  copy holds no audio or video outside ``stimuli/``). Neither check writes.
+* **A public release** runs the full export below.
+
+Expected usage (public release)
+-------------------------------
 1. Copy the dataset to a staging path outside the BIDS root (a cluster job;
    out of scope here). A hardlink copy (``cp -al``, ``rsync --link-dest``)
    is fine: every transform writes a new file beside the old one and renames
@@ -44,6 +52,9 @@ Steps
 ``redact``    apply a human-reviewed redaction spec (``[REDACTED]`` token
               plus a ``Redaction`` note in the sidecar); ``flag`` lists
               candidate spans for the human reader (advisory only).
-``sweep``     scan shipped text files for leftover identifiers.
+``sweep``     scan shipped text files for leftover identifiers, and the
+              tree for audio/video files.
+``media``     the audio/video part of the sweep on its own (no dates or
+              names), for checking a collaborator copy.
 ``export``    run the four in order.
 """

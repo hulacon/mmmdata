@@ -19,6 +19,7 @@ Usage:
   release_export.py redact   STAGE --spec SPEC.tsv [--note TEXT] [--dry-run]
   release_export.py flag     ROOT [--glob 'sub-*/**/*_beh.tsv' ...] [--columns word] [--out PRIV.tsv]
   release_export.py sweep    ROOT [--names-file NAMES.txt] [--epoch YYYY-MM-DD] [--ext .tsv ...]
+  release_export.py media    ROOT [--allow-dir stimuli ...]
   release_export.py export   STAGE --offsets-out PRIV.tsv --pronoun-report PRIV.tsv
                              [--redactions SPEC.tsv] [--names-file NAMES.txt] [--epoch ...] [--dry-run]
                              [--commit-with-findings]
@@ -37,7 +38,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT / "src" / "python") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "src" / "python"))
 
-from release import dates, pronouns, redact, sweep  # noqa: E402
+from release import dates, media, pronouns, redact, sweep  # noqa: E402
 from release.export import ExportOptions, run_export  # noqa: E402
 from release.stage import (  # noqa: E402
     Stage, StageError, check_private_input, check_private_output,
@@ -138,6 +139,19 @@ def cmd_sweep(args, cfg):
     return 1 if findings else 0
 
 
+def cmd_media(args, cfg):
+    root = Stage(args.root, cfg, writable=False).root
+    allowed = tuple(args.allow_dir) if args.allow_dir else media.DEFAULT_ALLOWED_DIRS
+    findings = media.find_media(root, allowed)
+    print("path\tkind\twhy")
+    for f in findings:
+        print(f"{f.path}\t{f.kind}\t{f.match}")
+    status = "CLEAN" if not findings else f"{len(findings)} audio/video file(s)"
+    print(f"media check of {root} (excluding top-level {', '.join(allowed)}): "
+          f"{status}", file=sys.stderr)
+    return 1 if findings else 0
+
+
 def cmd_export(args, cfg):
     opts = ExportOptions(
         epoch=parse_epoch(args.epoch) if args.epoch else cfg.epoch,
@@ -198,6 +212,13 @@ def build_parser():
     s.add_argument("--epoch", help="shifted dates in [epoch, 1925-12-31] are allowed")
     s.add_argument("--ext", action="append", help="text extension to scan, repeatable")
     s.set_defaults(func=cmd_sweep)
+
+    s = sub.add_parser("media", help="find audio/video files (exit 1 if any); "
+                                     "the collaborator-copy voice check")
+    s.add_argument("root")
+    s.add_argument("--allow-dir", action="append",
+                   help="top-level directory to skip, repeatable (default: stimuli)")
+    s.set_defaults(func=cmd_media)
 
     s = sub.add_parser("export", help="shift -> pronouns -> redact -> sweep")
     s.add_argument("stage")

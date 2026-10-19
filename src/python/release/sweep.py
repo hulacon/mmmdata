@@ -15,8 +15,10 @@ Kinds of finding
                   ``DatasetLinks`` value or ``SourceDatasets[].URL`` is an
                   absolute filesystem path (``/...`` or ``file:``)
 ``json_error``    a ``dataset_description.json`` that does not parse
+``media``         an audio or video file outside the top-level ``stimuli/``
+                  (see :mod:`release.media`); line is 0
 
-Scanned: files with a text extension (``.tsv .json .txt .md .csv .html
+Scanned for text findings: files with a text extension (``.tsv .json .txt .md .csv .html
 .rst .log .yml .yaml .toml .cfg .bib .tex .bval .bvec``, configurable) and
 extension-less ``README``/``CHANGES``/``LICENSE``. The ``.git`` and
 ``.datalad`` directories are skipped.
@@ -179,6 +181,8 @@ def sweep(stage: Stage, epoch: _dt.date, names: list[str] | None = None,
             found = [f for f in found if not (f.kind == "path" and f.line in covered)]
             found = structural + found
         findings.extend(found)
+    from .media import find_media      # media.py imports Finding from here
+    findings.extend(find_media(stage.root))
     return findings
 
 
