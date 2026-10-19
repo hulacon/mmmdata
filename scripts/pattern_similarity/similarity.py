@@ -32,7 +32,7 @@ Outputs:
   results/similarity_summary.tsv  — one row per unit x item x cell x combo
   results/similarity_cells.tsv    — collapsed over unit/item
 
-Plan: docs/doc/pattern-similarity-plan.md, Phase 6.
+Plan: mmmdata-agents docs/results/pattern-similarity.md, Phase 6.
 
 Usage:
     python similarity.py                       # full grid

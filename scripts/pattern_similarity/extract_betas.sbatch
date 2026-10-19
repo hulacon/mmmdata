@@ -18,7 +18,7 @@
 #       sbatch extract_betas.sbatch
 #   Phase 5 (NAT chunk fits — after glmsingle_natencoding completes):
 #       sbatch --export=ALL,PARADIGM=NAT extract_betas.sbatch
-# Plan: docs/doc/pattern-similarity-plan.md, Phases 4-5.
+# Plan: mmmdata-agents docs/results/pattern-similarity.md, Phases 4-5.
 # Array task mapping:
 #   1: sub-03/original   2: sub-03/nordic
 #   3: sub-04/original   4: sub-04/nordic

@@ -15,7 +15,7 @@ Checks, per (subject, pipeline) fit under derivatives/glmsingle_nat{,_nordic}/:
 
 Writes derivatives/pattern_similarity/qc/phase2_natfit_verification.tsv.
 
-Plan: docs/doc/pattern-similarity-plan.md, Phase 2 "Verify".
+Plan: mmmdata-agents docs/results/pattern-similarity.md, Phase 2 "Verify".
 
 Usage:
     python verify_natfits.py [--skip-betas] [--subjects sub-03 ...]

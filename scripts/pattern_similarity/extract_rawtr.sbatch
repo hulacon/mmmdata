@@ -14,7 +14,7 @@
 # Pattern-similarity Phase 3 — rawTR ROI pattern extraction (Model 8)
 #==============================================================================
 # 62 runs per array task (42 TB + 20 NAT), one (subject x pipeline) each.
-# Plan: docs/doc/pattern-similarity-plan.md, Phase 3.
+# Plan: mmmdata-agents docs/results/pattern-similarity.md, Phase 3.
 # Array task mapping:
 #   1: sub-03/original   2: sub-03/nordic
 #   3: sub-04/original   4: sub-04/nordic

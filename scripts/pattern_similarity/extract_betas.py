@@ -22,7 +22,7 @@ Output (float32 npz, all 6 ROIs per file):
   derivatives/pattern_similarity/cache/glmsingle/{pipeline}/{sub}/
     {sub}_task-{TBencoding|NATencoding}_desc-typed_roipatterns.npz
 
-Plan: docs/doc/pattern-similarity-plan.md, Phases 4-5.
+Plan: mmmdata-agents docs/results/pattern-similarity.md, Phases 4-5.
 
 Usage:
     python extract_betas.py --paradigm TB  --sub sub-03 --pipeline original
