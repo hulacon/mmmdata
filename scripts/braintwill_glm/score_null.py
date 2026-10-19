@@ -40,7 +40,9 @@ from null_design import CONTRASTS, DESIGNS  # noqa: E402
 
 from neuroimaging.data_quality_voxelmaps import _anat_one  # noqa: E402
 from neuroimaging.glm.reference import reference_config  # noqa: E402
-from neuroimaging.io import find_fmriprep_runs, mask_intersection  # noqa: E402
+from neuroimaging.io import mask_intersection  # noqa: E402
+
+import mmmget  # noqa: E402
 
 TISSUES = ("GM", "WM", "CSF")
 CLASSES = ("GM", "WM", "CSF-adjacent")
@@ -115,8 +117,8 @@ def main(argv=None) -> int:
     cfg = dataclasses.replace(reference_config(args.regime), space=args.space)
     runs = []
     for task in args.task:
-        runs += sorted(find_fmriprep_runs(subject=subject, task=task, variant=cfg.variant, space=args.space,
-                                          bids_root=bids_root), key=lambda r: (r.session, r.run or ""))
+        runs += sorted(mmmget.runs(subject=subject, task=task, variant=cfg.variant, space=args.space,
+                                   bids_root=bids_root), key=lambda r: (r.session, r.run or ""))
     if not runs:
         raise SystemExit(f"ERROR: no {args.task} runs for sub-{subject} in {args.space}")
     mask_img, mask = mask_intersection(runs)

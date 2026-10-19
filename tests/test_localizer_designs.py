@@ -98,7 +98,7 @@ def test_check_single_design_raises_across_designs():
 
 
 # ---------------------------------------------------------------------------
-# find_fmriprep_runs guard
+# fmriprep_runs_on_disk guard
 # ---------------------------------------------------------------------------
 
 def _touch_confounds(root: Path, sub: str, ses: str, task: str, run: str | None):
@@ -123,32 +123,38 @@ def two_cohort_root(tmp_path):
 
 def test_task_motor_across_sessions_raises(two_cohort_root):
     with pytest.raises(MixedLocalizerDesignError) as exc:
-        nio.find_fmriprep_runs(task="motor", bids_root=two_cohort_root)
+        nio.fmriprep_runs_on_disk(task="motor", bids_root=two_cohort_root)
     msg = str(exc.value)
     assert "sub-aa" in msg and "sub-bb" in msg
     assert "allow_mixed_designs" in msg
 
 
 def test_task_motor_within_one_session_group_is_fine(two_cohort_root):
-    runs = nio.find_fmriprep_runs(task="motor", session="30", bids_root=two_cohort_root)
+    runs = nio.fmriprep_runs_on_disk(task="motor", session="30", bids_root=two_cohort_root)
     assert [r.run for r in runs] == ["01", "02"]
-    runs = nio.find_fmriprep_runs(task="motor", subject="aa", bids_root=two_cohort_root)
+    runs = nio.fmriprep_runs_on_disk(task="motor", subject="aa", bids_root=two_cohort_root)
     assert len(runs) == 1
 
 
 def test_task_motor_opt_in_pooling(two_cohort_root):
-    runs = nio.find_fmriprep_runs(
+    runs = nio.fmriprep_runs_on_disk(
         task="motor", bids_root=two_cohort_root, allow_mixed_designs=True
     )
     assert {r.session for r in runs} == {"02", "30"}
 
 
 def test_non_split_task_across_sessions_is_fine(two_cohort_root):
-    runs = nio.find_fmriprep_runs(task="floc", bids_root=two_cohort_root)
+    runs = nio.fmriprep_runs_on_disk(task="floc", bids_root=two_cohort_root)
     assert {r.session for r in runs} == {"02", "03"}
 
 
 def test_unfiltered_sweep_is_not_blocked(two_cohort_root):
     # No task filter = a QC-style sweep, not a GLM selection; must not raise.
-    runs = nio.find_fmriprep_runs(bids_root=two_cohort_root)
+    runs = nio.fmriprep_runs_on_disk(bids_root=two_cohort_root)
     assert len(runs) == 5
+
+
+def test_find_fmriprep_runs_is_a_deprecated_shim(two_cohort_root):
+    with pytest.warns(DeprecationWarning, match=r"mmmget\.runs"):
+        old = nio.find_fmriprep_runs(task="floc", bids_root=two_cohort_root)
+    assert old == nio.fmriprep_runs_on_disk(task="floc", bids_root=two_cohort_root)

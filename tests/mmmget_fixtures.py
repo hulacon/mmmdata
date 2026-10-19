@@ -27,6 +27,7 @@ QC record, by run (task memory, ses-01):
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import duckdb
@@ -96,6 +97,11 @@ def build_catalog(db: Path, extra_rows=()) -> None:
                          path=f"sub-01/ses-01/anat/sub-01_ses-01_hemi-{hemi}"
                               "_space-T1w_desc-subfields_dseg.nii.gz"))
     rows += list(extra_rows)
+    _write_catalog(db, rows, [FMRIPREP])
+
+
+def _write_catalog(db: Path, rows, derivatives) -> None:
+    """The files table from *rows*; datasets: the raw one and *derivatives*."""
     df = pd.DataFrame(rows).astype({"run": "Int64"})
     db.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(db))
@@ -104,8 +110,45 @@ def build_catalog(db: Path, extra_rows=()) -> None:
                 "CAST(run AS INTEGER) AS run, space, res, hemi, \"desc\", suffix, ext, path "
                 "FROM df")
     con.execute("CREATE TABLE datasets (relpath VARCHAR, kind VARCHAR)")
-    con.execute("INSERT INTO datasets VALUES ('.', 'canonical'), (?, 'canonical')", [FMRIPREP])
+    for relpath in [".", *derivatives]:
+        con.execute("INSERT INTO datasets VALUES (?, 'canonical')", [relpath])
     con.close()
+
+
+_ENTITY = re.compile(r"([a-z]+)-([^_]+)")
+_KEYS = {"sub", "ses", "task", "run", "space", "res", "hemi", "desc"}
+_DATATYPES = {"anat", "func", "fmap", "dwi", "perf"}
+
+
+def index_tree(bids: Path) -> Path:
+    """(Re)build the catalog from the files on disk under *bids*: a stand-in
+    for the bids2table sweep, for tests that seed a tree and then call code
+    that reads the catalog. Each ``derivatives/<name>`` is its own dataset;
+    everything else belongs to the raw dataset (``"."``)."""
+    rows = []
+    for f in sorted(bids.rglob("*")):
+        if not f.is_file() or not f.name.startswith("sub-"):
+            continue
+        rel = f.relative_to(bids)
+        if rel.parts[0] == "derivatives":
+            dataset, path = "/".join(rel.parts[:2]), Path(*rel.parts[2:])
+        else:
+            dataset, path = ".", rel
+        stem, dot, ext = f.name.partition(".")
+        *entities, suffix = stem.split("_")
+        row = dict.fromkeys(_KEYS)
+        for e in entities:
+            m = _ENTITY.fullmatch(e)
+            if m and m.group(1) in _KEYS:
+                row[m.group(1)] = m.group(2)
+        row["run"] = int(row["run"]) if row["run"] else None
+        rows.append(dict(row, dataset_relpath=dataset, suffix=suffix, ext=dot + ext,
+                         datatype=f.parent.name if f.parent.name in _DATATYPES else None,
+                         path=path.as_posix()))
+    db = bids / "inventory" / "catalog.duckdb"
+    db.unlink(missing_ok=True)
+    _write_catalog(db, rows, sorted({r["dataset_relpath"] for r in rows} - {"."}))
+    return db
 
 
 def add_rows(db: Path, rows) -> None:

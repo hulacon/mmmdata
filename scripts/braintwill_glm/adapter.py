@@ -64,7 +64,9 @@ from neuroimaging.glm.config import GlmConfig, repetition_time  # noqa: E402
 from neuroimaging.glm.design import available_contrast_vectors, build_design_matrix, strict_for  # noqa: E402
 from neuroimaging.glm.models import StatsModel, load_model  # noqa: E402
 from neuroimaging.glm.reference import reference_config  # noqa: E402
-from neuroimaging.io import FmriprepRun, find_fmriprep_runs, load_confounds, mask_intersection  # noqa: E402
+from neuroimaging.io import FmriprepRun, load_confounds, mask_intersection  # noqa: E402
+
+import mmmget  # noqa: E402
 
 #: Units of every condition coefficient: nilearn signal_scaling=0 (the reference spec).
 UNITS = "percent signal change"
@@ -180,8 +182,8 @@ def adapt(subject: str, model_name: str, *, space: str = "T1w", sessions: Option
     cfg = dataclasses.replace(regime_config(regime, confounds), space=space, hrf_model=model.hrf_model)
     subject = subject.removeprefix("sub-")
     if runs is None:
-        found = find_fmriprep_runs(subject=subject, task=model.task, variant=cfg.variant, space=space,
-                                   bids_root=bids_root)
+        found = mmmget.runs(subject=subject, task=model.task, variant=cfg.variant, space=space,
+                            bids_root=bids_root)
         if sessions:
             wanted = {s.removeprefix("ses-") for s in sessions}
             found = [r for r in found if r.session in wanted]

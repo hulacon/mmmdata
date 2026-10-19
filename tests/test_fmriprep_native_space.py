@@ -48,7 +48,7 @@ def test_layout_builders_drop_entity_for_native(tmp_path):
 
 def test_native_resolves_spaceless_files_and_coreg_boldref(tmp_path):
     func = _seed(tmp_path, native=True, template=True)
-    (run,) = nio.find_fmriprep_runs(space=NATIVE_SPACE, bids_root=tmp_path)
+    (run,) = nio.fmriprep_runs_on_disk(space=NATIVE_SPACE, bids_root=tmp_path)
     assert run.space == NATIVE_SPACE
     assert run.bold == func / "sub-aa_ses-30_task-motor_run-01_desc-preproc_bold.nii.gz"
     assert run.mask == func / "sub-aa_ses-30_task-motor_run-01_desc-brain_mask.nii.gz"
@@ -58,26 +58,26 @@ def test_native_resolves_spaceless_files_and_coreg_boldref(tmp_path):
 
 def test_template_space_still_resolves_its_own_files(tmp_path):
     func = _seed(tmp_path, native=True, template=True)
-    (run,) = nio.find_fmriprep_runs(bids_root=tmp_path)  # DEFAULT_SPACE
+    (run,) = nio.fmriprep_runs_on_disk(bids_root=tmp_path)  # DEFAULT_SPACE
     assert run.bold == func / f"sub-aa_ses-30_task-motor_run-01_space-{MNI}_desc-preproc_bold.nii.gz"
     assert run.boldref == func / f"sub-aa_ses-30_task-motor_run-01_space-{MNI}_boldref.nii.gz"
 
 
 def test_each_space_is_blind_to_the_other(tmp_path):
     _seed(tmp_path, native=True, template=False)
-    (run,) = nio.find_fmriprep_runs(bids_root=tmp_path)
+    (run,) = nio.fmriprep_runs_on_disk(bids_root=tmp_path)
     assert run.bold is None and run.mask is None and run.boldref is None
-    (run,) = nio.find_fmriprep_runs(space=NATIVE_SPACE, bids_root=tmp_path)
+    (run,) = nio.fmriprep_runs_on_disk(space=NATIVE_SPACE, bids_root=tmp_path)
     assert run.bold is not None
 
     other = tmp_path / "other"
     _seed(other, native=False, template=True)
-    (run,) = nio.find_fmriprep_runs(space=NATIVE_SPACE, bids_root=other)
+    (run,) = nio.fmriprep_runs_on_disk(space=NATIVE_SPACE, bids_root=other)
     assert run.bold is None and run.boldref is None
 
 
 @pytest.mark.parametrize("space", [NATIVE_SPACE, MNI])
 def test_t1w_is_not_conflated_with_native(tmp_path, space):
     _seed(tmp_path, native=True, template=True)
-    (run,) = nio.find_fmriprep_runs(space="T1w", bids_root=tmp_path)
+    (run,) = nio.fmriprep_runs_on_disk(space="T1w", bids_root=tmp_path)
     assert run.bold is None

@@ -48,7 +48,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from adapter import config_bids_root  # noqa: E402
 
 from neuroimaging.glm.reference import reference_config  # noqa: E402
-from neuroimaging.io import find_fmriprep_runs, mask_intersection  # noqa: E402
+from neuroimaging.io import mask_intersection  # noqa: E402
+
+import mmmget  # noqa: E402
 
 #: The bake-off's nine contrasts, by model.
 BAKEOFF = {
@@ -195,8 +197,9 @@ def main(argv=None) -> int:
 
     rest = []
     for task in args.rest_task:
-        rest += sorted(find_fmriprep_runs(subject=subject, task=task, variant=cfg.variant, space=args.space,
-                                          bids_root=bids_root), key=lambda r: (r.session, r.run or ""))
+        # the same rest pool null_design.py fitted: mmmget.runs, QC exclusions applied
+        rest += sorted(mmmget.runs(subject=subject, task=task, variant=cfg.variant, space=args.space,
+                                   bids_root=bids_root), key=lambda r: (r.session, r.run or ""))
     null_paths = [args.null_dir / f"sub-{subject}" / f"sub-{subject}_{r.entity_prefix.split('_', 1)[1]}"
                   f"_noise-{args.noise}_maps.npz" for r in rest]
     missing = [str(p) for p in null_paths if not p.exists()]
@@ -228,9 +231,12 @@ def main(argv=None) -> int:
         entry = {"fit": metas[0].name, "runs": len(all_runs), "mask_voxels": meta["mask_voxels"], "contrasts": {}}
         mask_img = mask = None
         if args.maps:
-            found = {(r.session, r.run): r for r in find_fmriprep_runs(
+            # include_excluded: the fit's recorded run list decides, so a run QC has
+            # excluded since must still be found, not reported missing
+            found = {(r.session, r.run): r for r in mmmget.runs(
                 subject=subject, task=_task_of(all_runs[0]),
-                variant=meta["config"]["variant"], space=args.space, bids_root=bids_root)}
+                variant=meta["config"]["variant"], space=args.space, bids_root=bids_root,
+                include_excluded=True)}
             mask_img, mask = mask_intersection([found[tuple(w)] for w in meta["stand_in_metadata_runs"]])
             args.maps.mkdir(parents=True, exist_ok=True)
         with np.load(metas[0].with_name(metas[0].stem + "_runs.npz")) as z:

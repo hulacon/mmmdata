@@ -38,7 +38,7 @@ from adapter import adapt, config_bids_root  # noqa: E402
 
 from braintwill import NoiseModel, RunBlockGLM  # noqa: E402
 
-from neuroimaging.io import find_fmriprep_runs  # noqa: E402
+import mmmget  # noqa: E402
 
 STATS = ("effect", "variance", "t", "z")
 
@@ -126,9 +126,12 @@ def main(argv=None) -> int:
     tree = derivatives_dir() / args.tree
     meta, maps = stand_in(tree, subject, model, args.space, args.desc, sessions[0] if sessions else None)
     wanted = [(r["session"], r["run"]) for r in meta["runs"]]
-    found = {(r.session, r.run): r for r in find_fmriprep_runs(subject=subject, task=model.task,
-                                                               variant=meta["config"]["variant"],
-                                                               space=args.space, bids_root=config_bids_root())}
+    # include_excluded: the stand-in's recorded run list decides, so a run QC has
+    # excluded since must still be found, not reported missing
+    found = {(r.session, r.run): r for r in mmmget.runs(subject=subject, task=model.task,
+                                                        variant=meta["config"]["variant"],
+                                                        space=args.space, bids_root=config_bids_root(),
+                                                        include_excluded=True)}
     missing = [w for w in wanted if w not in found]
     if missing:
         raise SystemExit(f"ERROR: stand-in runs not found now: {missing}")

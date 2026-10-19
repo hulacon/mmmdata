@@ -27,7 +27,7 @@ from neuroimaging.constants import (
     DEFAULT_BIDS_ROOT,
     DERIVATIVES_DIRS,
 )
-from neuroimaging.io import _resolve_bids_root, find_fmriprep_runs
+from neuroimaging.io import _resolve_bids_root, fmriprep_runs_on_disk
 
 from .steps import ValidationResult
 
@@ -250,7 +250,9 @@ def _validate_fmriprep_variant(
         return _make_result(step_name, subject, session, 0, 0,
                             details=[f"No raw BOLDs for {variant}."])
 
-    runs = find_fmriprep_runs(
+    # On disk, not mmmget.runs: a postcondition checks what the step just
+    # wrote, before any catalog rebuild, and counts excluded runs too.
+    runs = fmriprep_runs_on_disk(
         subject=subject, session=session, variant=variant, bids_root=bids_root,
     )
     expected = len(bolds)

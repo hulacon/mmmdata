@@ -4,7 +4,8 @@ Submodules
 ----------
 io
     Discover and load preprocessed fMRIPrep outputs (``FmriprepRun``,
-    ``find_fmriprep_runs``, ``load_confounds``, ``load_bold``, ``load_mask``).
+    ``fmriprep_runs_on_disk``, ``load_confounds``, ``load_bold``, ``load_mask``).
+    Analysis code gets its runs from ``mmmget.runs`` instead.
 constants
     Path templates, confound column groups, task-to-stream mappings.
 qc

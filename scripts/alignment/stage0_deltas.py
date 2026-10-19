@@ -30,7 +30,7 @@ from neuroimaging import alignment_candidates as ac  # noqa: E402
 from neuroimaging import data_quality as dq  # noqa: E402
 from neuroimaging import data_quality_voxelmaps as dqv  # noqa: E402
 from neuroimaging.constants import DEFAULT_VARIANT  # noqa: E402
-from neuroimaging.io import find_fmriprep_runs  # noqa: E402
+import mmmget  # noqa: E402
 
 
 def main(argv=None) -> None:
@@ -48,8 +48,10 @@ def main(argv=None) -> None:
 
     bids_root = Path(args.bids_root or load_config()["paths"]["bids_project_dir"])
     fmriprep_tree = bids_root / "derivatives" / args.variant
-    runs = find_fmriprep_runs(subject=args.sub, variant=args.variant, space=dqv.VOLUME_SPACE, bids_root=bids_root,
-                              allow_mixed_designs=True)
+    # include_excluded: the deltas describe how far each candidate alignment moves
+    # every run, so runs QC has excluded are measured too
+    runs = mmmget.runs(subject=args.sub, variant=args.variant, space=dqv.VOLUME_SPACE, bids_root=bids_root,
+                       allow_mixed_designs=True, include_excluded=True)
     runs = [r for r in runs if r.boldref is not None and r.mask is not None]
     if not runs:
         sys.exit(f"sub-{args.sub}: no {dqv.VOLUME_SPACE} runs with boldref and mask under {fmriprep_tree}")

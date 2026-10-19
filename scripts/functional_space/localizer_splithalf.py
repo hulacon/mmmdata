@@ -70,7 +70,9 @@ from neuroimaging.glm.surface import (  # noqa: E402
     surface_bold_path,
     surface_mask_intersection,
 )
-from neuroimaging.io import find_fmriprep_runs, load_confounds  # noqa: E402
+from neuroimaging.io import load_confounds  # noqa: E402
+
+import mmmget  # noqa: E402
 
 SPACE = "fsaverage6"
 MESH_KIND = "white"  # vertex identity only; any fsaverage6 mesh gives the same numbers
@@ -216,8 +218,8 @@ def main(argv: list[str] | None = None) -> int:
     desc = glm_desc(args.regime, cfg.noise_model, cfg.smoothing_fwhm, cfg.variant)
     subject = _bare(args.subject, "sub")
 
-    runs = find_fmriprep_runs(subject=subject, task=model.task, variant=cfg.variant, space=SPACE,
-                              bids_root=bids_root)
+    runs = mmmget.runs(subject=subject, task=model.task, variant=cfg.variant, space=SPACE,
+                       bids_root=bids_root)
     if args.sessions:
         keep = {_bare(s, "ses") for s in args.sessions}
         runs = [r for r in runs if r.session in keep]

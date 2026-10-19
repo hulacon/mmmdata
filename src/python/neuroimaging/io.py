@@ -4,13 +4,19 @@ All filesystem interaction for fMRIPrep outputs is isolated here. Analysis
 modules receive FmriprepRun objects or DataFrames and never touch the
 filesystem directly.
 
-Typical usage::
+Analysis code gets its runs from the catalog, with QC exclusions applied,
+through ``mmmget.runs``; the loaders here take what it returns::
 
-    from neuroimaging.io import find_fmriprep_runs, load_confounds
+    import mmmget
+    from neuroimaging.io import load_confounds
 
-    runs = find_fmriprep_runs(subject="03", session="04", variant="fmriprep_nordic")
-    for run in runs:
+    for run in mmmget.runs(subject="##", session="##", task="<label>"):
         confounds = load_confounds(run, columns=["framewise_displacement"])
+
+``fmriprep_runs_on_disk`` walks the fMRIPrep tree instead. It is for tooling
+that must see every run on disk whatever the catalog or the QC record says
+(pipeline validators, data-quality measurement). ``find_fmriprep_runs`` is
+its deprecated former name.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from __future__ import annotations
 import dataclasses
 import re
 import sys
+import warnings
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -71,7 +78,8 @@ def _resolve_bids_root(bids_root: Optional[Path] = None) -> Path:
 class FmriprepRun:
     """All paths for a single preprocessed BOLD run.
 
-    Produced by ``find_fmriprep_runs()``. Fields that do not exist on disk
+    Produced by ``fmriprep_runs_on_disk()``; ``mmmget.runs()`` returns its
+    subclass ``mmmget.Run``, with paths from the catalog. Fields that do not exist on disk
     are ``None``. The ``confounds`` field is the most reliable indicator of
     a completed fMRIPrep run; other fields may be missing independently.
 
@@ -86,7 +94,8 @@ class FmriprepRun:
     run : str | None
         Zero-padded run index (e.g., "01"), or None for single-run tasks.
     variant : str
-        Either "fmriprep" or "fmriprep_nordic".
+        The fMRIPrep derivative tree the run came from (``DEFAULT_VARIANT``,
+        "fmriprep").
     space : str
         Volumetric template and resolution (e.g., "MNI152NLin2009cAsym_res-2"),
         or ``NATIVE_SPACE`` ("func") for the run's own grid.
@@ -179,11 +188,43 @@ def find_fmriprep_runs(
     bids_root: Optional[Path] = None,
     allow_mixed_designs: bool = False,
 ) -> list[FmriprepRun]:
-    """Discover preprocessed BOLD runs matching filters.
+    """Deprecated: analysis code uses ``mmmget.runs``.
+
+    ``mmmget.runs`` takes the same filters, reads the catalog instead of
+    globbing, and drops runs a person has excluded in the QC record. Tooling
+    that must see every run on disk calls ``fmriprep_runs_on_disk``, which
+    this forwards to unchanged.
+    """
+    warnings.warn(
+        "find_fmriprep_runs is deprecated: analysis code should use mmmget.runs(...) "
+        "(same filters; the catalog, with QC exclusions applied). Tooling that must "
+        "see every run on disk should call neuroimaging.io.fmriprep_runs_on_disk.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return fmriprep_runs_on_disk(
+        subject=subject, session=session, task=task, run=run, variant=variant,
+        space=space, bids_root=bids_root, allow_mixed_designs=allow_mixed_designs,
+    )
+
+
+def fmriprep_runs_on_disk(
+    subject: Optional[str] = None,
+    session: Optional[str] = None,
+    task: Optional[str] = None,
+    run: Optional[str] = None,
+    variant: str = DEFAULT_VARIANT,
+    space: str = DEFAULT_SPACE,
+    bids_root: Optional[Path] = None,
+    allow_mixed_designs: bool = False,
+) -> list[FmriprepRun]:
+    """Every preprocessed BOLD run on disk matching filters.
 
     Globs ``derivatives/{variant}/sub-*/ses-*/func/`` for confounds TSVs
     (the most reliable fMRIPrep completion indicator), then resolves
-    sibling files for each.
+    sibling files for each. No catalog and no QC record: this is for
+    tooling that must see what is on disk now (pipeline validators,
+    data-quality measurement). Analysis code uses ``mmmget.runs``.
 
     Parameters
     ----------
@@ -191,7 +232,8 @@ def find_fmriprep_runs(
         BIDS entity filters. If None, all are matched. Subject/session/run
         should be zero-padded strings (e.g., "03", not "3").
     variant : str
-        Either "fmriprep" or "fmriprep_nordic".
+        Which fMRIPrep derivative tree (``FMRIPREP_VARIANTS``); the default,
+        ``DEFAULT_VARIANT``, is "fmriprep".
     space : str
         Volumetric template and resolution (e.g., "MNI152NLin2009cAsym_res-2"),
         or ``NATIVE_SPACE`` ("func") for the space-less native-grid files.

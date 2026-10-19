@@ -56,7 +56,9 @@ from braintwill import NoiseModel, RunBlockGLM  # noqa: E402
 from neuroimaging.glm.config import repetition_time  # noqa: E402
 from neuroimaging.glm.design import build_design_matrix  # noqa: E402
 from neuroimaging.glm.models import StatsModel  # noqa: E402
-from neuroimaging.io import find_fmriprep_runs, load_confounds, mask_intersection  # noqa: E402
+from neuroimaging.io import load_confounds, mask_intersection  # noqa: E402
+
+import mmmget  # noqa: E402
 
 DESIGNS = {
     "block": ("A", "B", "C"),
@@ -131,8 +133,8 @@ def main(argv=None) -> int:
     cfg = dataclasses.replace(regime_config(args.regime, args.confounds), space=args.space, hrf_model="spm")
     runs = []
     for task in args.task:
-        runs += sorted(find_fmriprep_runs(subject=subject, task=task, variant=cfg.variant, space=args.space,
-                                          bids_root=bids_root), key=lambda r: (r.session, r.run or ""))
+        runs += sorted(mmmget.runs(subject=subject, task=task, variant=cfg.variant, space=args.space,
+                                   bids_root=bids_root), key=lambda r: (r.session, r.run or ""))
     if not runs:
         raise SystemExit(f"ERROR: no {args.task} runs for sub-{subject} in {args.space}")
     # One mask for every rest run of the subject, so voxel FPRs aggregate across runs.
