@@ -44,7 +44,7 @@ N_VOL = 12
 PERSON = "reviewer-a"
 
 
-def _func_rows(sub, ses, task, run):
+def func_rows(sub, ses, task, run):
     r = f"_run-{run:02d}" if run else ""
     stem = f"sub-{sub}_ses-{ses}_task-{task}{r}"
     d = f"sub-{sub}/ses-{ses}/func/"
@@ -81,8 +81,8 @@ def build_catalog(db: Path, extra_rows=()) -> None:
     rows = []
     for sub in ("01", "02"):
         for run in (1, 2, 3):
-            rows += _func_rows(sub, "01", "memory", run)
-        rows += _func_rows(sub, "01", "rest", None)
+            rows += func_rows(sub, "01", "memory", run)
+        rows += func_rows(sub, "01", "rest", None)
     # a raw BOLD with no fMRIPrep output: not a run to runs()
     rows.append(dict(dataset_relpath=".", sub="01", ses="02", datatype="func",
                      task="memory", run=1, space=None, res=None, hemi=None,
@@ -105,6 +105,16 @@ def build_catalog(db: Path, extra_rows=()) -> None:
                 "FROM df")
     con.execute("CREATE TABLE datasets (relpath VARCHAR, kind VARCHAR)")
     con.execute("INSERT INTO datasets VALUES ('.', 'canonical'), (?, 'canonical')", [FMRIPREP])
+    con.close()
+
+
+def add_rows(db: Path, rows) -> None:
+    """Append catalog rows (e.g. from func_rows) to an existing catalog."""
+    df = pd.DataFrame(list(rows)).astype({"run": "Int64"})
+    con = duckdb.connect(str(db))
+    con.register("df", df)
+    con.execute("INSERT INTO files SELECT dataset_relpath, sub, ses, datatype, task, "
+                "CAST(run AS INTEGER), space, res, hemi, \"desc\", suffix, ext, path FROM df")
     con.close()
 
 

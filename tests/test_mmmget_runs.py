@@ -4,8 +4,9 @@ import duckdb
 import pytest
 
 import mmmget
+from neuroimaging.constants import MixedLocalizerDesignError
 from neuroimaging.io import FmriprepRun
-from tests.mmmget_fixtures import FMRIPREP, make_env
+from tests.mmmget_fixtures import FMRIPREP, add_rows, func_rows, make_env
 
 
 @pytest.fixture
@@ -110,3 +111,41 @@ class TestFromCatalog:
     def test_unknown_variant(self, bids):
         with pytest.raises(ValueError, match="variant"):
             mmmget.runs(variant="fmriprep_x")
+
+
+class TestSplitLocalizerDesigns:
+    """task-motor means two protocols: ses-02/03 and ses-30 (constants.LOCALIZER_DESIGNS)."""
+
+    @pytest.fixture
+    def bids(self, tmp_path, monkeypatch):
+        bids = make_env(tmp_path, monkeypatch)
+        add_rows(bids / "inventory" / "catalog.duckdb",
+                 [*func_rows("01", "02", "motor", 1), *func_rows("02", "30", "motor", 1)])
+        return bids
+
+    def test_pooling_both_designs_raises(self, bids):
+        with pytest.raises(MixedLocalizerDesignError, match="allow_mixed_designs=True"):
+            mmmget.runs(task="motor")
+
+    def test_session_filter_selects_one_design(self, bids):
+        assert _keys(mmmget.runs(task="motor", session="30")) == [("02", "motor", "01")]
+        (rec,) = mmmget.provenance_records()
+        assert rec["standard"] is True
+
+    def test_opt_in_pools_and_is_non_standard(self, bids):
+        assert len(mmmget.runs(task="motor", allow_mixed_designs=True)) == 2
+        (rec,) = mmmget.provenance_records()
+        assert rec["standard"] is False and "split task-motor" in rec["reason"]
+
+    def test_unfiltered_sweep_is_not_a_design_selection(self, bids):
+        assert {r.task for r in mmmget.runs()} == {"memory", "rest", "motor"}
+
+
+@pytest.mark.parametrize("raw_relpath", [None, ""])
+def test_events_found_under_every_raw_root_spelling(tmp_path, monkeypatch, raw_relpath):
+    bids = make_env(tmp_path, monkeypatch)
+    con = duckdb.connect(str(bids / "inventory" / "catalog.duckdb"))
+    con.execute("UPDATE files SET dataset_relpath = ? WHERE dataset_relpath = '.'", [raw_relpath])
+    con.close()
+    (r,) = mmmget.runs(subject="01", task="memory", run=1)
+    assert r.events == bids / "sub-01/ses-01/func/sub-01_ses-01_task-memory_run-01_events.tsv"

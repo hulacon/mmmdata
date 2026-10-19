@@ -14,6 +14,8 @@ from neuroimaging.constants import (
     DERIVATIVES_DIRS,
     FMRIPREP_VARIANTS,
     NATIVE_SPACE,
+    MixedLocalizerDesignError,
+    check_single_design,
 )
 from neuroimaging.io import FmriprepRun
 from neuroimaging.qc_dashboard import (
@@ -76,10 +78,13 @@ def _run_int(run: int | str | None) -> Optional[int]:
 
 _RUN_LABEL = re.compile(r"_run-([^_]+)_")
 
+#: How the raw dataset's root may be spelled in ``dataset_relpath``.
+RAW_RELPATHS = (None, "", ".")
+
 
 def _abs(bids_root: Path, row: dict) -> Path:
     rel = row["dataset_relpath"]
-    base = bids_root if rel in (None, "", ".") else bids_root / rel
+    base = bids_root if rel in RAW_RELPATHS else bids_root / rel
     return base / row["path"]
 
 
@@ -127,6 +132,7 @@ def runs(
     include_excluded: bool = False,
     variant: str = DEFAULT_VARIANT,
     bids_root: Path | str | None = None,
+    allow_mixed_designs: bool = False,
 ) -> list[Run]:
     """Preprocessed BOLD runs, from the catalog, with QC exclusions applied.
 
@@ -158,6 +164,13 @@ def runs(
         Which fMRIPrep derivative tree.
     bids_root : path, optional
         Overrides ``paths.bids_project_dir`` from config.
+    allow_mixed_designs : bool
+        Some localizer task labels cover two protocols acquired in different
+        session groups (``LOCALIZER_DESIGNS`` in ``neuroimaging.constants``).
+        When ``task`` names one and the returned runs span both, this raises
+        ``MixedLocalizerDesignError`` unless True, as ``find_fmriprep_runs``
+        does. Pooling that way is recorded as non-standard; the usual fix is
+        a ``session`` filter.
 
     Returns
     -------
@@ -170,6 +183,9 @@ def runs(
         The catalog does not exist (the message names how to build it).
     LookupError
         Nothing matched and a filter names a label the dataset lacks.
+    MixedLocalizerDesignError
+        See ``allow_mixed_designs``. Only when ``task`` is given; an
+        unfiltered sweep is not a design selection.
     """
     if variant not in FMRIPREP_VARIANTS:
         raise ValueError(f"variant {variant!r} is not one of {FMRIPREP_VARIANTS}")
@@ -181,7 +197,9 @@ def runs(
     run_i = _run_int(run)
     filters = {"sub": sub, "ses": ses, "task": task, "run": run_i}
 
-    where = ["dataset_relpath IN (?, '.')", "datatype = 'func'", "task IS NOT NULL"]
+    # the raw dataset's root has more than one spelling (RAW_RELPATHS)
+    where = ["(dataset_relpath IN (?, '.', '') OR dataset_relpath IS NULL)",
+             "datatype = 'func'", "task IS NOT NULL"]
     params: list[Any] = [deriv]
     for col, value in filters.items():
         if value is not None:
@@ -204,7 +222,7 @@ def runs(
     out: list[Run] = []
     for key, group in groups.items():
         d = [r for r in group if r["dataset_relpath"] == deriv]
-        raw = [r for r in group if r["dataset_relpath"] in (None, "", ".")]
+        raw = [r for r in group if r["dataset_relpath"] in RAW_RELPATHS]
         conf = _pick(d, "confounds TSV", key, desc="confounds",
                      suffix="timeseries", ext=".tsv")
         if conf is None:
@@ -250,10 +268,23 @@ def runs(
     out.sort(key=lambda r: (r.subject, r.session, r.task, r.run or ""))
     n_excluded = sum(r.excluded for r in out)
     kept = out if include_excluded else [r for r in out if not r.excluded]
+
+    reasons = []
+    if include_excluded:
+        reasons.append("QC exclusions not applied (include_excluded=True)")
+    if task is not None:
+        try:
+            check_single_design(task, (r.session for r in kept))
+        except MixedLocalizerDesignError as exc:
+            if not allow_mixed_designs:
+                raise MixedLocalizerDesignError(
+                    f"{exc} Add a session= filter, or pass "
+                    "allow_mixed_designs=True to pool deliberately.") from None
+            reasons.append(f"pooled the designs of split task-{task} (allow_mixed_designs=True)")
     record(
         "runs",
-        standard=not include_excluded,
-        reason="QC exclusions not applied (include_excluded=True)" if include_excluded else None,
+        standard=not reasons,
+        reason="; ".join(reasons) or None,
         variant=variant, space=space,
         query={k: v for k, v in filters.items() if v is not None} or None,
         n_runs=len(kept), n_excluded=n_excluded,
