@@ -1,6 +1,7 @@
 ---
 title: QC Review Guidance
-nav_order: 40
+parent: Code & Tools
+nav_order: 10
 ---
 
 # QC review guidance

@@ -35,6 +35,7 @@ echo ""
 "${PYTHON:-python3}" "$SCRIPT_DIR/generate_docs.py" "$SRC_ROOT" \
     --output-dir "$OUTPUT_DIR" \
     --nav-order 50 \
+    --parent "Code & Tools" \
     --clean \
     --tools "${TOOLS[@]}"
 

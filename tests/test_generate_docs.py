@@ -84,6 +84,18 @@ def test_tools_section_renders_docstring(tmp_path):
     assert "def main" not in text              # a tool's functions are not listed
 
 
+def test_parent_nests_both_sections(tmp_path):
+    src, tool = _tree(tmp_path)
+    out = tmp_path / "out"
+    _run(src, out, "--tools", tool, "--parent", "Code & Tools")
+
+    assert _front_matter(out / "code_index.md")["parent"] == "Code & Tools"
+    assert _front_matter(out / "tools_index.md")["parent"] == "Code & Tools"
+    # deeper pages keep their own parents
+    assert _front_matter(out / "pkg_sub.md")["parent"] == "Code Documentation"
+    assert _front_matter(out / "tools_tool.md")["parent"] == "Tools"
+
+
 def test_missing_tool_is_a_loud_error(tmp_path):
     src, _ = _tree(tmp_path)
     proc = subprocess.run(
