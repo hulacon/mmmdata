@@ -10,11 +10,61 @@ The [mmmdata](https://github.com/hulacon/mmmdata) code repository includes an
 [MCP](https://modelcontextprotocol.io) server that lets an AI agent, such as
 Claude Code or Claude Science, query a copy of the dataset: BIDS contents, the
 data catalog, QC metrics, stimulus features and plots. This page covers
-running it against your own copy.
+joining the lab's Claude workspace, a short start for anyone new to Claude
+Code, and running the server against your own copy.
 
 > **Copies shared with collaborators** have defaced anatomical images and
-> contain no recordings of participants' voices. A future public release will
-> go through further de-identification. The server works the same on any copy.
+> contain no recordings of participants' voices. Collaborators outside the
+> University of Oregon get one through Globus; see [Access](shared/access.md).
+> The server works the same on any copy.
+
+## Joining the lab's Claude workspace
+
+The lab's Claude use is supported by Anthropic's
+[AI for Science](https://www.anthropic.com/news/ai-for-science-program) program, through a
+shared claude.ai **Team workspace**. Collaborators can join it; their use of
+claude.ai, Claude Code and Claude Science then draws on the lab's credits
+rather than their own plan.
+
+1. **Request an invite** from J. Benjamin Hutchinson
+   ([bhutch@uoregon.edu](mailto:bhutch@uoregon.edu)), giving the email address
+   you want to use. If your institution blocks outside Claude workspaces, use
+   another address (a personal Gmail address works).
+2. **Accept the invite**, then wait for Ben to set your usage limit. Until he
+   does, the account works but cannot spend credits. Changes can take about a
+   day to take effect.
+3. **Sign in to every Claude tool with the workspace account**, not a personal
+   one. A personal login bills your own plan.
+4. **Ask Ben for the program's onboarding material** if it would help: its
+   onboarding guide (what the credits cover, setting up Claude Code and Claude
+   Science), its community forum and its monthly webinar.
+
+Anything you share with the whole workspace, such as a chat Project, is
+visible to every member, including members at other institutions.
+
+## New to Claude Code?
+
+[Claude Code](https://code.claude.com/docs/en/overview) is an AI assistant that
+runs in your terminal (there are also desktop and IDE versions). It reads and
+edits files in the directory you start it from and runs commands, asking your
+permission first. A few things to know before the setup steps below:
+
+- **Install and sign in** with Anthropic's
+  [quickstart](https://code.claude.com/docs/en/quickstart). When it asks how to
+  sign in, choose your Claude (claude.ai) account and pick the lab workspace.
+  `/status` shows which account a session is using.
+- **Don't set `ANTHROPIC_API_KEY`** in the shell you start Claude Code from.
+  With a key set, Claude Code can bill that key's account instead of your
+  workspace login.
+- **Read permission prompts before approving them.** Claude asks before it
+  runs a command or edits a file. The server's default toolsets only read the
+  dataset (step 3), so querying your copy cannot change it.
+- **Talk to it in plain language.** Once the server is attached (step 4), try
+  "Which subjects and sessions are in my copy?", "What QC metrics are there
+  for subject ##?" or "Plot the memorability scores of the shared images".
+  Claude picks the tools; you do not need to know their names.
+- **Useful commands:** `/mcp` shows whether the server is connected, `/help`
+  lists the rest. Start a new session after changing the server's config.
 
 ## What the server is
 
