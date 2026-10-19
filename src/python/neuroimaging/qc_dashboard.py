@@ -359,6 +359,23 @@ def is_signed_off(record: dict[str, Any] | None) -> bool:
     return bool(reviewer) and reviewer not in AUTOMATED_REVIEWERS
 
 
+def _history_of(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """A decision file's entries, oldest first, from either on-disk schema.
+
+    mmmdata and current duckbrain write ``{"run_key", "decisions": [...]}``;
+    earlier duckbrain wrote ``{"latest": {...}, "history": [...]}`` with the
+    current entry outside the list. Reading only the first shape would drop
+    every decision in the second, so an exclusion recorded there would never
+    exclude anything. Mirrors duckbrain ``core/qc.py`` ``_history_of``.
+    """
+    if isinstance(data.get("decisions"), list):
+        return [e for e in data["decisions"] if isinstance(e, dict)]
+    history = [e for e in data.get("history", []) if isinstance(e, dict)]
+    if isinstance(data.get("latest"), dict):
+        history.append(data["latest"])
+    return history
+
+
 def load_decisions(
     decisions_dir: str | Path | Sequence[str | Path],
     subject: str | None = None,
@@ -366,7 +383,8 @@ def load_decisions(
     """Load all QC decisions, optionally filtered by subject.
 
     Searched recursively, so duckbrain's flat layout and the legacy
-    per-subject nesting are both found.
+    per-subject nesting are both found, and both on-disk schemas are read
+    (see :func:`_history_of`).
 
     Parameters
     ----------
@@ -401,7 +419,7 @@ def load_decisions(
                 "run_key", json_path.stem.replace("_decision", ""))
             if prefix and not run_key.startswith(prefix):
                 continue
-            merged.setdefault(run_key, []).extend(data.get("decisions", []))
+            merged.setdefault(run_key, []).extend(_history_of(data))
 
     return {run_key: {"latest": history[-1], "history": history}
             for run_key, history in merged.items() if history}

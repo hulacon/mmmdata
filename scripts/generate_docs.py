@@ -308,6 +308,7 @@ _DISPLAY_OVERRIDES = {
     "core": "Core",
     "glm": "GLM",
     "resultsview": "Results View",
+    "mmmget": "mmmget",
 }
 
 
