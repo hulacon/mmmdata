@@ -435,6 +435,44 @@ def test_group_sums_is_its_own_model_spec(harness):
     assert {k: v for k, v in kept.items() if k != "group_sums"} == plain
 
 
+def test_joint_spaces_are_extractor_bands_of_the_read_b_models_without_places(harness):
+    viz, aud = harness.EXTRACTORS["viz2psy"], harness.EXTRACTORS["aud2psy"]
+    assert "places" not in viz and set(viz) | {"places"} == set(harness.MODEL_TABLES["movies_frames"])
+    assert aud == harness.MODEL_TABLES["movies_audio_frames"]
+    both = "joint-viz2psy+aud2psy"
+    assert set(harness.JOINT_SPACES) == {both, "joint-viz2psy", "joint-aud2psy"}
+    assert list(harness.TB_TS_SPACES[both]) == [*viz, *aud]
+    assert harness.TB_TS_SPACES[both]["clap"] == harness.MODEL_SPACES["model-clap"]
+    assert harness.joint_merge(both) == {"viz2psy": viz, "aud2psy": aud}
+    assert harness.joint_merge("joint-aud2psy") == {"aud2psy": aud}
+
+
+def test_a_joint_spec_carries_its_merge_and_read_b_keeps_its_identity(harness):
+    plain = harness.model_spec().to_dict()
+    assert "merge" not in plain["ridge"]
+    joint = harness.model_spec(merge=harness.joint_merge("joint-viz2psy+aud2psy")).to_dict()
+    assert joint["ridge"]["merge"]["viz2psy"] == list(harness.EXTRACTORS["viz2psy"])
+    assert {k: v for k, v in joint["ridge"].items() if k != "merge"} == plain["ridge"]
+
+
+def test_stack_bands_puts_feature_sets_side_by_side_and_refuses_other_grids(harness):
+    import numpy as np
+
+    t = np.arange(4) * 0.5
+    a = {"s": harness.FrameFeatures("s", t, np.ones((4, 2)), 0.5, {"m1": slice(0, 2)})}
+    b = {"s": harness.FrameFeatures("s", t, np.zeros((4, 3)), 0.5, {"m2": slice(0, 3)})}
+    out = harness.stack_bands([a, b])["s"]
+    assert out.bands == {"m1": slice(0, 2), "m2": slice(2, 5)} and out.x.shape == (4, 5)
+    np.testing.assert_array_equal(out.x[:, 2:], 0)
+    short = {"s": harness.FrameFeatures("s", t[:3], np.zeros((3, 3)), 0.5, {"m2": slice(0, 3)})}
+    with pytest.raises(RuntimeError, match="different frame grids"):
+        harness.stack_bands([a, short])
+    with pytest.raises(RuntimeError, match="appears twice"):
+        harness.stack_bands([a, a])
+    with pytest.raises(RuntimeError, match="different stimuli"):
+        harness.stack_bands([a, {**b, "u": b["s"]}])
+
+
 def test_grid_wide_collapses_identical_copies_and_refuses_differing_ones(harness):
     import numpy as np
 

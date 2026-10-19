@@ -48,6 +48,12 @@ not, because every film bin is on in both streams, so on/off is zero once centre
 registers fit model spaces in float64 with ``eigh`` (``MODEL_DTYPE``), so read (b) has one
 solver on both sides.
 
+Joint spaces (``joint-<extractor>[+<extractor>]``, tb-nat-encoding read (c)): the model
+spaces of each named extractor (``EXTRACTORS``), built per model exactly as above, fitted as
+one kernel band per extractor (braintwill ``RidgeSpec.merge``): every model's columns are
+weighted so it contributes the same kernel trace to its band whatever its width. TB fits also
+carry ``onoff``. One- and two-extractor spaces give each extractor's unique R² by difference.
+
 Rescue spaces (``rescue-<B>`` and ``rescue-<B>+<member>``, psytwill-space-next settle 2): a
 reduced psytwill block's scores as band ``base``, alone or beside one member's model space
 as a second band, so one member's unique variance is the difference of two cached scores.
@@ -135,18 +141,20 @@ OUTER_FOLDS = 5
 
 def film_spec(solver: str = "random_search", n_iter: int | None = None,
               solver_params: dict | None = None, dtype: str = "float32",
-              group_sums: bool = False) -> EncodingSpec:
+              group_sums: bool = False, merge: dict | None = None) -> EncodingSpec:
     """functional-space's encoder settings, wrapped in the outer CV.
 
     ``random_search`` with functional-space's ``N_ITER_BANDS`` is the default and the only
     setting the equivalence covers; ``hyper_gradient`` is opt-in for fits with many bands.
     ``solver_params`` go to himalaya verbatim (``TB_TS_SOLVER_PARAMS`` for tb-enc-ts);
     ``dtype`` is the fit's precision (``MODEL_DTYPE`` for model spaces); ``group_sums`` keeps
-    per-held-out-group sums (rescue spaces).
+    per-held-out-group sums (rescue spaces); ``merge`` builds kernel bands from several design
+    bands (joint spaces; braintwill ``RidgeSpec.merge``).
     """
     ridge = RidgeSpec(alphas=tuple(fs_enc.ALPHAS), inner_folds=fs_enc.N_FOLDS, solver=solver,
                       n_iter=fs_enc.N_ITER_BANDS if n_iter is None else n_iter, random_state=0,
-                      solver_params=dict(solver_params or {}), dtype=dtype)
+                      solver_params=dict(solver_params or {}), dtype=dtype,
+                      **({"merge": merge} if merge else {}))
     return EncodingSpec(ridge=ridge, outer_folds=OUTER_FOLDS, group_sums=group_sums)
 
 
@@ -513,6 +521,23 @@ VOICES = ("echo", "nova", "onyx", "shimmer")
 TB_TS_SPACES[VOICE_SPACE] = {}
 #: tb-ret-ts's spaces: onoff, voice, and the audio model spaces.
 RET_SPACES = {ONOFF_SPACE, VOICE_SPACE} | {n for n, (t, _) in MODEL_SPACES.items() if t == "movies_audio_frames"}
+#: Read (c)'s extractor bands: each extractor's read-(b) models as one kernel band. places is
+#: left out of viz2psy on both registers (its films fits carry a one-film artifact; DECIDED in
+#: tb-nat-encoding, 2026-10-18). Text (word2psy) joins once its models are gridded.
+EXTRACTORS = {"viz2psy": tuple(m for m in MODEL_TABLES["movies_frames"] if m != "places"),
+              "aud2psy": MODEL_TABLES["movies_audio_frames"]}
+JOINT_PREFIX = "joint-"
+JOINT_SPACES = {f"{JOINT_PREFIX}{'+'.join(c)}": c for c in (("viz2psy", "aud2psy"), ("viz2psy",), ("aud2psy",))}
+TB_TS_SPACES.update({name: {m: MODEL_SPACES[f"{MODEL_PREFIX}{m}"] for e in c for m in EXTRACTORS[e]}
+                     for name, c in JOINT_SPACES.items()})
+
+
+JOINT_WEIGHTING = "each model's columns 1/sqrt(width) after standardization (equal kernel trace per model)"
+
+
+def joint_merge(space: str) -> dict[str, tuple[str, ...]]:
+    """A joint space's kernel bands: extractor → its models, in band order."""
+    return {e: EXTRACTORS[e] for e in JOINT_SPACES[space]}
 #: Model-space fits on both registers: float64 ``eigh``. TB kernels defeat float32 ``eigh``
 #: (``TB_TS_SOLVER_PARAMS``); float64 ``eigh`` is the same decomposition at ~1/30 the cost of
 #: SVD (DECIDED 2026-10-15, so read (b) is one solver on both registers).
@@ -524,10 +549,11 @@ MODEL_SOLVER_PARAMS = {"n_alphas_batch": 5}
 
 
 def model_spec(solver: str = "random_search", n_iter: int | None = None,
-               group_sums: bool = False) -> EncodingSpec:
+               group_sums: bool = False, merge: dict | None = None) -> EncodingSpec:
     """The read-(b) spec: one for both registers (a one-band film fit uses the same
-    eigenvalue solver settings)."""
-    return film_spec(solver, n_iter, MODEL_SOLVER_PARAMS, dtype=MODEL_DTYPE, group_sums=group_sums)
+    eigenvalue solver settings). Joint spaces add their ``merge``."""
+    return film_spec(solver, n_iter, MODEL_SOLVER_PARAMS, dtype=MODEL_DTYPE, group_sums=group_sums,
+                     merge=merge)
 
 
 def declared_undefined(stimfeat: Path) -> dict[str, set[str]]:
@@ -669,6 +695,33 @@ def load_film_model(stimfeat: Path, rows: pd.DataFrame, space: str
     table, model = MODEL_SPACES[space]
     long = load_model_long(stimfeat, table, model, rows)
     return film_model_features(long, rows, model, declared_undefined(stimfeat).get(model, set()))
+
+
+def stack_bands(parts: list[dict[str, FrameFeatures]]) -> dict[str, FrameFeatures]:
+    """Per stimulus, several feature sets' bands side by side, in ``parts`` order.
+
+    Every part must hold the same stimuli on the same frame grid; band names must not repeat.
+    """
+    out = {}
+    for sid in parts[0]:
+        fs = [p.get(sid) for p in parts]
+        if any(f is None for f in fs):
+            raise RuntimeError(f"{sid}: missing from some of the stacked feature sets")
+        if any(f.times.shape != fs[0].times.shape or not np.allclose(f.times, fs[0].times) for f in fs):
+            raise RuntimeError(f"{sid}: stacked feature sets are on different frame grids "
+                               f"({sorted({f.times.size for f in fs})} frames)")
+        bands, at = {}, 0
+        for f in fs:
+            for b, sl in f.bands.items():
+                if b in bands:
+                    raise RuntimeError(f"{sid}: band {b!r} appears twice")
+                bands[b] = slice(at + sl.start, at + sl.stop)
+            at += f.x.shape[1]
+        out[sid] = FrameFeatures(sid, fs[0].times, np.concatenate([f.x for f in fs], axis=1),
+                                 fs[0].frame_s, bands)
+    if any(set(p) != set(out) for p in parts):
+        raise RuntimeError("stacked feature sets hold different stimuli")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1031,6 +1084,7 @@ class Request:
 
         self.paths = paths
         model_space = args.space in MODEL_SPACES
+        joint = args.space in JOINT_SPACES
         rescue = None
         if args.space.startswith(RESCUE_PREFIX):
             try:
@@ -1043,8 +1097,8 @@ class Request:
         elif args.space not in KNOWN_SPACES:
             raise SystemExit(f"unknown space {args.space!r}: one of {sorted(KNOWN_SPACES)}, or "
                              f"{RESCUE_PREFIX}<block>[+<member>]")
-        if model_space and args.register == "tb-enc":
-            raise SystemExit("model spaces run on the films and tb-enc-ts registers")
+        if (model_space or joint) and args.register == "tb-enc":
+            raise SystemExit("model and joint spaces run on the films and tb-enc-ts registers")
         if args.space in (ONOFF_SPACE, VOICE_SPACE) and args.register not in TS_REGISTERS:
             raise SystemExit(f"{args.space} runs on the time-series TB registers only: every film bin is "
                              "on, and tb-enc has no time course")
@@ -1052,6 +1106,9 @@ class Request:
             raise SystemExit(f"tb-ret-ts plays the word alone, so its spaces are audio: {sorted(RET_SPACES)}")
         if rescue:  # two bands at read (b)'s solver, with per-group sums for the bootstrap
             self.spec = model_spec(args.solver, args.n_iter, group_sums=True)
+        elif joint:  # read (c): read (b)'s solver, one kernel band per extractor
+            self.spec = model_spec(args.solver, args.n_iter, group_sums=getattr(args, "group_sums", False),
+                                   merge=joint_merge(args.space))
         elif model_space or args.space in (ONOFF_SPACE, VOICE_SPACE):  # reads (a) and (b): one solver
             self.spec = model_spec(args.solver, args.n_iter, group_sums=getattr(args, "group_sums", False))
         else:  # tb registers share the film grid and folds
@@ -1080,6 +1137,19 @@ class Request:
                               "member": member, "modulators": "each band minus its mean over the film window's bins",
                               **({"member_source": str(paths.stimfeat / "psytwill" / f"{RESCUE_FILM_TABLE[block]}_features.parquet"),
                                   "gates": gates} if member else {})}
+            elif joint:
+                parts, gates = [], {}
+                for m in TB_TS_SPACES[args.space]:
+                    feats, names = load_film_model(paths.stimfeat, self.rows, f"{MODEL_PREFIX}{m}")
+                    feats, gates[m] = prune_indicators(feats, m, names)
+                    parts.append(feats)
+                self.feats = stack_bands(parts)
+                self.label = {"space": args.space, "source": str(paths.stimfeat / "psytwill"),
+                              "extractors": {e: list(v) for e, v in joint_merge(args.space).items()},
+                              "weighting": JOINT_WEIGHTING,
+                              "modulators": "feature minus its mean over the film window's bins",
+                              "onoff": "none: every film bin is on in both streams (zero once centred)",
+                              "gates": gates}
             elif model_space:
                 table, model = MODEL_SPACES[args.space]
                 feats, names = load_film_model(paths.stimfeat, self.rows, args.space)
@@ -1112,7 +1182,7 @@ class Request:
             if len(n_bins) != 1:
                 raise RuntimeError(f"sub-{args.sub}: runs of different lengths {sorted(n_bins)}")
             (n,) = n_bins
-            gated = declared_undefined(paths.stimfeat) if model_space else None
+            gated = declared_undefined(paths.stimfeat) if model_space or joint else None
             self.feats = {r.stem: load_run_features(paths.stimfeat, r, args.space, n, gated, on_tables)
                           for r in self.runs.itertuples(index=False)}
             if args.space == VOICE_SPACE:
@@ -1126,12 +1196,19 @@ class Request:
                           "bands": {b: list(v) for b, v in TB_TS_SPACES[args.space].items()}}
             if args.space == VOICE_SPACE:
                 self.label.update(voices=list(VOICES), voice_source="events `voice`, word rows")
-            if model_space:
-                table, model = MODEL_SPACES[args.space]
-                long, stamp = _first_table(paths.stimfeat, next(self.runs.itertuples(index=False)), table)
-                names = list(grid_wide(long, model, stamp, n).columns)
-                names += [f"{c}:defined" for c in names if c in gated.get(model, set())]
-                self.feats, self.label["gates"] = prune_indicators(self.feats, model, names)
+            if model_space or joint:
+                first, tables, gates = next(self.runs.itertuples(index=False)), {}, {}
+                for band, (table, model) in TB_TS_SPACES[args.space].items():
+                    if table not in tables:
+                        tables[table] = _first_table(paths.stimfeat, first, table)
+                    long, stamp = tables[table]
+                    names = list(grid_wide(long, model, stamp, n).columns)
+                    names += [f"{c}:defined" for c in names if c in gated.get(model, set())]
+                    self.feats, gates[model] = prune_indicators(self.feats, band, names)
+                self.label["gates"] = gates if joint else gates[model]
+            if joint:
+                self.label.update(extractors={e: list(v) for e, v in joint_merge(args.space).items()},
+                                  weighting=JOINT_WEIGHTING)
         else:
             if getattr(args, "films", None):
                 raise SystemExit("--films applies to the films register only")
