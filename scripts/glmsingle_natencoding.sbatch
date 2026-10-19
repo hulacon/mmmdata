@@ -14,7 +14,7 @@
 #==============================================================================
 # GLMsingle NATencoding (4.5-s movie chunks) — SLURM Array Job
 #==============================================================================
-# Pattern-similarity analysis Phase 2 (docs/doc/pattern-similarity-plan.md).
+# Pattern-similarity analysis Phase 2 (mmmdata-agents docs/results/pattern-similarity.md).
 # Masked-2D data layout; sizing reference: full-grid TB fit peaked at 200 GB
 # / 18.3 h on 8 CPUs (job 43272306).
 # Array task mapping:

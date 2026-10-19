@@ -5,7 +5,7 @@ glmsingle_natencoding.py — Run GLMsingle on NATencoding with 4.5-s movie chunk
 Mirrors glmsingle_tbencoding.py, but conditions are 4.5-s pseudo-trials
 ("chunks") tiled over each movie, so NAT data yield single-"trial" betas
 comparable to the TBencoding fits (4.5 s = the TB SOA = exactly 3 TRs).
-See docs/doc/pattern-similarity-plan.md, Phase 2 / decision D7.
+See mmmdata-agents docs/results/pattern-similarity.md, Phase 2 / decision D7.
 
 Key design features:
   - Per movie, n_chunks = floor(min presentation duration / 4.5); the tail

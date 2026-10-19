@@ -20,7 +20,7 @@ Output (float32 npz, all 6 ROIs per file):
   derivatives/pattern_similarity/cache/rawtr/{pipeline}/{sub}/
     {sub}_{ses}_task-{task}_run-{run:02d}_desc-model8_roipatterns.npz
 
-Plan: docs/doc/pattern-similarity-plan.md, Phase 3.
+Plan: mmmdata-agents docs/results/pattern-similarity.md, Phase 3.
 
 Usage:
     python extract_rawtr.py --sub sub-03 --pipeline original          # all 62 runs

@@ -38,3 +38,7 @@ exclude:
   - README.md
   - vendor/
   - .bundle/
+
+# Rewrite [text](page.md) links between pages to their rendered URLs
+plugins:
+  - jekyll-relative-links

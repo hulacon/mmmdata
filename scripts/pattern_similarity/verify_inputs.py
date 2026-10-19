@@ -1,7 +1,7 @@
 """Task 0 input verification for the pattern-similarity analysis.
 
 Read-only checks of the ingredients the analysis depends on (see
-docs/doc/pattern-similarity-plan.md, Phase 0):
+mmmdata-agents docs/results/pattern-similarity.md, Phase 0):
 
   1. TB shared items: per-subject pairId->mmmId mapping constant across all
      14 sessions x 3 runs; each of the 6 items presented exactly 42x.

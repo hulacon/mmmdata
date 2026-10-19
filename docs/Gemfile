@@ -14,3 +14,9 @@ gem "base64"
 
 # Future-proof: logger will be removed from default in Ruby 3.5
 gem "logger"
+
+# Rewrite [text](page.md) links to the rendered page (GitHub Pages enables
+# this by default; this Actions build does not)
+group :jekyll_plugins do
+  gem "jekyll-relative-links", "~> 0.9"
+end

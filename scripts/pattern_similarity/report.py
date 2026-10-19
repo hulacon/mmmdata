@@ -19,7 +19,7 @@ Pairing conventions (unit-item rows, session_scope=all):
     subject and the same item (TB triplet items + both NAT movies).
   - nordic vs original: joined on (unit, item) per cell.
 
-Plan: docs/doc/pattern-similarity-plan.md, Phase 7.
+Plan: mmmdata-agents docs/results/pattern-similarity.md, Phase 7.
 
 Usage:
     python report.py

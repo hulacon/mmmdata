@@ -13,7 +13,7 @@
 # Pattern-similarity Phase 6 — similarity computation (full grid, single job)
 #==============================================================================
 # Requires Phase 3-5 caches under derivatives/pattern_similarity/cache/.
-# Plan: docs/doc/pattern-similarity-plan.md, Phase 6.
+# Plan: mmmdata-agents docs/results/pattern-similarity.md, Phase 6.
 #==============================================================================
 
 echo "=========================================="

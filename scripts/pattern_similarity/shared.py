@@ -4,7 +4,7 @@ Comparison grid: {fmriprep, fmriprep_nordic} x {rawTR-model8, GLMsingle}
 x {TBencoding, NATencoding} x 6 bilateral Harvard-Oxford ROIs x 4 cells
 (within/across subject x same/different item).
 
-Plan: docs/doc/pattern-similarity-plan.md. Builds on
+Plan: mmmdata-agents docs/results/pattern-similarity.md. Builds on
 scripts/nordic_benchmark/shared.py (imported below as `nb`).
 """
 

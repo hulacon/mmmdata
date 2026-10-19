@@ -14,10 +14,13 @@ Hierarchy (3 levels, matching just-the-docs sidebar limits):
 Subpackages (``neuroimaging/glm``) would need a fourth level, so they are
 flattened into level-2 entries of their own ("Neuroimaging / GLM").
 
-Command-line tools passed with ``--tools`` get a separate top-level "Tools"
-section: one page per script, rendered from its module docstring. A tool's
+Command-line tools passed with ``--tools`` get a separate "Tools"
+section beside Code Documentation: one page per script, rendered from its module docstring. A tool's
 docstring is its user guide; its internal functions are not an API anyone
 calls, so they are not listed.
+
+``--parent`` nests both sections under an existing page (the site's
+"Code & Tools" section) instead of placing them at the top level.
 """
 
 import ast
@@ -319,9 +322,11 @@ def _pkg_display_name(name: str) -> str:
 class JekyllGenerator:
     """Produce Jekyll-compatible markdown files."""
 
-    def __init__(self, output_dir: Path, base_nav_order: int = 50):
+    def __init__(self, output_dir: Path, base_nav_order: int = 50,
+                 parent: str = ""):
         self.output_dir = output_dir
         self.base_nav = base_nav_order
+        self.parent = parent
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     # -- top-level index ---------------------------------------------------
@@ -333,6 +338,8 @@ class JekyllGenerator:
         with open(p, "w") as f:
             f.write("---\n")
             f.write("title: Code Documentation\n")
+            if self.parent:
+                f.write(f"parent: {self.parent}\n")
             f.write(f"nav_order: {self.base_nav}\n")
             f.write("has_children: true\n")
             f.write("---\n\n")
@@ -442,6 +449,8 @@ class JekyllGenerator:
         with open(p, "w") as f:
             f.write("---\n")
             f.write("title: Tools\n")
+            if self.parent:
+                f.write(f"parent: {self.parent}\n")
             f.write(f"nav_order: {nav_order}\n")
             f.write("has_children: true\n")
             f.write("---\n\n")
@@ -645,11 +654,17 @@ def main():
         type=Path,
         nargs="+",
         default=[],
-        help="Command-line scripts to document in a top-level Tools section",
+        help="Command-line scripts to document in a Tools section",
+    )
+    parser.add_argument(
+        "--parent",
+        default="",
+        help="Title of the page to nest Code Documentation and Tools under "
+             "(default: top level)",
     )
 
     args = parser.parse_args()
-    gen = JekyllGenerator(args.output_dir, args.nav_order)
+    gen = JekyllGenerator(args.output_dir, args.nav_order, args.parent)
 
     # Optionally clean stale output
     if args.clean:

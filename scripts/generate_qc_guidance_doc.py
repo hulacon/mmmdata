@@ -29,7 +29,8 @@ DEFAULT_OUTPUT = REPO_ROOT / "docs" / "doc" / "qc-guidance.md"
 
 FRONT_MATTER = """---
 title: QC Review Guidance
-nav_order: 40
+parent: Code & Tools
+nav_order: 10
 ---
 
 """
