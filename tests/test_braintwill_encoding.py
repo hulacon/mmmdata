@@ -363,7 +363,8 @@ def test_tb_ret_ts_onoff_is_audio_only_and_voice_follows_it(harness):
     g = harness.voice_features(f, words, tuple(harness.TB_RET_ON))
     np.testing.assert_allclose(g.x[[1, 4], 1 + harness.VOICES.index("onyx")], [.5, -.5])
     assert harness.RET_SPACES >= {harness.ONOFF_SPACE, harness.VOICE_SPACE, "model-clap"}
-    assert "model-clip" not in harness.RET_SPACES and len(harness.RET_SPACES) == 16
+    assert "model-clip" not in harness.RET_SPACES and "model-fasttext" in harness.RET_SPACES
+    assert len(harness.RET_SPACES) == 2 + 14 + 5
 
 
 def test_run_cue_reads_one_modality_per_run(harness, tmp_path):
@@ -421,7 +422,7 @@ def test_the_drop_is_the_first_volume_whose_delays_all_land_in_the_run(harness):
 # ---------------------------------------------------------------------------
 
 def test_model_spaces_are_new_names_on_both_registers(harness):
-    assert len(harness.MODEL_SPACES) == 27
+    assert len(harness.MODEL_SPACES) == 13 + 14 + 5
     assert set(harness.MODEL_SPACES) <= set(harness.TB_TS_SPACES)
     assert harness.TB_TS_SPACES["ebind"] == {"ebind": ("movies_frames", "ebind")}  # summary space untouched
     spec = harness.model_spec().to_dict()["ridge"]
@@ -440,7 +441,8 @@ def test_joint_spaces_are_extractor_bands_of_the_read_b_models_without_places(ha
     assert "places" not in viz and set(viz) | {"places"} == set(harness.MODEL_TABLES["movies_frames"])
     assert aud == harness.MODEL_TABLES["movies_audio_frames"]
     both = "joint-viz2psy+aud2psy"
-    assert set(harness.JOINT_SPACES) == {both, "joint-viz2psy", "joint-aud2psy"}
+    assert set(harness.JOINT_SPACES) == {both, "joint-viz2psy", "joint-aud2psy", "joint-viz2psy+aud2psy+word2psy",
+                                         "joint-viz2psy+word2psy", "joint-aud2psy+word2psy"}
     assert list(harness.TB_TS_SPACES[both]) == [*viz, *aud]
     assert harness.TB_TS_SPACES[both]["clap"] == harness.MODEL_SPACES["model-clap"]
     assert harness.joint_merge(both) == {"viz2psy": viz, "aud2psy": aud}
@@ -471,6 +473,117 @@ def test_stack_bands_puts_feature_sets_side_by_side_and_refuses_other_grids(harn
         harness.stack_bands([a, a])
     with pytest.raises(RuntimeError, match="different stimuli"):
         harness.stack_bands([a, {**b, "u": b["s"]}])
+
+
+# ---------------------------------------------------------------------------
+# text model spaces (the second pass): word grid, word-on, film token onsets
+# ---------------------------------------------------------------------------
+
+def _words(onsets, values, model="fasttext", chunk=0):
+    """Text-table rows: one word per onset, ``values`` (n_words, n_features)."""
+    return pd.DataFrame([{"onset": t, "chunk_idx": chunk, "word_idx": i, "model": model,
+                          "feature": f"{model}_{j:03d}", "value": x}
+                         for i, (t, v) in enumerate(zip(onsets, values)) for j, x in enumerate(v)])
+
+
+def test_word_grid_means_a_bins_words_and_marks_word_on(harness):
+    import numpy as np
+
+    nan = np.nan
+    long = _words([0.6, 0.9, 2.1, 2.2], [[1, 2], [3, nan], [nan, nan], [5, nan]])
+    w, on = harness.word_grid(long, "fasttext", 6)
+    np.testing.assert_array_equal(on, [0, 1, 0, 0, 1, 0])
+    np.testing.assert_allclose(w.iloc[1], [2, 2])            # mean of 1, 3; the missing value leaves it
+    assert w.iloc[4, 0] == 5 and np.isnan(w.iloc[4, 1])      # no word of bin 4 defines feature 1
+    assert w.drop(index=[1, 4]).isna().all().all() and list(w.columns) == ["fasttext_000", "fasttext_001"]
+    same = pd.concat([long, long.iloc[:2]])                  # copies with one value are one row
+    pd.testing.assert_frame_equal(harness.word_grid(same, "fasttext", 6)[0], w)
+    with pytest.raises(RuntimeError, match="different values"):
+        harness.word_grid(pd.concat([long, long.iloc[:1].assign(value=9.0)]), "fasttext", 6)
+    with pytest.raises(RuntimeError, match="outside"):
+        harness.word_grid(long, "fasttext", 4)
+    empty, on = harness.word_grid(long.iloc[:0], "fasttext", 3, ["fasttext_000"])
+    assert empty.shape == (3, 1) and empty.isna().all().all() and not on.any()
+
+
+def test_tb_text_band_rides_on_audio_on_and_refuses_other_word_bins(harness):
+    import numpy as np
+
+    n = 8
+    aud = np.full((n, 1), np.nan)
+    aud[[1, 5]] = 1.0
+    tables = {"movies_frames": (_long(np.arange(n) * 0.5, "ebind", np.ones((n, 1))), "start"),
+              "movies_audio_frames": (_long(np.arange(n) * 0.5 + 0.25, "clap", aud), "center"),
+              harness.TEXT_TABLE: (_words([0.5, 2.6], [[1.0], [3.0]], "wordform"), harness.WORD_STAMP)}
+    f = harness.run_features("run-x", tables, "model-wordform", n)
+    assert list(f.bands) == ["onoff", "wordform"]
+    np.testing.assert_allclose(f.x[[1, 5], 2], [-1, 1])
+    assert not f.x[[0, 2, 3, 4, 6, 7], 2].any()
+    ret = {k: tables[k] for k in ("movies_audio_frames", harness.TEXT_TABLE)}
+    g = harness.run_features("run-x", ret, "model-wordform", n, on_tables=harness.TB_RET_ON)
+    np.testing.assert_array_equal(g.x[:, 1], f.x[:, 2])
+    tables[harness.TEXT_TABLE] = (_words([0.5, 3.1], [[1.0], [3.0]], "wordform"), harness.WORD_STAMP)
+    with pytest.raises(RuntimeError, match="not the 2 audio-on bins"):
+        harness.run_features("run-x", tables, "model-wordform", n)
+
+
+def test_film_word_onsets_align_tokens_to_asr_words_exactly(harness, tmp_path):
+    movies = tmp_path / harness.FILM_TOKENS.parent
+    (movies / "film-a").mkdir(parents=True)
+    pd.DataFrame({"stimulus_id": "film-a", "word_idx": [10, 11, 12, 13],
+                  "word": ["i", "'m", "late", "ok"]}).to_csv(tmp_path / harness.FILM_TOKENS, index=False)
+    asr = pd.DataFrame({"stimulus_id": "film-a", "chunk_idx": [0, 0, 1], "word_idx": [0, 1, 2],
+                        "word": ["I'm", "late,", "OK."], "onset": [1.0, 1.4, 5.0], "offset": [1.3, 1.9, 5.2]})
+    asr.to_csv(movies / "film-a" / harness.FILM_ASR_WORDS, index=False)
+    got = harness.film_word_onsets(tmp_path)
+    assert list(got["word_idx"]) == [10, 11, 12, 13]
+    assert list(got["onset"]) == [1.0, 1.0, 1.4, 5.0] and list(got["offset"]) == [1.3, 1.3, 1.9, 5.2]
+    asr.assign(word=["I'm", "later", "OK"]).to_csv(movies / "film-a" / harness.FILM_ASR_WORDS, index=False)
+    with pytest.raises(RuntimeError, match="spell different text"):
+        harness.film_word_onsets(tmp_path)
+
+
+def test_film_text_and_word_on_stay_inside_the_window_and_a_silent_film_is_off(harness):
+    import numpy as np
+
+    n = 30
+    rows = pd.concat([_film_row(), _film_row().assign(stimulus_id="film-b")], ignore_index=True)
+    inside = np.flatnonzero(harness.window_bins(np.array([7, 8]) * 1.5, 1.5, n))
+    t = [inside[0] * 0.5, inside[2] * 0.5 + 0.1, (inside[-1] + 2) * 0.5]  # two words in the window, one after it
+    onsets = pd.DataFrame({"stimulus_id": "film-a", "word_idx": [0, 1, 2], "onset": t})
+    long = _words(t, [[1.0], [5.0], [100.0]], "wordform").assign(stimulus_id="film-a").drop(columns="onset")
+    grid = {"film-a": n, "film-b": n}
+    on = harness.film_word_on(onsets, rows, grid)
+    assert on["film-a"].bands == {"onoff": slice(0, 1)}
+    np.testing.assert_array_equal(np.flatnonzero(on["film-a"].x[:, 0]), inside[[0, 2]])
+    assert not on["film-b"].x.any()
+    feats, names = harness.film_text_features(long, onsets, rows, "wordform", grid)
+    np.testing.assert_allclose(feats["film-a"].x[inside[[0, 2]], 0], [-2, 2])
+    assert np.count_nonzero(feats["film-a"].x) == 2 and not feats["film-b"].x.any()
+    assert names == ["wordform_000"] and feats["film-b"].x.shape == (n, 1)
+    with pytest.raises(RuntimeError, match="match no film token"):
+        harness.film_text_features(long, onsets.iloc[:2], rows, "wordform", grid)
+
+
+def test_text_modulators_keep_missing_values_undefined(harness):
+    import numpy as np
+
+    on = np.array([False, True, True, True])
+    f = np.array([[np.nan, np.nan], [1.0, np.nan], [np.nan, np.nan], [3.0, np.nan]])
+    out = harness.text_modulators(f, on)
+    np.testing.assert_allclose(out[[0, 1, 3], 0], [0, -1, 1])
+    assert np.isnan(out[2, 0]) and np.isnan(out[1:, 1]).all() and out[0, 1] == 0
+    assert not harness.text_modulators(f, np.zeros(4, bool)).any()
+
+
+def test_word_on_rides_with_every_films_text_and_joint_space(harness):
+    assert harness.film_word_on_space(harness.ONOFF_SPACE)
+    assert all(harness.film_word_on_space(s) for s in harness.JOINT_SPACES)
+    assert harness.film_word_on_space("model-fasttext") and not harness.film_word_on_space("model-clip")
+    full = "joint-viz2psy+aud2psy+word2psy"
+    assert harness.joint_merge(full) == {e: harness.EXTRACTORS[e] for e in ("viz2psy", "aud2psy", "word2psy")}
+    assert list(harness.TB_TS_SPACES[full])[-5:] == list(harness.MODEL_TABLES[harness.TEXT_TABLE])
+    assert harness.table_stream(harness.TEXT_TABLE) == "audio"
 
 
 def test_grid_wide_collapses_identical_copies_and_refuses_differing_ones(harness):

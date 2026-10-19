@@ -48,11 +48,23 @@ not, because every film bin is on in both streams, so on/off is zero once centre
 registers fit model spaces in float64 with ``eigh`` (``MODEL_DTYPE``), so read (b) has one
 solver on both sides.
 
+Text model spaces (word2psy, the second pass; DECIDED 2026-10-19): the transcript words table
+is stamped by word onset, not on the grid. A word belongs to the bin holding its onset, a bin's
+value is the mean of its words' defined values, and word-on marks the bins holding a word
+(``word_grid``). On TB the word is the trial's spoken word, so word-on is audio-on (checked per
+run) and ``onoff`` already carries it. Speech comes and goes within a film, so films text fits
+carry ``onoff`` = word-on, and so does the films ``onoff`` space, the baseline a films text
+score is read above. Film tokens take their onsets from the ASR words (``film_word_onsets``).
+Text models have no nested gates: at word grain their values are only ever missing (a word out
+of a model's vocabulary), and a missing value stays undefined.
+
 Joint spaces (``joint-<extractor>[+<extractor>]``, tb-nat-encoding read (c)): the model
 spaces of each named extractor (``EXTRACTORS``), built per model exactly as above, fitted as
 one kernel band per extractor (braintwill ``RidgeSpec.merge``): every model's columns are
 weighted so it contributes the same kernel trace to its band whatever its width. TB fits also
-carry ``onoff``. One- and two-extractor spaces give each extractor's unique R² by difference.
+carry ``onoff``, and films fits carry word-on whichever extractors they hold, so leaving
+word2psy out removes word content, not speech presence. Leave-one-out spaces give each
+extractor's unique R² by difference.
 
 Rescue spaces (``rescue-<B>`` and ``rescue-<B>+<member>``, psytwill-space-next settle 2): a
 reduced psytwill block's scores as band ``base``, alone or beside one member's model space
@@ -85,6 +97,7 @@ Usage:
     python harness.py score --register tb-enc --space psytwill --sub ##
     python harness.py plan --register tb-enc-ts --space ebind --sub ##
     python harness.py score --register films --space model-clip --sub ##
+    python harness.py score --register tb-ret-ts --space model-fasttext --sub ##
     python harness.py score --register films --space rescue-V+clip --sub ##
     python harness.py equivalence --space ebind --scenario primary --pct 0 --draw 0 --target ##
 """
@@ -96,9 +109,11 @@ import datetime as _dt
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -497,20 +512,33 @@ TB_TS_SPACES = {
 MODEL_PREFIX = "model-"
 #: The read-(b) models: numeric models in both the films' and the TB runs' composed visual
 #: and audio tables. Left out: film-only models (motion, conversation, speech_rate), the
-#: string ``caption``, and ``speech_emotion`` (no comparable TB counterpart). Text models
-#: wait for a word grid (tb-nat-encoding DECIDED 2026-10-15).
+#: string ``caption``, and ``speech_emotion`` (no comparable TB counterpart). The text
+#: models are the second pass (module docstring).
+TEXT_TABLE = "movies_transcript_words"
+#: A text table's stamp: rows carry a word's ``onset``, not a grid time.
+WORD_STAMP = "onset"
 MODEL_TABLES = {
     "movies_frames": ("aesthetics", "clip", "depth", "dinov2", "ebind", "emonet", "faces", "gist",
                       "llstat", "places", "resmem", "saliency", "yolo"),
     "movies_audio_frames": ("clap", "ebind_audio", "egemaps", "loudness", "music_emotion", "onsets",
                             "pitch", "psychoacoustic", "rhythm", "sound_events", "spectral", "speech",
                             "timbre", "tonal"),
+    TEXT_TABLE: ("fasttext", "gpt2_surprisal", "lexical_norms", "word2vec", "wordform"),
 }
 MODEL_SPACES = {f"{MODEL_PREFIX}{m}": (t, m) for t, ms in MODEL_TABLES.items() for m in ms}
 TB_TS_SPACES.update({name: {m: (t, m)} for name, (t, m) in MODEL_SPACES.items()})
-#: Read (a): the ``onoff`` band alone, on tb-enc-ts only (every film bin is on in both
-#: streams, so on films the band is zero once centred). Fitted at read (b)'s spec, so a
-#: model's R² above on/off compares two fits of one solver.
+#: Film word tokens: word2psy's tokens of the films' transcript, the rows of every text model's
+#: films store table (keyed by ``stimulus_id`` and the corpus-wide ``word_idx``; the five
+#: models' token lists are identical). They carry no timing; see ``film_word_onsets``.
+FILM_TOKENS = Path("movies") / "transcript_fasttext_words.csv"
+#: A film's ASR words with their onsets, per film under ``movies/``.
+FILM_ASR_WORDS = "transcribe_transcript_words.csv"
+#: The model whose films table gives each film's grid length (a text table has no grid).
+FILM_GRID_MODEL = ("movies_frames", "llstat")
+#: Read (a): the ``onoff`` band alone. On tb-enc-ts it is visual-on and audio-on; on films it is
+#: word-on (every film bin is on in both streams, so those columns are zero once centred, but
+#: speech is not), the baseline a films text score is read above. Fitted at read (b)'s spec,
+#: so a model's R² above on/off compares two fits of one solver.
 ONOFF_SPACE = "onoff"
 TB_TS_SPACES[ONOFF_SPACE] = {}
 #: The TTS voice of each TB word as its own band: one column per voice, a centred modulator
@@ -519,15 +547,21 @@ TB_TS_SPACES[ONOFF_SPACE] = {}
 VOICE_SPACE = "voice"
 VOICES = ("echo", "nova", "onyx", "shimmer")
 TB_TS_SPACES[VOICE_SPACE] = {}
-#: tb-ret-ts's spaces: onoff, voice, and the audio model spaces.
-RET_SPACES = {ONOFF_SPACE, VOICE_SPACE} | {n for n, (t, _) in MODEL_SPACES.items() if t == "movies_audio_frames"}
+#: tb-ret-ts's spaces: onoff, voice, and the audio and text model spaces.
+RET_SPACES = {ONOFF_SPACE, VOICE_SPACE} | {n for n, (t, _) in MODEL_SPACES.items()
+                                           if t in ("movies_audio_frames", TEXT_TABLE)}
 #: Read (c)'s extractor bands: each extractor's read-(b) models as one kernel band. places is
 #: left out of viz2psy on both registers (its films fits carry a one-film artifact; DECIDED in
-#: tb-nat-encoding, 2026-10-18). Text (word2psy) joins once its models are gridded.
+#: tb-nat-encoding, 2026-10-18).
 EXTRACTORS = {"viz2psy": tuple(m for m in MODEL_TABLES["movies_frames"] if m != "places"),
-              "aud2psy": MODEL_TABLES["movies_audio_frames"]}
+              "aud2psy": MODEL_TABLES["movies_audio_frames"],
+              "word2psy": MODEL_TABLES[TEXT_TABLE]}
 JOINT_PREFIX = "joint-"
-JOINT_SPACES = {f"{JOINT_PREFIX}{'+'.join(c)}": c for c in (("viz2psy", "aud2psy"), ("viz2psy",), ("aud2psy",))}
+#: The first read (c) (viz2psy + aud2psy, and each alone), then the text pass's three-extractor
+#: fit and its two leave-one-outs that hold word2psy (leaving word2psy out is the first fit).
+JOINT_SPACES = {f"{JOINT_PREFIX}{'+'.join(c)}": c for c in (
+    ("viz2psy", "aud2psy"), ("viz2psy",), ("aud2psy",),
+    ("viz2psy", "aud2psy", "word2psy"), ("viz2psy", "word2psy"), ("aud2psy", "word2psy"))}
 TB_TS_SPACES.update({name: {m: MODEL_SPACES[f"{MODEL_PREFIX}{m}"] for e in c for m in EXTRACTORS[e]}
                      for name, c in JOINT_SPACES.items()})
 
@@ -538,6 +572,15 @@ JOINT_WEIGHTING = "each model's columns 1/sqrt(width) after standardization (equ
 def joint_merge(space: str) -> dict[str, tuple[str, ...]]:
     """A joint space's kernel bands: extractor → its models, in band order."""
     return {e: EXTRACTORS[e] for e in JOINT_SPACES[space]}
+
+
+def film_word_on_space(space: str) -> bool:
+    """Films spaces that carry word-on as band ``onoff``: the onoff space, the text model
+    spaces, and every joint space (tb-nat-encoding DECIDED 2026-10-19)."""
+    return (space == ONOFF_SPACE or space in JOINT_SPACES
+            or (space in MODEL_SPACES and MODEL_SPACES[space][0] == TEXT_TABLE))
+
+
 #: Model-space fits on both registers: float64 ``eigh``. TB kernels defeat float32 ``eigh``
 #: (``TB_TS_SOLVER_PARAMS``); float64 ``eigh`` is the same decomposition at ~1/30 the cost of
 #: SVD (DECIDED 2026-10-15, so read (b) is one solver on both registers).
@@ -558,9 +601,13 @@ def model_spec(solver: str = "random_search", n_iter: int | None = None,
 
 def declared_undefined(stimfeat: Path) -> dict[str, set[str]]:
     """Features each model's store declares ``undefined`` (a content gate), from the films'
-    store metadata; the TB tables are composed from the same extractors' stores."""
+    store metadata; the TB tables are composed from the same extractors' stores. The text
+    table is skipped: its ``undefined`` declarations are about chunk aggregates, and a word
+    row's nulls are all ``missing``."""
     out: dict[str, set[str]] = {}
     for table in MODEL_TABLES:
+        if table == TEXT_TABLE:
+            continue
         meta = json.loads((Path(stimfeat) / "psytwill" / f"{table}_features.meta.json").read_text())
         for model, nulls in meta["model_nulls"].items():
             out[model] = {f for f, v in nulls.items() if v.get("means") == "undefined"}
@@ -724,6 +771,126 @@ def stack_bands(parts: list[dict[str, FrameFeatures]]) -> dict[str, FrameFeature
     return out
 
 
+def _chars(word) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(word).lower())
+
+
+def film_word_onsets(stimfeat: Path) -> pd.DataFrame:
+    """Every film token's ``onset`` and ``offset`` (keyed ``stimulus_id``, ``word_idx``).
+
+    The tokens are word2psy's re-tokenisation of the ASR transcript (``i'm`` → ``i`` ``'m``)
+    and carry no timing, so each takes the timing of the ASR word holding its first character.
+    Per film, the tokens' and the ASR words' character streams (lowercase letters and digits)
+    must be identical: the alignment is exact or it is an error.
+    """
+    movies = Path(stimfeat) / FILM_TOKENS.parent
+    tokens = pd.read_csv(Path(stimfeat) / FILM_TOKENS, usecols=["stimulus_id", "word_idx", "word"])
+    out = []
+    for sid, g in tokens.groupby("stimulus_id", sort=True):
+        src = movies / sid / FILM_ASR_WORDS
+        asr = pd.read_csv(src).sort_values(["chunk_idx", "word_idx"])
+        if (np.diff(asr["onset"].to_numpy(float)) < 0).any():
+            raise RuntimeError(f"{src}: word onsets go backwards in chunk/word order")
+        g = g.sort_values("word_idx")
+        t = [_chars(w) for w in g["word"]]
+        if not all(t):
+            raise RuntimeError(f"{sid}: a transcript token has no letters or digits")
+        a = [_chars(w) for w in asr["word"]]
+        if "".join(t) != "".join(a):
+            raise RuntimeError(f"{sid}: transcript tokens and the ASR words of {src} spell different text")
+        owner = np.repeat(np.arange(len(a)), [len(s) for s in a])[np.cumsum([0] + [len(s) for s in t[:-1]])]
+        out.append(pd.DataFrame({"stimulus_id": sid, "word_idx": g["word_idx"].to_numpy(),
+                                 "onset": asr["onset"].to_numpy(float)[owner],
+                                 "offset": asr["offset"].to_numpy(float)[owner]}))
+    return pd.concat(out, ignore_index=True)
+
+
+def film_grid(stimfeat: Path, rows: pd.DataFrame) -> dict[str, int]:
+    """Each window film's grid length in bins, from ``FILM_GRID_MODEL``'s films table (the grid
+    every films model space of the film is on; ``stack_bands`` refuses any other)."""
+    table, model = FILM_GRID_MODEL
+    long = pd.read_parquet(Path(stimfeat) / "psytwill" / f"{table}_features.parquet",
+                           columns=["stimulus_id", "time"],
+                           filters=[("model", "==", model), ("stimulus_id", "in", sorted(rows["stimulus_id"]))])
+    stamp = infer_stamp(long["time"].to_numpy())
+    start = long["time"].to_numpy(float) - (fs_enc.FRAME_S / 2 if stamp == "center" else 0.0)
+    last = pd.Series(start).groupby(long["stimulus_id"].to_numpy()).max()
+    missing = sorted(set(rows["stimulus_id"]) - set(last.index))
+    if missing:
+        raise RuntimeError(f"{model}: no rows for films {missing}")
+    return {sid: int(np.rint(v / fs_enc.FRAME_S)) + 1 for sid, v in last.items()}
+
+
+def _window_on(r, n_bins: int) -> np.ndarray:
+    tr = float(r.repetition_time)
+    return window_bins(fs_enc.film_volume_starts(r.onset, r.start, r.n, tr), tr, n_bins)
+
+
+def film_word_on(onsets: pd.DataFrame, rows: pd.DataFrame, grid: dict[str, int]
+                 ) -> dict[str, FrameFeatures]:
+    """Band ``onoff`` of a films text, onoff or joint fit: one column, word-on (1 in the
+    window's bins holding a word onset, 0 elsewhere; a film with no speech is all 0)."""
+    out = {}
+    for r in rows.itertuples(index=False):
+        n = grid[r.stimulus_id]
+        on = np.zeros(n, bool)
+        b = np.floor(onsets.loc[onsets["stimulus_id"] == r.stimulus_id, "onset"].to_numpy(float)
+                     / fs_enc.FRAME_S + 1e-9).astype(int)
+        if b.size and (b.min() < 0 or b.max() >= n):
+            raise RuntimeError(f"{r.stimulus_id}: word onsets outside the film's {n} bins")
+        on[b] = True
+        on &= _window_on(r, n)
+        out[r.stimulus_id] = FrameFeatures(r.stimulus_id, np.arange(n) * fs_enc.FRAME_S,
+                                           on[:, None].astype(np.float64), fs_enc.FRAME_S,
+                                           {ONOFF_SPACE: slice(0, 1)})
+    return out
+
+
+def text_modulators(f: np.ndarray, on: np.ndarray) -> np.ndarray:
+    """A films text band: each feature minus its mean over the on-bins where it is defined,
+    0 off; a missing value stays undefined, so does a feature defined at no on-bin of the
+    film. No on-bin (no word in the window) is all 0: the stream is off."""
+    out = np.zeros_like(f, dtype=np.float64)
+    if not on.any():
+        return out
+    with warnings.catch_warnings():  # a feature defined at no on-bin: its mean is NaN, by design
+        warnings.simplefilter("ignore", RuntimeWarning)
+        mean = np.nanmean(f[on], axis=0)
+    out[on] = f[on] - mean
+    return out
+
+
+def film_text_features(long: pd.DataFrame, onsets: pd.DataFrame, rows: pd.DataFrame, model: str,
+                       grid: dict[str, int]) -> tuple[dict[str, FrameFeatures], list[str]]:
+    """One text model's frames per window film (``word_grid`` on the token onsets), centred
+    over the window's word-on bins (``text_modulators``)."""
+    long = long.merge(onsets[["stimulus_id", "word_idx", "onset"]], on=["stimulus_id", "word_idx"],
+                      how="left", validate="many_to_one")
+    if long["onset"].isna().any():
+        raise RuntimeError(f"{model}: {int(long['onset'].isna().sum())} rows match no film token")
+    names = sorted(long["feature"].unique())
+    out = {}
+    for r in rows.itertuples(index=False):
+        n = grid[r.stimulus_id]
+        w, word_on = word_grid(long[long["stimulus_id"] == r.stimulus_id], model, n, names)
+        on = word_on & _window_on(r, n)
+        x = text_modulators(w.to_numpy(np.float64), on)
+        out[r.stimulus_id] = FrameFeatures(r.stimulus_id, np.arange(n) * fs_enc.FRAME_S, x,
+                                           fs_enc.FRAME_S, {model: slice(0, x.shape[1])})
+    return out, names
+
+
+def load_film_text(stimfeat: Path, rows: pd.DataFrame, model: str, onsets: pd.DataFrame,
+                   grid: dict[str, int]) -> tuple[dict[str, FrameFeatures], list[str]]:
+    src = Path(stimfeat) / "psytwill" / f"{TEXT_TABLE}_features.parquet"
+    long = pd.read_parquet(src, columns=["stimulus_id", "chunk_idx", "word_idx", "model", "feature", "value"],
+                           filters=[("model", "==", model), ("stimulus_id", "in", sorted(rows["stimulus_id"]))])
+    for sid in rows["stimulus_id"]:  # a film with no speech has no rows; one with speech has them all
+        if long["stimulus_id"].eq(sid).any() != onsets["stimulus_id"].eq(sid).any():
+            raise RuntimeError(f"{model} {sid}: store rows and film tokens disagree on whether it has words")
+    return film_text_features(long, onsets, rows, model, grid)
+
+
 # ---------------------------------------------------------------------------
 # rescue spaces: a reduced block alone, or beside one member (psytwill-space-next settle 2)
 # ---------------------------------------------------------------------------
@@ -852,7 +1019,8 @@ def image_rescue_features(base: pd.DataFrame, member_long: pd.DataFrame | None, 
 
 
 def table_stream(table: str) -> str:
-    return "audio" if "audio" in table else "visual"
+    """The on/off column a TB table's modulators ride on: a TB word is the spoken word."""
+    return "audio" if "audio" in table or table == TEXT_TABLE else "visual"
 
 
 def tb_ts_runs(manifest: pd.DataFrame, sub: str, task: str = TB_TS_TASK) -> pd.DataFrame:
@@ -911,6 +1079,47 @@ def grid_wide(long: pd.DataFrame, model: str, stamp: str, n_bins: int) -> pd.Dat
     return w.reindex(index=range(n_bins), columns=sorted(w.columns))
 
 
+def word_grid(long: pd.DataFrame, model: str, n_bins: int, features: list[str] | None = None
+              ) -> tuple[pd.DataFrame, np.ndarray]:
+    """One text model's ``(n_bins, n_features)`` table on bin starts, and word-on.
+
+    A word (``chunk_idx``, ``word_idx``) belongs to the bin holding its ``onset``; a bin's value
+    is the mean of its words' defined values (NaN where it has none: no word, or every word
+    missing the feature); word-on marks the bins holding a word. ``features`` fixes the columns
+    (a stimulus with no words is all NaN). Copies of a word's row with one value are one row;
+    copies that disagree are an error.
+    """
+    d = long[long["model"] == model]
+    if d.empty and features is None:
+        raise KeyError(f"no rows for model {model!r}")
+    if d["onset"].isna().any():
+        raise RuntimeError(f"{model}: {int(d['onset'].isna().sum())} rows have no word onset")
+    b = np.floor(d["onset"].to_numpy(float) / fs_enc.FRAME_S + 1e-9).astype(int)
+    if b.size and (b.min() < 0 or b.max() >= n_bins):
+        raise RuntimeError(f"{model}: word onsets outside the {n_bins} bins")
+    key = ["chunk_idx", "word_idx", "feature"]
+    d = d.assign(bin=b)[key + ["bin", "value"]]
+    dup = d.duplicated(key, keep=False)
+    if dup.any():
+        n_val = d[dup].groupby(key)["value"].nunique(dropna=False)
+        if (n_val > 1).any():
+            raise RuntimeError(f"{model}: {int((n_val > 1).sum())} word features have copies with different values")
+        d = d.drop_duplicates(key)
+    on = np.zeros(n_bins, bool)
+    on[d["bin"].to_numpy()] = True
+    w = d.groupby(["bin", "feature"])["value"].mean().unstack("feature") if len(d) else pd.DataFrame()
+    cols = sorted(w.columns) if features is None else list(features)
+    extra = set(w.columns) - set(cols)
+    if extra:
+        raise RuntimeError(f"{model}: features {sorted(extra)[:3]} outside the expected {len(cols)}")
+    return w.reindex(index=range(n_bins), columns=cols).astype(np.float64), on
+
+
+def model_wide(long: pd.DataFrame, model: str, stamp: str, n_bins: int) -> pd.DataFrame:
+    """``grid_wide``, or ``word_grid``'s table for a word-stamped (text) table."""
+    return word_grid(long, model, n_bins)[0] if stamp == WORD_STAMP else grid_wide(long, model, stamp, n_bins)
+
+
 def stream_on(long: pd.DataFrame, stamp: str, n_bins: int) -> np.ndarray:
     """Bins where any model of the table has a value."""
     start = long["time"].to_numpy(dtype=float) - (fs_enc.FRAME_S / 2 if stamp == "center" else 0.0)
@@ -949,18 +1158,25 @@ def run_features(stem: str, tables: dict[str, tuple[pd.DataFrame, str]], space: 
 
     ``tables`` maps a composed table name to ``(long rows, stamp)``. With ``gated`` (model
     spaces), each model's declared-undefined features are nested gates (``gated_modulators``).
+    A text band's word-on must equal audio-on: one spoken word per audio-on bin.
     """
     on = {s: stream_on(*tables[t], n_bins) for s, t in on_tables.items()}
     blocks = [np.stack([on[s] for s in on_tables], axis=1).astype(np.float64)]
     bands, at = {"onoff": slice(0, len(on_tables))}, len(on_tables)
     for band, (table, model) in TB_TS_SPACES[space].items():
         long, stamp = tables[table]
+        if stamp == WORD_STAMP:
+            wide, word_on = word_grid(long, model, n_bins)
+            if not np.array_equal(word_on, on[table_stream(table)]):
+                raise RuntimeError(f"{stem} {band}: {int(word_on.sum())} word bins are not the "
+                                   f"{int(on[table_stream(table)].sum())} audio-on bins")
+        else:
+            wide = grid_wide(long, model, stamp, n_bins)
         if gated is None:
-            w = grid_wide(long, model, stamp, n_bins).to_numpy()
+            w = wide.to_numpy()
             blocks.append(modulators(w, on[table_stream(table)], f"{stem} {band}"))
         else:
-            w, _ = gated_modulators(grid_wide(long, model, stamp, n_bins), on[table_stream(table)],
-                                    gated.get(model, set()), f"{stem} {band}")
+            w, _ = gated_modulators(wide, on[table_stream(table)], gated.get(model, set()), f"{stem} {band}")
             blocks.append(w)
         bands[band] = slice(at, at + w.shape[1])
         at += w.shape[1]
@@ -1002,24 +1218,27 @@ def load_run_features(stimfeat: Path, run, space: str, n_bins: int,
         if table not in on_tables.values():
             need[table] = need.get(table) or set()
             need[table].add(model)
-    tables = {}
-    for table, models in need.items():
-        meta = json.loads((d / f"{table}_features.meta.json").read_text())
-        if abs(float(meta["grid"]["window"]) - fs_enc.FRAME_S) > 1e-9:
-            raise RuntimeError(f"{d / table}: grid window {meta['grid']['window']} is not {fs_enc.FRAME_S}")
-        cols = ["time", "model", "feature", "value"]
-        long = pd.read_parquet(d / f"{table}_features.parquet", columns=cols,
-                               filters=None if models is None else [("model", "in", sorted(models))])
-        tables[table] = (long, meta["grid"]["stamp"])
+    tables = {table: read_run_table(d, table, models) for table, models in need.items()}
     return run_features(run.stem, tables, space, n_bins, gated, on_tables)
+
+
+def read_run_table(d: Path, table: str, models: set[str] | None = None) -> tuple[pd.DataFrame, str]:
+    """A run's composed table rows (``models`` only, if given) and stamp: the grid's for a
+    gridded table, ``WORD_STAMP`` for the text table (stamped by word onset, no grid)."""
+    filters = None if models is None else [("model", "in", sorted(models))]
+    if table == TEXT_TABLE:
+        cols = ["onset", "chunk_idx", "word_idx", "model", "feature", "value"]
+        return pd.read_parquet(d / f"{table}_features.parquet", columns=cols, filters=filters), WORD_STAMP
+    meta = json.loads((d / f"{table}_features.meta.json").read_text())
+    if abs(float(meta["grid"]["window"]) - fs_enc.FRAME_S) > 1e-9:
+        raise RuntimeError(f"{d / table}: grid window {meta['grid']['window']} is not {fs_enc.FRAME_S}")
+    cols = ["time", "model", "feature", "value"]
+    return pd.read_parquet(d / f"{table}_features.parquet", columns=cols, filters=filters), meta["grid"]["stamp"]
 
 
 def _first_table(stimfeat: Path, run, table: str) -> tuple[pd.DataFrame, str]:
     """A run's composed table rows and stamp (for its feature names)."""
-    d = tb_run_dir(stimfeat, run.sub, run.ses, run.stem)
-    meta = json.loads((d / f"{table}_features.meta.json").read_text())
-    return (pd.read_parquet(d / f"{table}_features.parquet", columns=["time", "model", "feature", "value"]),
-            meta["grid"]["stamp"])
+    return read_run_table(tb_run_dir(stimfeat, run.sub, run.ses, run.stem), table)
 
 
 def tb_ts_design(runs: pd.DataFrame, feats: dict[str, FrameFeatures], cleaned: Path):
@@ -1099,9 +1318,11 @@ class Request:
                              f"{RESCUE_PREFIX}<block>[+<member>]")
         if (model_space or joint) and args.register == "tb-enc":
             raise SystemExit("model and joint spaces run on the films and tb-enc-ts registers")
-        if args.space in (ONOFF_SPACE, VOICE_SPACE) and args.register not in TS_REGISTERS:
-            raise SystemExit(f"{args.space} runs on the time-series TB registers only: every film bin is "
-                             "on, and tb-enc has no time course")
+        if args.space == VOICE_SPACE and args.register not in TS_REGISTERS:
+            raise SystemExit(f"{args.space} runs on the time-series TB registers only: it rides on a TB "
+                             "word's audio-on bin")
+        if args.space == ONOFF_SPACE and args.register == "tb-enc":
+            raise SystemExit(f"{args.space} needs a time course: tb-enc has none")
         if args.register == "tb-ret-ts" and args.space not in RET_SPACES:
             raise SystemExit(f"tb-ret-ts plays the word alone, so its spaces are audio: {sorted(RET_SPACES)}")
         if rescue:  # two bands at read (b)'s solver, with per-group sums for the bootstrap
@@ -1137,27 +1358,46 @@ class Request:
                               "member": member, "modulators": "each band minus its mean over the film window's bins",
                               **({"member_source": str(paths.stimfeat / "psytwill" / f"{RESCUE_FILM_TABLE[block]}_features.parquet"),
                                   "gates": gates} if member else {})}
-            elif joint:
+            elif joint or model_space or args.space == ONOFF_SPACE:
+                models = list(TB_TS_SPACES[args.space])
+                text = [m for m in models if MODEL_SPACES[f"{MODEL_PREFIX}{m}"][0] == TEXT_TABLE]
+                word_on = film_word_on_space(args.space)
                 parts, gates = [], {}
-                for m in TB_TS_SPACES[args.space]:
-                    feats, names = load_film_model(paths.stimfeat, self.rows, f"{MODEL_PREFIX}{m}")
-                    feats, gates[m] = prune_indicators(feats, m, names)
+                if word_on or text:
+                    onsets = film_word_onsets(paths.stimfeat)
+                    grid = film_grid(paths.stimfeat, self.rows)
+                if word_on:
+                    parts.append(film_word_on(onsets, self.rows, grid))
+                for m in models:
+                    if m in text:
+                        feats, _ = load_film_text(paths.stimfeat, self.rows, m, onsets, grid)
+                    else:
+                        feats, names = load_film_model(paths.stimfeat, self.rows, f"{MODEL_PREFIX}{m}")
+                        feats, gates[m] = prune_indicators(feats, m, names)
                     parts.append(feats)
-                self.feats = stack_bands(parts)
-                self.label = {"space": args.space, "source": str(paths.stimfeat / "psytwill"),
-                              "extractors": {e: list(v) for e, v in joint_merge(args.space).items()},
-                              "weighting": JOINT_WEIGHTING,
-                              "modulators": "feature minus its mean over the film window's bins",
-                              "onoff": "none: every film bin is on in both streams (zero once centred)",
-                              "gates": gates}
-            elif model_space:
-                table, model = MODEL_SPACES[args.space]
-                feats, names = load_film_model(paths.stimfeat, self.rows, args.space)
-                self.feats, gates = prune_indicators(feats, model, names)
-                self.label = {"space": args.space, "source": str(paths.stimfeat / "psytwill" / f"{table}_features.parquet"),
-                              "model": model, "modulators": "feature minus its mean over the film window's bins",
-                              "onoff": "none: every film bin is on in both streams (zero once centred)",
-                              "gates": gates}
+                self.feats = stack_bands(parts) if len(parts) > 1 else parts[0]
+                onoff = ("word-on: the window's bins holding a word onset (speech comes and goes "
+                         "within a film; every film bin is on in both other streams)" if word_on else
+                         "none: every film bin is on in both streams (zero once centred)")
+                self.label = {"space": args.space, "onoff": onoff}
+                if word_on or text:
+                    self.label["word_onsets"] = (f"{paths.stimfeat / FILM_TOKENS} tokens aligned to "
+                                                 f"movies/<film>/{FILM_ASR_WORDS} (film_word_onsets)")
+                if text:
+                    self.label["text"] = ("per bin, the mean of its words' defined values, minus its mean "
+                                          "over the window's word-on bins; missing stays undefined")
+                if joint:
+                    self.label.update(source=str(paths.stimfeat / "psytwill"),
+                                      extractors={e: list(v) for e, v in joint_merge(args.space).items()},
+                                      weighting=JOINT_WEIGHTING,
+                                      modulators="feature minus its mean over the film window's bins",
+                                      gates=gates)
+                elif model_space:
+                    table, model = MODEL_SPACES[args.space]
+                    self.label.update(source=str(paths.stimfeat / "psytwill" / f"{table}_features.parquet"),
+                                      model=model, gates=gates.get(model))
+                    if not text:
+                        self.label["modulators"] = "feature minus its mean over the film window's bins"
             else:
                 feats = frame_features(paths.features, args.space, self.rows["stimulus_id"])
                 self.feats = {f.stimulus_id: f for f in feats}
@@ -1202,7 +1442,7 @@ class Request:
                     if table not in tables:
                         tables[table] = _first_table(paths.stimfeat, first, table)
                     long, stamp = tables[table]
-                    names = list(grid_wide(long, model, stamp, n).columns)
+                    names = list(model_wide(long, model, stamp, n).columns)
                     names += [f"{c}:defined" for c in names if c in gated.get(model, set())]
                     self.feats, gates[model] = prune_indicators(self.feats, band, names)
                 self.label["gates"] = gates if joint else gates[model]
