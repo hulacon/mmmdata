@@ -10,69 +10,28 @@ The [mmmdata](https://github.com/hulacon/mmmdata) code repository includes an
 [MCP](https://modelcontextprotocol.io) server that lets an AI agent, such as
 Claude Code or Claude Science, query a copy of the dataset: BIDS contents, the
 data catalog, QC metrics, stimulus features and plots. This page covers
-joining the lab's Claude workspace, a short start for anyone new to Claude
-Code, and running the server against your own copy.
+running the server against your own copy.
 
 > **Copies shared with collaborators** have defaced anatomical images and
 > contain no recordings of participants' voices. Collaborators outside the
 > University of Oregon get one through Globus; see [Access](shared/access.md).
 > The server works the same on any copy.
 
-## Joining the lab's Claude workspace
+## Getting started
 
-The lab's Claude use is supported by Anthropic's
-[AI for Science](https://www.anthropic.com/news/ai-for-science-program) program, through a
-shared claude.ai **Team workspace**. Collaborators can join it; their use of
-claude.ai, Claude Code and Claude Science then draws on the lab's credits
-rather than their own plan.
-
-1. **Request an invite** from J. Benjamin Hutchinson
-   ([bhutch@uoregon.edu](mailto:bhutch@uoregon.edu)), giving the email address
-   you want to use. If your institution blocks outside Claude workspaces, use
-   another address (a personal Gmail address works).
-2. **Accept the invite**, then wait for Ben to set your usage limit. Until he
-   does, the account works but cannot spend credits. Changes can take about a
-   day to take effect.
-3. **Sign in to every Claude tool with the workspace account**, not a personal
-   one. A personal login bills your own plan.
-4. **Ask Ben for the program's onboarding material** if it would help: its
-   onboarding guide (what the credits cover, setting up Claude Code and Claude
-   Science), its community forum and its monthly webinar.
-
-Anything you share with the whole workspace, such as a chat Project, is
-visible to every member, including members at other institutions.
-
-## New to Claude Code?
-
-[Claude Code](https://code.claude.com/docs/en/overview) is an AI assistant that
-runs in your terminal (there are also desktop and IDE versions). It reads and
-edits files in the directory you start it from and runs commands, asking your
-permission first. A few things to know before the setup steps below:
-
-- **Install and sign in** with Anthropic's
-  [quickstart](https://code.claude.com/docs/en/quickstart). When it asks how to
-  sign in, choose your Claude (claude.ai) account and pick the lab workspace.
-  `/status` shows which account a session is using.
-- **Don't set `ANTHROPIC_API_KEY`** in the shell you start Claude Code from.
-  With a key set, Claude Code can bill that key's account instead of your
-  workspace login.
-- **Read permission prompts before approving them.** Claude asks before it
-  runs a command or edits a file. The server's default toolsets only read the
-  dataset (step 3), so querying your copy cannot change it.
-- **Talk to it in plain language.** Once the server is attached (step 4), try
-  "Which subjects and sessions are in my copy?", "What QC metrics are there
-  for subject ##?" or "Plot the memorability scores of the shared images".
-  Claude picks the tools; you do not need to know their names.
-- **Useful commands:** `/mcp` shows whether the server is connected, `/help`
-  lists the rest. Start a new session after changing the server's config.
+Lab members and collaborators: start with the getting-started guide in the
+lab's `mmmdata-standards` repository (ask J. Benjamin Hutchinson,
+[bhutch@uoregon.edu](mailto:bhutch@uoregon.edu), for access). It covers
+getting a copy of the data, joining the lab's Claude workspace, and the lab's
+analysis standards. This page is the reference for the MCP server itself.
 
 ## What the server is
 
 - `bin/mmmdata-mcp` starts the server (`src/python/mmmdata_mcp`). It speaks
   MCP over stdio, so the client launches it as a local command.
-- Every path comes from `config/base.toml`, overlaid by `config/local.toml`.
-  Nothing in the code names a host, so pointing `local.toml` at your copy is
-  the only change needed.
+- Every path comes from `config/base.toml`, overlaid by `config/local.toml`
+  and the `MMMDATA_BIDS_ROOT` environment variable. Nothing in the code names
+  a host, so pointing the root at your copy is the only change needed.
 - Tools return JSON. Subject and session arguments take bare labels (`"##"`)
   unless a tool's description says otherwise.
 
@@ -94,10 +53,16 @@ No package install of mmmdata itself is needed: the launcher puts
 `src/python` on the path. `MMMDATA_MCP_PYTHON` tells the launcher which
 interpreter to use; without it, it uses `python3` from your `PATH`.
 
-## 2. Point `config/local.toml` at your copy
+## 2. Point the server at your copy
 
 `base.toml` names the lab's own storage, which does not exist on your
-machine. Copy the example and set the roots the server reads:
+machine. Set the dataset root, either in the environment:
+
+```bash
+export MMMDATA_BIDS_ROOT=/path/to/mmmdata
+```
+
+or in `config/local.toml` (gitignored; deep-merged over `base.toml`):
 
 ```bash
 cd /path/to/mmmdata-code
@@ -105,15 +70,13 @@ cp config/local.toml.example config/local.toml
 ```
 
 ```toml
-# config/local.toml (gitignored; deep-merged over base.toml)
 [paths]
 bids_project_dir = "/path/to/mmmdata"
-output_dir = "/path/to/mmmdata/derivatives"
-inventory_dir = "/path/to/mmmdata/inventory"
 ```
 
-Every root a tool uses must exist. As an alternative to editing the
-checkout, set `MMMDATA_CONFIG_DIR` to a directory holding your own
+`derivatives/` and `inventory/` under the root follow it, so no other key
+needs setting. The environment variable wins over `local.toml`. As another
+alternative, set `MMMDATA_CONFIG_DIR` to a directory holding your own
 `base.toml`.
 
 Check it starts:
@@ -156,7 +119,8 @@ Put a `.mcp.json` in the directory you start Claude Code from:
     "mmmdata": {
       "command": "/path/to/mmmdata-code/bin/mmmdata-mcp",
       "env": {
-        "MMMDATA_MCP_PYTHON": "/path/to/mmmdata-mcp-env/bin/python"
+        "MMMDATA_MCP_PYTHON": "/path/to/mmmdata-mcp-env/bin/python",
+        "MMMDATA_BIDS_ROOT": "/path/to/mmmdata"
       }
     }
   }
@@ -185,8 +149,8 @@ The configured root does not exist on this machine. It is not a sign that
 the data is empty. The error names the missing path and the config key it
 came from (for example `[paths] bids_project_dir`).
 
-1. Set that key in `config/local.toml` to the matching directory of your
-   copy (step 2).
+1. Set `MMMDATA_BIDS_ROOT`, or that key in `config/local.toml`, to the
+   matching directory of your copy (step 2).
 2. Check the directory exists and is readable by the user running the
    client.
 3. Restart the Claude session so the server reloads its config.
@@ -195,6 +159,8 @@ Of the default toolsets, `catalog` reads `inventory_dir` and the others read
 `bids_project_dir` (with QC outputs under `output_dir`). A partial copy can
 therefore make one toolset unavailable while the rest work.
 
-The `catalog` tools also need `inventory/catalog.duckdb` itself. It is built
-from the dataset by the lab's catalog engine and may not be in your copy;
-without it, the catalog calls fail.
+The `catalog` tools also need `inventory/catalog.duckdb` itself. It is not
+part of a shared copy: build it on yours with the lab's catalog engine,
+[duckbrain](https://github.com/hulacon/duckbrain)
+(`python -m duckbrain.catalog rebuild --root /path/to/mmmdata`), and rebuild
+after adding data. Without it, the catalog calls fail.
