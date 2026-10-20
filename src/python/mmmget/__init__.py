@@ -11,6 +11,9 @@ the lab's standards come with the data:
     v1 = mmmget.roi("##", "schaefer400-7:LH_Vis_1")
     mmmget.write_result(table, spec, out_dir, "<stem>")      # mmmview-valid + provenance
 
+and ``mmmview check <out_dir>`` confirms a results directory still meets the
+page contract and says which results lack standard provenance.
+
 Each getter records what it was asked for (``provenance_records()``), and
 ``write_result`` stamps that record, with ``__version__``, into the result's
 spec, so a result says whether it followed the standard path. Escape hatches

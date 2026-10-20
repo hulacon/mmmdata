@@ -9,6 +9,7 @@ mmmview.py — one path into the dataset in, the right interactive view out.
     mmmview prf [SUB] [--space S] [--r2-floor F]
     mmmview stimfeat [SET [MODEL]] [--film F] [--grain G]
     mmmview stimfeat tb [SUB [SES [RUN]]]
+    mmmview check PATH [--strict] [--format text|json|github]
     mmmview serve | reap ...
 
 The label verbs (glm, prf, stimfeat) open results by name rather than by
@@ -3025,8 +3026,13 @@ def stimfeat_main(argv):
     return _render_and_open(plans, opts, args.no_open, index_features=True)
 
 
+def check_main(argv):
+    from resultsview import check as resultscheck
+    return resultscheck.main(argv)
+
+
 VERBS = {"serve": serve_main, "reap": reap_main, "glm": glm_main,
-         "prf": prf_main, "stimfeat": stimfeat_main}
+         "prf": prf_main, "stimfeat": stimfeat_main, "check": check_main}
 
 
 def main(argv=None):
