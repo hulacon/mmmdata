@@ -250,5 +250,19 @@
       "source": "colleague's initial QC (slides 'MMM Data Cleaning Regimes', 2026-09-16); confirmed against their regression code 2026-09-28 (data-quality log)"
     }
   },
+  "comparison_sets": {
+    "standard": {
+      "regimes": [
+        "none",
+        "base",
+        "basecsfwm",
+        "baseacc6",
+        "base12fdacc20",
+        "gsr"
+      ],
+      "description": "The regimes a result is compared across to show whether it holds up under denoising choices that rank differently depending on the measure: the intercept-only floor, motion only, motion + mean CSF/WM, motion + 6 aCompCor, 12 motion + FD + 20 aCompCor, and global signal alone. gsr has no drift model; the other five use linear + quadratic drift.",
+      "source": "mmmdata-agents lab-code-standards D3, decided 2026-10-20"
+    }
+  },
   "sha256": "af8965e68db1e827"
 }

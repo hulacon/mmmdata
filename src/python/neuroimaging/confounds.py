@@ -120,6 +120,68 @@ def confirmed_regimes(path: Path = SPEC_PATH) -> list[str]:
     return [n for n, r in load_regimes(path).items() if not r.provisional]
 
 
+@dataclasses.dataclass(frozen=True)
+class ComparisonSet:
+    """A named list of regimes a result is compared across.
+
+    Sets live in the ``comparison_sets`` block of the reference spec, beside
+    the regimes. ``standard`` is the lab's default. ``version`` digests the
+    set's name and each member's own regime version, so a result can say
+    exactly which definitions it was compared across, and changing a member
+    regime or the membership changes it.
+    """
+
+    name: str
+    regimes: tuple[str, ...]
+    regime_versions: tuple[str, ...]
+    description: str = ""
+    source: str = ""
+
+    @property
+    def version(self) -> str:
+        content = {"name": self.name, "regimes": dict(zip(self.regimes, self.regime_versions))}
+        return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def load_comparison_sets(path: Path = SPEC_PATH) -> dict[str, ComparisonSet]:
+    """Every comparison set, checked against the registry it names.
+
+    A member must be a registry regime, not provisional, and listed once.
+    """
+    spec = load_reference_spec(path)
+    regimes = {n: _regime_from_entry(n, e) for n, e in spec["confound_regimes"].items()}
+    sets = {}
+    for name, entry in spec.get("comparison_sets", {}).items():
+        members = tuple(entry.get("regimes", ()))
+        if not members:
+            raise ValueError(f"Comparison set {name!r} names no regimes")
+        if len(set(members)) != len(members):
+            raise ValueError(f"Comparison set {name!r} lists a regime twice: {list(members)}")
+        unknown = [m for m in members if m not in regimes]
+        if unknown:
+            raise ValueError(f"Comparison set {name!r} names {unknown}, not in the registry "
+                             f"({sorted(regimes)})")
+        provisional = [m for m in members if regimes[m].provisional]
+        if provisional:
+            raise ValueError(f"Comparison set {name!r} includes provisional regime(s) "
+                             f"{provisional}; confirm them first")
+        sets[name] = ComparisonSet(
+            name=name,
+            regimes=members,
+            regime_versions=tuple(regimes[m].version for m in members),
+            description=entry.get("description", ""),
+            source=entry.get("source", ""),
+        )
+    return sets
+
+
+def get_comparison_set(name: str, path: Path = SPEC_PATH) -> ComparisonSet:
+    sets = load_comparison_sets(path)
+    if name not in sets:
+        raise KeyError(f"Unknown comparison set {name!r}; the registry has {sorted(sets)}")
+    return sets[name]
+
+
 class RegimeNotApplicable(KeyError):
     """The run cannot carry this regime: fMRIPrep wrote fewer aCompCor components than it asks for.
 

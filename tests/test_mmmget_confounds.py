@@ -1,7 +1,9 @@
-"""mmmget.confounds(): regimes through the registry; D3 surfaced; escape hatch marked."""
+"""mmmget.confounds(): regimes through the registry; the D3 comparison set; escape hatch marked."""
 
 import dataclasses
 
+import numpy as np
+import pandas as pd
 import pytest
 
 import mmmget
@@ -35,11 +37,51 @@ def test_several_regimes_by_name(run):
     assert out["baseacc6"].n_regressors == 6 + 6 + 2
 
 
-def test_standard_set_raises_naming_d3(run):
-    with pytest.raises(mmmget.OpenDecisionError, match="open decision D3") as exc:
-        mmmget.confounds(run, regimes="standard")
-    assert exc.value.decision == "D3"
-    assert "base" in str(exc.value)  # names what the registry does have
+STANDARD = ["none", "base", "basecsfwm", "baseacc6", "base12fdacc20", "gsr"]
+
+
+def _full_confounds(run, n_acompcor, n_vol=80):
+    """Every column the standard set reads, with *n_acompcor* aCompCor components."""
+    motion = ["trans_x", "trans_y", "trans_z", "rot_x", "rot_y", "rot_z"]
+    cols = (motion + [f"{m}_derivative1" for m in motion]
+            + ["framewise_displacement", "csf", "white_matter", "global_signal",
+               "non_steady_state_outlier00"]
+            + [f"a_comp_cor_{i:02d}" for i in range(n_acompcor)])
+    df = pd.DataFrame(np.random.default_rng(0).normal(size=(n_vol, len(cols))), columns=cols)
+    df["non_steady_state_outlier00"] = [1] + [0] * (n_vol - 1)
+    df.to_csv(run.confounds, sep="\t", index=False, na_rep="n/a")
+
+
+def test_standard_set_is_the_d3_decision():
+    cset = registry.get_comparison_set("standard")
+    assert list(cset.regimes) == STANDARD
+
+
+def test_standard_set_returns_every_member(run):
+    _full_confounds(run, n_acompcor=20)
+    out = mmmget.confounds(run, regimes="standard")
+    assert list(out) == STANDARD and out.absent == {}
+    assert out.comparison_set == "standard"
+    assert out.version == registry.get_comparison_set("standard").version
+    set_rec = [r for r in mmmget.provenance_records() if "comparison_set" in r]
+    assert set_rec == [{"getter": "confounds", "standard": True, "comparison_set": "standard",
+                        "comparison_set_version": out.version}]
+    assert {r.get("regime") for r in mmmget.provenance_records()} >= set(STANDARD)
+
+
+def test_member_the_run_cannot_carry_is_declared_absent(run):
+    _full_confounds(run, n_acompcor=6)  # base12fdacc20 needs 20
+    out = mmmget.confounds(run, regimes="standard")
+    assert "base12fdacc20" not in out and list(out.absent) == ["base12fdacc20"]
+    assert "20" in out.absent["base12fdacc20"]
+    assert out.members == tuple(STANDARD)
+    (set_rec,) = [r for r in mmmget.provenance_records() if "comparison_set" in r]
+    assert set_rec["standard"] is True and set_rec["absent_regimes"] == ["base12fdacc20"]
+
+
+def test_unknown_comparison_set(run):
+    with pytest.raises(KeyError, match="comparison set 'nope'"):
+        mmmget.confounds(run, regimes="nope")
 
 
 def test_columns_escape_hatch_works_and_is_non_standard(run):

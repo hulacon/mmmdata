@@ -10,9 +10,25 @@ from neuroimaging import confounds as registry
 from neuroimaging.io import FmriprepRun, load_confounds
 
 from .provenance import record
-from .errors import OpenDecisionError
 
 STANDARD = "standard"
+
+
+class ComparisonDesigns(dict):
+    """``{regime: RegimeDesign}`` for one comparison set, on one run.
+
+    A member the run cannot carry (too few aCompCor components) is left out
+    of the mapping and listed in :attr:`absent` with the reason: declared
+    absent, never filled with a smaller design.
+    """
+
+    def __init__(self, comparison_set: registry.ComparisonSet,
+                 designs: dict[str, registry.RegimeDesign], absent: dict[str, str]):
+        super().__init__(designs)
+        self.comparison_set = comparison_set.name
+        self.version = comparison_set.version
+        self.members = comparison_set.regimes
+        self.absent = absent
 
 
 def confounds(
@@ -21,7 +37,7 @@ def confounds(
     *,
     regimes: str | Sequence[str] | None = None,
     columns: Optional[Sequence[str]] = None,
-) -> registry.RegimeDesign | dict[str, registry.RegimeDesign] | pd.DataFrame:
+) -> registry.RegimeDesign | dict[str, registry.RegimeDesign] | ComparisonDesigns | pd.DataFrame:
     """A run's confound regressors, by regime name.
 
     Give exactly one of:
@@ -31,10 +47,14 @@ def confounds(
         ``confound_regimes`` block of ``glm/reference_spec.json``). Returns
         its :class:`~neuroimaging.confounds.RegimeDesign`: the regressor
         columns, the non-steady-state volumes, and the drift count.
+    ``regimes="standard"`` (or another comparison set's name)
+        The lab's comparison set (decision D3): every regime a result is
+        compared across, as a :class:`ComparisonDesigns` mapping. Members
+        the run cannot carry are in its ``.absent``, not in the mapping.
+        The set's name and version are recorded.
     ``regimes=[...]``
-        Several regimes at once: ``{name: RegimeDesign}``.
-        ``regimes="standard"`` will mean the lab's comparison set; it raises
-        :class:`~mmmget.errors.OpenDecisionError` until that set is chosen.
+        Several regimes by name: ``{name: RegimeDesign}``. A regime the run
+        cannot carry raises :class:`~neuroimaging.confounds.RegimeNotApplicable`.
     ``columns=[...]``
         The escape hatch: these raw fMRIPrep columns, as a DataFrame, with
         no drift or non-steady-state handling. Works, and is recorded as
@@ -56,17 +76,17 @@ def confounds(
 
     if regimes is not None:
         if isinstance(regimes, str):
-            if regimes != STANDARD:
-                raise ValueError(
-                    f"regimes={regimes!r}: pass a list of regime names, or "
-                    f"{STANDARD!r} for the comparison set")
-            raise OpenDecisionError(
-                "D3",
-                "the lab's standard comparison set of confound regimes has not "
-                "been chosen, so confounds(run, regimes='standard') has nothing "
-                "to return. Name the regimes you compare instead, e.g. "
-                f"confounds(run, regimes=[...]); the registry has "
-                f"{sorted(registry.load_regimes())}.")
+            cset = registry.get_comparison_set(regimes)
+            designs, absent = {}, {}
+            for name in cset.regimes:
+                try:
+                    designs[name] = confounds(run, regime=name)
+                except registry.RegimeNotApplicable as exc:
+                    absent[name] = str(exc)
+            record("confounds", standard=True, comparison_set=cset.name,
+                   comparison_set_version=cset.version,
+                   absent_regimes=sorted(absent) or None)
+            return ComparisonDesigns(cset, designs, absent)
         return {name: confounds(run, regime=name) for name in regimes}
 
     reg = registry.get_regime(regime)

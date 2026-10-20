@@ -8,7 +8,8 @@ map in MMMData is fitted to one resolved specification rather than to whatever
 module, so it can be cited, hashed and read without importing any code.
 :func:`reference_config` is how code turns it into a :class:`~.config.GlmConfig`.
 
-Frozen means: ``sha256`` covers every key except ``confound_regimes``, and
+Frozen means: ``sha256`` covers every key except ``confound_regimes`` and
+``comparison_sets`` (named lists of regimes; see ``neuroimaging.confounds``), and
 :func:`load_reference_spec` refuses a file whose content no longer matches it.
 Regimes may GROW — a new named regime is an extension, not a change — but a
 regime already marked ``frozen`` may not change (the bake-off harness's rule,
@@ -28,9 +29,10 @@ from .config import GlmConfig
 
 SPEC_PATH = Path(__file__).with_name("reference_spec.json")
 
-#: Keys outside the frozen digest: the digest itself, and the regimes, which
-#: may grow (a regime's own ``status`` says whether it may still change).
-UNHASHED_KEYS: tuple[str, ...] = ("sha256", "confound_regimes")
+#: Keys outside the frozen digest: the digest itself, the regimes, which may
+#: grow (a regime's own ``status`` says whether it may still change), and the
+#: comparison sets, which carry their own version digest.
+UNHASHED_KEYS: tuple[str, ...] = ("sha256", "confound_regimes", "comparison_sets")
 
 #: GlmConfig fields a regime supplies; every other field comes from ``config``.
 #: The drift fields are the regime's only when it declares a non-cosine drift;
