@@ -517,6 +517,10 @@ MODEL_PREFIX = "model-"
 TEXT_TABLE = "movies_transcript_words"
 #: A text table's stamp: rows carry a word's ``onset``, not a grid time.
 WORD_STAMP = "onset"
+#: Text features left out on every register. ``wordform_n_phonemes`` is undefined for a word
+#: missing from the pronouncing dictionary; on films such words can hold every on-bin of a
+#: volume/delay span, which ``binned`` refuses. Length and syllables carry nearly the same.
+TEXT_DROPPED = frozenset({"wordform_n_phonemes"})
 MODEL_TABLES = {
     "movies_frames": ("aesthetics", "clip", "depth", "dinov2", "ebind", "emonet", "faces", "gist",
                       "llstat", "places", "resmem", "saliency", "yolo"),
@@ -885,6 +889,7 @@ def load_film_text(stimfeat: Path, rows: pd.DataFrame, model: str, onsets: pd.Da
     src = Path(stimfeat) / "psytwill" / f"{TEXT_TABLE}_features.parquet"
     long = pd.read_parquet(src, columns=["stimulus_id", "chunk_idx", "word_idx", "model", "feature", "value"],
                            filters=[("model", "==", model), ("stimulus_id", "in", sorted(rows["stimulus_id"]))])
+    long = long[~long["feature"].isin(TEXT_DROPPED)]
     for sid in rows["stimulus_id"]:  # a film with no speech has no rows; one with speech has them all
         if long["stimulus_id"].eq(sid).any() != onsets["stimulus_id"].eq(sid).any():
             raise RuntimeError(f"{model} {sid}: store rows and film tokens disagree on whether it has words")
@@ -1228,7 +1233,8 @@ def read_run_table(d: Path, table: str, models: set[str] | None = None) -> tuple
     filters = None if models is None else [("model", "in", sorted(models))]
     if table == TEXT_TABLE:
         cols = ["onset", "chunk_idx", "word_idx", "model", "feature", "value"]
-        return pd.read_parquet(d / f"{table}_features.parquet", columns=cols, filters=filters), WORD_STAMP
+        long = pd.read_parquet(d / f"{table}_features.parquet", columns=cols, filters=filters)
+        return long[~long["feature"].isin(TEXT_DROPPED)], WORD_STAMP
     meta = json.loads((d / f"{table}_features.meta.json").read_text())
     if abs(float(meta["grid"]["window"]) - fs_enc.FRAME_S) > 1e-9:
         raise RuntimeError(f"{d / table}: grid window {meta['grid']['window']} is not {fs_enc.FRAME_S}")

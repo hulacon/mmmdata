@@ -797,3 +797,12 @@ def test_roi_columns_keep_masked_valid_columns_and_drop_small_rois(rescue):
     valid = np.array([1, 1, 1, 1, 0, 1, 1, 1, 1, 1], bool)
     got = rescue.roi_columns(labels, mask, valid, min_cols=3)
     assert list(got) == ["a"] and got["a"].tolist() == [0, 1, 2]
+
+
+def test_a_run_text_table_drops_the_left_out_features(harness, tmp_path):
+    rows = [{"onset": 1.0, "chunk_idx": 0, "word_idx": 0, "model": "wordform", "feature": f, "value": 3.0}
+            for f in ("wordform_length", *sorted(harness.TEXT_DROPPED))]
+    pd.DataFrame(rows).to_parquet(tmp_path / f"{harness.TEXT_TABLE}_features.parquet")
+    long, stamp = harness.read_run_table(tmp_path, harness.TEXT_TABLE, {"wordform"})
+    assert stamp == harness.WORD_STAMP
+    assert set(long["feature"]) == {"wordform_length"}
