@@ -102,6 +102,7 @@ def _hipp(subject, name, region, space, cfg) -> ROI:
     cat_space, cat_res = split_space(space)
     root = _config.bids_root()
     db = catalog.catalog_path(root)
+    catalog.check_root(db, root)
     _, rows = catalog.run_select(
         db,
         "SELECT dataset_relpath, path FROM files WHERE dataset_relpath = ? "

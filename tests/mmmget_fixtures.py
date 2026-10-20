@@ -42,6 +42,7 @@ CONFOUND_COLS = ["trans_x", "trans_y", "trans_z", "rot_x", "rot_y", "rot_z",
                  *[f"a_comp_cor_{i:02d}" for i in range(6)],
                  "cosine00", "cosine01"]
 N_VOL = 12
+SWEPT_AT = "2026-01-02T03:04:05+00:00"
 PERSON = "reviewer-a"
 
 
@@ -112,6 +113,10 @@ def _write_catalog(db: Path, rows, derivatives) -> None:
     con.execute("CREATE TABLE datasets (relpath VARCHAR, kind VARCHAR)")
     for relpath in [".", *derivatives]:
         con.execute("INSERT INTO datasets VALUES (?, 'canonical')", [relpath])
+    # the sweep report duckbrain stores: the tree it walked, and when
+    con.execute("CREATE TABLE sweep_meta (key VARCHAR, value VARCHAR)")
+    con.execute("INSERT INTO sweep_meta VALUES ('report', ?)", [json.dumps(
+        {"root": str(db.parent.parent), "started_at": SWEPT_AT})])
     con.close()
 
 

@@ -2352,3 +2352,27 @@ class TestStimfeatVerb:
         (plan,) = built
         assert plan.renderer == "movies"
         assert plan.out.parts[-4] == "movies" and plan.out.name == "index.html"
+
+
+def test_catalog_underlay_resolves_against_the_configured_root(tmp_path):
+    """On a copy, the catalog's absolute `root` column names the tree it was
+    swept from; the underlay must come from the copy, via the relative path."""
+    duckdb = pytest.importorskip("duckdb")
+    bids = tmp_path / "copy"
+    rel = "sub-01/ses-01/func/sub-01_ses-01_task-memory_desc-coreg_boldref.nii.gz"
+    f = bids / "derivatives" / "fmriprep" / rel
+    f.parent.mkdir(parents=True)
+    f.write_bytes(b"")
+    db = bids / "inventory" / "catalog.duckdb"
+    db.parent.mkdir(parents=True)
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE files (sub VARCHAR, ses VARCHAR, task VARCHAR, "
+                "\"desc\" VARCHAR, suffix VARCHAR, ext VARCHAR, space VARCHAR, "
+                "res VARCHAR, root VARCHAR, dataset_relpath VARCHAR, path VARCHAR)")
+    con.execute("INSERT INTO files VALUES ('01', '01', 'memory', 'coreg', 'boldref', "
+                "'.nii.gz', NULL, NULL, '/cluster/mmmdata/derivatives/fmriprep', "
+                "'derivatives/fmriprep', ?)", [rel])
+    con.close()
+    roots = Roots(bids / "derivatives", bids, None, db)
+    got = mmmview._catalog_underlay({"sub": "01", "ses": "01", "task": "memory"}, roots)
+    assert got == [f]

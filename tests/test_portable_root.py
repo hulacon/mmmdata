@@ -118,3 +118,29 @@ def test_shell_loader_follows_the_env_root(tmp_path):
         env=env, capture_output=True, text=True, check=True).stdout.strip()
     assert out == f"{tmp_path}|{tmp_path / 'derivatives'}|{tmp_path / 'inventory'}"
 
+
+
+def test_catalog_built_for_another_root_is_refused(copy_root, tmp_path):
+    """A copy carrying the cluster's catalog: its file list is the cluster's."""
+    import duckdb
+    from core.catalog import CatalogRootMismatch
+
+    con = duckdb.connect(str(copy_root / "inventory" / "catalog.duckdb"))
+    con.execute("UPDATE sweep_meta SET value = ?",
+                ['{"root": "/cluster/mmmdata", "started_at": "x"}'])
+    con.close()
+    from tests.mmmget_fixtures import SUBFIELD_TOML
+    local = tmp_path / "config" / "local.toml"
+    local.write_text(local.read_text() + SUBFIELD_TOML)
+    with pytest.raises(CatalogRootMismatch, match="duckbrain.catalog rebuild --root"):
+        mmmget.runs(subject="01", task="memory")
+    with pytest.raises(CatalogRootMismatch):
+        mmmget.roi("sub-01", "hipp:LH_CA1", space="T1w")
+
+
+def test_runs_records_when_the_catalog_was_swept(copy_root):
+    from tests.mmmget_fixtures import SWEPT_AT
+
+    mmmget.runs(subject="01", task="memory")
+    (rec,) = mmmget.provenance_records()
+    assert rec["catalog_swept_at"] == SWEPT_AT

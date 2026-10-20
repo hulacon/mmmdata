@@ -792,12 +792,12 @@ def _catalog_underlay(entities, roots):
         from core import catalog
         space = entities.get("space")
         if space is None:
-            sql = ("SELECT root, path FROM files WHERE sub = ? AND ses = ? "
+            sql = ("SELECT dataset_relpath, path FROM files WHERE sub = ? AND ses = ? "
                    "AND task = ? AND \"desc\" = 'coreg' AND suffix = 'boldref' "
                    "AND ext = '.nii.gz' AND space IS NULL")
             params = [entities["sub"], entities["ses"], entities["task"]]
         else:
-            sql = ("SELECT root, path FROM files WHERE sub = ? AND ses IS NULL "
+            sql = ("SELECT dataset_relpath, path FROM files WHERE sub = ? AND ses IS NULL "
                    "AND \"desc\" = 'preproc' AND suffix = 'T1w' AND ext = "
                    "'.nii.gz' AND space IS NOT DISTINCT FROM ?")
             params = [entities["sub"], None if space == "T1w" else space]
@@ -810,7 +810,11 @@ def _catalog_underlay(entities, roots):
     fp = (roots.deriv / "fmriprep").resolve()
     out = []
     for r in rows:
-        p = Path(r["root"]) / r["path"] if r.get("root") else Path(r["path"])
+        # root-relative, not the absolute `root` column: that names the tree
+        # the catalog was swept from, which a copy of the dataset is not
+        rel = r.get("dataset_relpath")
+        base = roots.bids if rel in (None, "", ".") else roots.bids / rel
+        p = base / r["path"]
         if p.exists() and str(p.resolve()).startswith(str(fp)):
             out.append(p)
     return sorted(set(out))
