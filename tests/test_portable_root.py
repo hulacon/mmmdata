@@ -144,3 +144,15 @@ def test_runs_records_when_the_catalog_was_swept(copy_root):
     mmmget.runs(subject="01", task="memory")
     (rec,) = mmmget.provenance_records()
     assert rec["catalog_swept_at"] == SWEPT_AT
+
+
+def test_mmmview_check_reads_only_the_copy(copy_root, tmp_path):
+    """`mmmview check` on a result written against the copy touches no dataset path."""
+    from resultsview import check
+
+    mmmget.reset_provenance()
+    (run,) = mmmget.runs(subject="01", task="memory", run=1)
+    mmmget.write_result([{"run": run.run, "n_regressors": 1}], SPEC, tmp_path / "res", "r")
+    with no_dataset_paths():
+        report = check.check(tmp_path / "res", strict=True)
+    assert report["exit_status"] == check.EXIT_OK, report
