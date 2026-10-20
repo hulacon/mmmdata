@@ -133,3 +133,56 @@ class TestFindConfigDir:
 # Run tests with pytest if executed directly
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+class TestDatasetRoot:
+    """One setting relocates the dataset: the dataset-internal paths follow."""
+
+    BASE = (
+        '[paths]\n'
+        'bids_project_dir = "/cluster/data"\n'
+        'output_dir = "/cluster/data/derivatives"\n'
+        'inventory_dir = "/cluster/data/inventory"\n'
+        'source_dir = "/cluster/source"\n'
+    )
+
+    @pytest.fixture
+    def config_dir(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MMMDATA_BIDS_ROOT", raising=False)
+        d = tmp_path / "config"
+        d.mkdir()
+        (d / "base.toml").write_text(self.BASE)
+        return d
+
+    def test_unmoved_root_changes_nothing(self, config_dir):
+        paths = load_config(config_dir)["paths"]
+        assert paths["output_dir"] == "/cluster/data/derivatives"
+
+    def test_local_root_moves_dataset_paths(self, config_dir):
+        (config_dir / "local.toml").write_text('[paths]\nbids_project_dir = "/copy"\n')
+        paths = load_config(config_dir)["paths"]
+        assert paths["output_dir"] == str(Path("/copy/derivatives"))
+        assert paths["inventory_dir"] == str(Path("/copy/inventory"))
+        # outside the dataset: not moved
+        assert paths["source_dir"] == "/cluster/source"
+
+    def test_explicit_local_key_wins(self, config_dir):
+        (config_dir / "local.toml").write_text(
+            '[paths]\nbids_project_dir = "/copy"\noutput_dir = "/elsewhere"\n')
+        paths = load_config(config_dir)["paths"]
+        assert paths["output_dir"] == "/elsewhere"
+        assert paths["inventory_dir"] == str(Path("/copy/inventory"))
+
+    def test_env_root_wins_over_local(self, config_dir, monkeypatch):
+        (config_dir / "local.toml").write_text('[paths]\nbids_project_dir = "/copy"\n')
+        monkeypatch.setenv("MMMDATA_BIDS_ROOT", "/env-copy")
+        paths = load_config(config_dir)["paths"]
+        assert paths["bids_project_dir"] == "/env-copy"
+        assert paths["output_dir"] == str(Path("/env-copy/derivatives"))
+
+    def test_unconventional_base_value_is_left_alone(self, config_dir, monkeypatch):
+        (config_dir / "base.toml").write_text(
+            self.BASE.replace('output_dir = "/cluster/data/derivatives"',
+                              'output_dir = "/scratch/derivs"'))
+        monkeypatch.setenv("MMMDATA_BIDS_ROOT", "/copy")
+        assert load_config(config_dir)["paths"]["output_dir"] == "/scratch/derivs"

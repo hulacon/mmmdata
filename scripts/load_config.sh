@@ -28,35 +28,24 @@ fi
 
 # Python script to extract config values from TOML
 read -r -d '' PYTHON_EXTRACT_CONFIG <<'EOF' || true  # read -d '' exits 1 at EOF; harmless, but fatal under set -e
+import importlib.util
 import os
 import sys
-import tomllib
 from pathlib import Path
 
-def deep_merge(base, override):
-    result = base.copy()
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
-
+# One loader for Python and shell: core/config.py (stdlib-only, loaded by
+# file so core/__init__'s pandas import is not needed here). It applies the
+# local.toml overlay, MMMDATA_BIDS_ROOT, and the dataset-relative paths.
 config_dir = Path(sys.argv[1])
-base_path = config_dir / 'base.toml'
-local_path = config_dir / 'local.toml'
-
-if not base_path.exists():
-    print(f"ERROR: Config file not found: {base_path}", file=sys.stderr)
+loader = config_dir.parent / 'src' / 'python' / 'core' / 'config.py'
+spec = importlib.util.spec_from_file_location('_mmmdata_config', loader)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+try:
+    config = mod.load_config(config_dir)
+except FileNotFoundError as exc:
+    print(f"ERROR: {exc}", file=sys.stderr)
     sys.exit(1)
-
-with open(base_path, 'rb') as f:
-    config = tomllib.load(f)
-
-if local_path.exists():
-    with open(local_path, 'rb') as f:
-        local_config = tomllib.load(f)
-        config = deep_merge(config, local_config)
 
 # Print in shell-friendly format. Path values may reference environment
 # variables (e.g. work_dir = "/tmp/$USER/..."); expand them here so shell

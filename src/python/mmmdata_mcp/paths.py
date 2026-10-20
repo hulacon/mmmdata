@@ -44,9 +44,9 @@ class DatasetUnavailable(FileNotFoundError):
             f"MMMData dataset not found: {self.path} (from {config_key}).\n"
             "This is expected off-cluster: config/base.toml points at "
             "Talapas GPFS.\n"
-            "To use a copy of the dataset, set that key in "
-            "config/local.toml (see config/local.toml.example), or point "
-            "MMMDATA_CONFIG_DIR at a config dir whose base.toml does."
+            "To use a copy of the dataset, set MMMDATA_BIDS_ROOT, or set "
+            "that key in config/local.toml (see config/local.toml.example), "
+            "or point MMMDATA_CONFIG_DIR at a config dir whose base.toml does."
         )
 
 
