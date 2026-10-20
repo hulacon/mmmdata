@@ -10,16 +10,14 @@
 # local copy of the dataset, and only your checkout is affected. Do NOT put
 # one in base.toml's place: if a path is wrong for everyone, fix base.toml.
 
-# Example: point at a local copy of the dataset when working off-cluster
-# [paths]
-# bids_project_dir = "/path/to/your/mmmdata"
-
-# Example: a copy of the dataset outside Talapas. The MCP server
-# (bin/mmmdata-mcp) reads these roots too; every one it uses must exist.
+# Example: a copy of the dataset outside Talapas (e.g. pulled over Globus).
+# The root is the only key you need: output_dir (derivatives/) and
+# inventory_dir (inventory/) move with it unless you set them here too.
+# Setting MMMDATA_BIDS_ROOT in the environment does the same without a file,
+# and wins over this one. The catalog does not travel with a copy; to have
+# one, run `python -m duckbrain.catalog rebuild --root <copy>`.
 # [paths]
 # bids_project_dir = "/path/to/mmmdata"
-# output_dir = "/path/to/mmmdata/derivatives"
-# inventory_dir = "/path/to/mmmdata/inventory"
 
 # Example: every MCP toolset, including the ones that write (maintainers)
 # [mcp]
