@@ -59,7 +59,8 @@ Text models have no nested gates: at word grain their values are only ever missi
 of a model's vocabulary), and a missing value stays undefined.
 
 Joint spaces (``joint-<extractor>[+<extractor>]``, tb-nat-encoding read (c)): the model
-spaces of each named extractor (``EXTRACTORS``), built per model exactly as above, fitted as
+spaces of each named extractor (``EXTRACTORS``; ``joint-top-…`` takes ``TOP_MODELS``, one model
+per extractor), built per model exactly as above, fitted as
 one kernel band per extractor (braintwill ``RidgeSpec.merge``): every model's columns are
 weighted so it contributes the same kernel trace to its band whatever its width. TB fits also
 carry ``onoff``, and films fits carry word-on whichever extractors they hold, so leaving
@@ -561,13 +562,23 @@ EXTRACTORS = {"viz2psy": tuple(m for m in MODEL_TABLES["movies_frames"] if m != 
               "aud2psy": MODEL_TABLES["movies_audio_frames"],
               "word2psy": MODEL_TABLES[TEXT_TABLE]}
 JOINT_PREFIX = "joint-"
-#: The first read (c) (viz2psy + aud2psy, and each alone), then the text pass's three-extractor
-#: fit and its two leave-one-outs that hold word2psy (leaving word2psy out is the first fit).
-JOINT_SPACES = {f"{JOINT_PREFIX}{'+'.join(c)}": c for c in (
+#: The reduced read (c) (tb-nat-encoding DECIDED 2026-10-20): each extractor's one model with the
+#: highest whole-brain films R² (99th percentile) in read (b) and the text pass. One model per
+#: band, so the band weights the random search tunes are per model, not shared by an extractor.
+TOP_MODELS = {"viz2psy": ("ebind",), "aud2psy": ("ebind_audio",), "word2psy": ("fasttext",)}
+TOP_PREFIX = f"{JOINT_PREFIX}top-"
+_THREE = ("viz2psy", "aud2psy", "word2psy")
+_LEAVE_ONE_OUT = tuple(tuple(e for e in _THREE if e != x) for x in reversed(_THREE))
+#: A joint space's kernel bands, extractor → its models. The first read (c) (viz2psy + aud2psy,
+#: and each alone); the text pass's three-extractor fit and its two leave-one-outs that hold
+#: word2psy (leaving word2psy out is the first fit); the reduced fit and its leave-one-outs.
+JOINT_SPACES = {f"{JOINT_PREFIX}{'+'.join(c)}": {e: EXTRACTORS[e] for e in c} for c in (
     ("viz2psy", "aud2psy"), ("viz2psy",), ("aud2psy",),
-    ("viz2psy", "aud2psy", "word2psy"), ("viz2psy", "word2psy"), ("aud2psy", "word2psy"))}
-TB_TS_SPACES.update({name: {m: MODEL_SPACES[f"{MODEL_PREFIX}{m}"] for e in c for m in EXTRACTORS[e]}
-                     for name, c in JOINT_SPACES.items()})
+    _THREE, ("viz2psy", "word2psy"), ("aud2psy", "word2psy"))}
+JOINT_SPACES.update({f"{TOP_PREFIX}{'+'.join(c)}": {e: TOP_MODELS[e] for e in c}
+                     for c in (_THREE, *_LEAVE_ONE_OUT)})
+TB_TS_SPACES.update({name: {m: MODEL_SPACES[f"{MODEL_PREFIX}{m}"] for ms in bands.values() for m in ms}
+                     for name, bands in JOINT_SPACES.items()})
 
 
 JOINT_WEIGHTING = "each model's columns 1/sqrt(width) after standardization (equal kernel trace per model)"
@@ -575,7 +586,7 @@ JOINT_WEIGHTING = "each model's columns 1/sqrt(width) after standardization (equ
 
 def joint_merge(space: str) -> dict[str, tuple[str, ...]]:
     """A joint space's kernel bands: extractor → its models, in band order."""
-    return {e: EXTRACTORS[e] for e in JOINT_SPACES[space]}
+    return dict(JOINT_SPACES[space])
 
 
 def film_word_on_space(space: str) -> bool:

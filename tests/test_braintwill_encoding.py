@@ -441,8 +441,9 @@ def test_joint_spaces_are_extractor_bands_of_the_read_b_models_without_places(ha
     assert "places" not in viz and set(viz) | {"places"} == set(harness.MODEL_TABLES["movies_frames"])
     assert aud == harness.MODEL_TABLES["movies_audio_frames"]
     both = "joint-viz2psy+aud2psy"
-    assert set(harness.JOINT_SPACES) == {both, "joint-viz2psy", "joint-aud2psy", "joint-viz2psy+aud2psy+word2psy",
-                                         "joint-viz2psy+word2psy", "joint-aud2psy+word2psy"}
+    assert {s for s in harness.JOINT_SPACES if not s.startswith(harness.TOP_PREFIX)} == {
+        both, "joint-viz2psy", "joint-aud2psy", "joint-viz2psy+aud2psy+word2psy",
+        "joint-viz2psy+word2psy", "joint-aud2psy+word2psy"}
     assert list(harness.TB_TS_SPACES[both]) == [*viz, *aud]
     assert harness.TB_TS_SPACES[both]["clap"] == harness.MODEL_SPACES["model-clap"]
     assert harness.joint_merge(both) == {"viz2psy": viz, "aud2psy": aud}
@@ -806,3 +807,14 @@ def test_a_run_text_table_drops_the_left_out_features(harness, tmp_path):
     long, stamp = harness.read_run_table(tmp_path, harness.TEXT_TABLE, {"wordform"})
     assert stamp == harness.WORD_STAMP
     assert set(long["feature"]) == {"wordform_length"}
+
+
+def test_top_joint_spaces_are_one_model_per_extractor_and_its_leave_one_outs(harness):
+    top = {s for s in harness.JOINT_SPACES if s.startswith(harness.TOP_PREFIX)}
+    assert top == {"joint-top-viz2psy+aud2psy+word2psy", "joint-top-viz2psy+aud2psy",
+                   "joint-top-viz2psy+word2psy", "joint-top-aud2psy+word2psy"}
+    full = harness.joint_merge("joint-top-viz2psy+aud2psy+word2psy")
+    assert full == {"viz2psy": ("ebind",), "aud2psy": ("ebind_audio",), "word2psy": ("fasttext",)}
+    assert all(m in harness.EXTRACTORS[e] for e, ms in full.items() for m in ms)
+    assert list(harness.TB_TS_SPACES["joint-top-aud2psy+word2psy"]) == ["ebind_audio", "fasttext"]
+    assert all(harness.film_word_on_space(s) for s in top)
