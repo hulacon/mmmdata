@@ -22,8 +22,9 @@ are recorded as non-standard.
 
 Where a standard is not decided yet the getter raises
 :class:`~mmmget.errors.OpenDecisionError` naming the decision, rather than
-guessing: ``confounds(run, regimes="standard")`` (the comparison set) and
-``events(run, scheme=...)`` (where condition definitions live).
+guessing: ``events(run, scheme=...)`` (where condition definitions live).
+``confounds(run, regimes="standard")`` returns the lab's comparison set of
+confound regimes (D3).
 """
 
 from ._version import __version__

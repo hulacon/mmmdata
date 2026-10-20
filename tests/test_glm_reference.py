@@ -278,3 +278,42 @@ def test_glm_matches_the_colleagues_regressors_on_their_five_regimes():
         _, b_ours = _residuals(np.column_stack([dm[conds], dm.drop(columns=conds)]), Y)
         _, b_theirs = _residuals(np.column_stack([dm[conds].to_numpy(), theirs]), Y)
         assert np.allclose(b_ours[: len(conds)], b_theirs[: len(conds)], atol=1e-8), name
+
+
+def _set(tmp_path, members, regimes_update=None):
+    def edit(s):
+        s["comparison_sets"] = {"t": {"regimes": members}}
+        if regimes_update:
+            s["confound_regimes"].update(regimes_update)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    return _copy(tmp_path, edit)
+
+
+def test_comparison_sets_sit_outside_the_digest(tmp_path):
+    path = _copy(tmp_path, lambda s: s.setdefault("comparison_sets", {}).update(
+        t={"regimes": ["base"]}))
+    assert "t" in load_reference_spec(path)["comparison_sets"]
+
+
+@pytest.mark.parametrize("members, match", [
+    ([], "names no regimes"),
+    (["base", "base"], "twice"),
+    (["base", "nope"], "not in the registry"),
+    (["base", "trial"], "provisional"),
+])
+def test_comparison_set_members_are_checked(tmp_path, members, match):
+    from neuroimaging import confounds
+    path = _set(tmp_path, members, {"trial": {"status": "provisional", "confounds": [],
+                                              "acompcor_n": 0, "drift": "none"}})
+    with pytest.raises(ValueError, match=match):
+        confounds.load_comparison_sets(path)
+
+
+def test_comparison_set_version_follows_its_members(tmp_path):
+    from neuroimaging import confounds
+    a = confounds.load_comparison_sets(_set(tmp_path / "a", ["base", "gsr"]))["t"]
+    b = confounds.load_comparison_sets(_set(tmp_path / "b", ["base", "baseacc6"]))["t"]
+    c = confounds.load_comparison_sets(_set(tmp_path / "c", ["base", "gsr"], {
+        "gsr": {"status": "defined", "confounds": ["global_signal", "csf"],
+                "acompcor_n": 0, "drift": "none"}}))["t"]
+    assert len({a.version, b.version, c.version}) == 3
