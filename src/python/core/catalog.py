@@ -8,7 +8,7 @@ readable by any consumer (contracts §3.1).
 
 Tables: files (bids2table), datasets (provenance + kind), sessions,
 expected_units, expectation_exceptions, qc_decisions, files_supplemental,
-sweep_meta; views: observed_units, resolution (four-state:
+phenotype, sweep_meta (the sweep report: root, started_at, ...); views: observed_units, resolution (four-state:
 present / missing / excepted / surplus, with exception dispositions
 accepted | pending).
 
@@ -26,6 +26,8 @@ Usage:
     report = catalog.resolution_report(db_path, subjects=["03"])
 """
 
+import json
+import os
 from pathlib import Path
 
 import duckdb
@@ -52,6 +54,57 @@ def bare_label(value: str | None, prefix: str) -> str | None:
     if value is None:
         return None
     return value[len(prefix):] if value.startswith(prefix) else value
+
+
+class CatalogRootMismatch(ValueError):
+    """The catalog was built for a different dataset root than the one in use."""
+
+
+def sweep_report(db_path: Path | str) -> dict | None:
+    """The report the duckbrain sweep stored with the catalog.
+
+    Carries ``root`` (the dataset tree the sweep walked) and ``started_at``
+    (when it ran, ISO 8601), among others. None when the catalog has no
+    ``sweep_meta`` report, i.e. it was not built by the duckbrain engine.
+    """
+    conn = connect_readonly(db_path)
+    try:
+        row = conn.execute(
+            "SELECT value FROM sweep_meta WHERE key = 'report'").fetchone()
+    except duckdb.CatalogException:
+        return None
+    finally:
+        conn.close()
+    try:
+        report = json.loads(row[0]) if row else None
+    except (TypeError, ValueError):
+        return None
+    return report if isinstance(report, dict) else None
+
+
+def swept_at(db_path: Path | str) -> str | None:
+    """When the catalog's sweep started (ISO 8601), or None if unrecorded."""
+    return (sweep_report(db_path) or {}).get("started_at")
+
+
+def check_root(db_path: Path | str, bids_root: Path | str) -> dict | None:
+    """Refuse a catalog built for another dataset root; return its sweep report.
+
+    A catalog describes the tree it was swept from: its file list is that
+    tree's, so on a copy (or a subset) it names files that are not there and
+    misses files that are. Compared after resolving symlinks, so the
+    ``/projects`` and ``/gpfs/projects`` spellings of one tree match. A
+    catalog with no recorded root (not built by duckbrain) is not checked.
+    """
+    report = sweep_report(db_path)
+    built = (report or {}).get("root")
+    if built and os.path.realpath(built) != os.path.realpath(bids_root):
+        raise CatalogRootMismatch(
+            f"The catalog at {db_path} was built for {built}, not for "
+            f"{bids_root}, so its file list describes that tree. Rebuild it "
+            "for this one: python -m duckbrain.catalog rebuild --root "
+            f"{bids_root}")
+    return report
 
 
 def connect_readonly(db_path: Path | str) -> duckdb.DuckDBPyConnection:
@@ -223,6 +276,7 @@ def session_summary(
             "session_metadata": meta_rows[0] if meta_rows else None,
             "resolution_summary": resolution_counts,
             "resolution_issues": resolution_issues,
+            "catalog_swept_at": swept_at(db_path),
         }
     finally:
         conn.close()
@@ -301,7 +355,8 @@ def resolution_report(
             params + status_params,
         )
 
-        return {"summary": summary, "n_rows": len(rows), "rows": rows}
+        return {"summary": summary, "n_rows": len(rows), "rows": rows,
+                "catalog_swept_at": swept_at(db_path)}
     finally:
         conn.close()
 

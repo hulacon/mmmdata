@@ -4,6 +4,8 @@ Runs against a miniature catalog built in tmp_path with the same
 table/view names and columns the real sweep produces (subset).
 """
 
+import json
+
 import duckdb
 import pytest
 
@@ -231,3 +233,39 @@ class TestLookupExpectations:
                                         session_type="cued_recall")
         assert r["sessions"] == [{"ses": "04", "subjects": ["03"]}]
         assert len(r["expected_units"]) == 2
+
+
+class TestSweepReport:
+    def test_absent_report_is_none_and_unchecked(self, mini_catalog, tmp_path):
+        assert catalog.sweep_report(mini_catalog) is None
+        assert catalog.swept_at(mini_catalog) is None
+        assert catalog.check_root(mini_catalog, tmp_path / "anywhere") is None
+
+    @pytest.fixture
+    def swept(self, mini_catalog, tmp_path):
+        conn = duckdb.connect(str(mini_catalog))
+        conn.execute("CREATE TABLE sweep_meta (key VARCHAR, value VARCHAR)")
+        conn.execute("INSERT INTO sweep_meta VALUES ('report', ?)", [json.dumps(
+            {"root": str(tmp_path / "data"), "started_at": "2026-01-02T03:04:05+00:00"})])
+        conn.close()
+        return mini_catalog
+
+    def test_matching_root_returns_the_report(self, swept, tmp_path):
+        report = catalog.check_root(swept, tmp_path / "data")
+        assert report["started_at"] == "2026-01-02T03:04:05+00:00"
+
+    def test_symlinked_spelling_of_the_root_matches(self, swept, tmp_path):
+        (tmp_path / "data").mkdir()
+        (tmp_path / "alias").symlink_to(tmp_path / "data")
+        assert catalog.check_root(swept, tmp_path / "alias") is not None
+
+    def test_other_root_is_refused_naming_the_rebuild(self, swept, tmp_path):
+        with pytest.raises(catalog.CatalogRootMismatch,
+                           match=r"rebuild --root .*copy"):
+            catalog.check_root(swept, tmp_path / "copy")
+
+    def test_summaries_say_when_the_catalog_was_swept(self, swept):
+        assert catalog.session_summary(swept, "03", "04")["catalog_swept_at"] \
+            == "2026-01-02T03:04:05+00:00"
+        assert catalog.resolution_report(swept)["catalog_swept_at"] \
+            == "2026-01-02T03:04:05+00:00"

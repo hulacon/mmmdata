@@ -181,6 +181,9 @@ def runs(
     ------
     FileNotFoundError
         The catalog does not exist (the message names how to build it).
+    core.catalog.CatalogRootMismatch
+        The catalog was built for another dataset root (a copy carrying the
+        cluster's catalog); the message names the rebuild command.
     LookupError
         Nothing matched and a filter names a label the dataset lacks.
     MixedLocalizerDesignError
@@ -191,6 +194,7 @@ def runs(
         raise ValueError(f"variant {variant!r} is not one of {FMRIPREP_VARIANTS}")
     root = _config.bids_root(bids_root)
     db = catalog.catalog_path(root)
+    swept = (catalog.check_root(db, root) or {}).get("started_at")
     deriv = DERIVATIVES_DIRS[variant]
     sub = catalog.bare_label(subject, "sub-")
     ses = catalog.bare_label(session, "ses-")
@@ -287,6 +291,6 @@ def runs(
         reason="; ".join(reasons) or None,
         variant=variant, space=space,
         query={k: v for k, v in filters.items() if v is not None} or None,
-        n_runs=len(kept), n_excluded=n_excluded,
+        n_runs=len(kept), n_excluded=n_excluded, catalog_swept_at=swept,
     )
     return kept
