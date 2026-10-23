@@ -37,20 +37,17 @@ analysis standards. This page is the reference for the MCP server itself.
 
 ## 1. Get the code and an interpreter
 
-The server needs Python **3.11 or newer** with `mcp>=2.0` plus mmmdata's
-scientific stack. The list below is what the repository's CI installs to run
-the server:
+The server needs Python **3.11 or newer**. Install mmmdata from a clone,
+with the `mcp` extra:
 
 ```bash
 git clone https://github.com/hulacon/mmmdata.git /path/to/mmmdata-code
 python3 -m venv /path/to/mmmdata-mcp-env
-/path/to/mmmdata-mcp-env/bin/pip install \
-    pandas numpy pybids duckdb matplotlib seaborn nibabel nilearn \
-    "mcp>=2.0" plotly pyarrow
+/path/to/mmmdata-mcp-env/bin/pip install -e "/path/to/mmmdata-code[mcp]"
 ```
 
-No package install of mmmdata itself is needed: the launcher puts
-`src/python` on the path. `MMMDATA_MCP_PYTHON` tells the launcher which
+Install from the clone (`-e`), not from a git URL: the server finds files
+relative to the repository. `MMMDATA_MCP_PYTHON` tells the launcher which
 interpreter to use; without it, it uses `python3` from your `PATH`.
 
 ## 2. Point the server at your copy

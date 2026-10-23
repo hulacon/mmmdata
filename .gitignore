@@ -68,3 +68,8 @@ src/python/raw2bids_converters/physio_triage.csv
 # Per-operator config overrides. Untracked so one operator's settings do not
 # apply to everyone; config/local.toml.example is the tracked template.
 config/local.toml
+
+# Python packaging
+build/
+*.egg-info/
+dist/

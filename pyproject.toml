@@ -1,0 +1,59 @@
+# Two ways to install, for two kinds of user:
+#
+#   pip install -e /path/to/mmmdata          a clone: everything works
+#   pip install "mmmdata @ git+https://github.com/hulacon/mmmdata@<ref>"
+#                                            pinned, for a project's code
+#
+# A pinned install supports what project code imports: mmmget, resultsview
+# and mmmget.testing. The MCP server, the converters and the scripts find
+# files relative to the repo root (models/, config/dcm2bids_*, bin/), so they
+# need a clone. The packages install under their own top-level names (core,
+# neuroimaging, ...), not under one namespace.
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mmmdata"
+description = "Pipeline code and getters for the Multi-Modal Memory Dataset"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dynamic = ["version"]
+# What the off-cluster test tier needs (.github/workflows/tests.yml installs
+# from here). Cluster-only tools (glmsingle, pydicom, AFNI) are the shared
+# Talapas env's business, not this list's.
+dependencies = [
+    "pandas",
+    "numpy",
+    "scipy",
+    "pybids",
+    "duckdb",
+    "pyarrow",
+    "nibabel",
+    "nilearn",
+    "matplotlib",
+    "seaborn",
+    "plotly",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=2.0"]
+test = ["pytest", "pytest-cov", "tomli_w", "mcp>=2.0"]
+
+[tool.setuptools.dynamic]
+# mmmget's version, which write_result stamps into every result, so a pin
+# and a result's provenance name the same number.
+version = { attr = "mmmget._version.__version__" }
+
+[tool.setuptools.package-dir]
+"" = "src/python"
+# config/base.toml rides in the wheel as a last-resort default, so a pinned
+# install with no clone still finds a config (core.config._find_config_dir).
+"core.default_config" = "config"
+# The package list is in setup.py: find covers src/python, and the mapped
+# config package above has to be added to it by name.
+
+[tool.setuptools.package-data]
+"*" = ["vendor/*", "*.json"]
+"core.default_config" = ["base.toml"]
