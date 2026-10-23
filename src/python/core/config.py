@@ -24,6 +24,8 @@ def _find_config_dir() -> Path:
     1. MMMDATA_CONFIG_DIR environment variable
     2. Walking up from current file to find 'config' directory
     3. Relative path from this file (legacy, fragile)
+    4. The base.toml packaged with a pinned (non-editable) install, which
+       has no clone to walk up to
 
     Returns:
         Path to the config directory
@@ -50,6 +52,18 @@ def _find_config_dir() -> Path:
     legacy_path = Path(__file__).parent.parent.parent.parent / 'config'
     if legacy_path.exists() and (legacy_path / 'base.toml').exists():
         return legacy_path
+
+    # Strategy 4: packaged default (pyproject maps config/ to this package)
+    try:
+        from importlib.resources import files
+
+        # Join first: the package has no __init__.py, so files() returns a
+        # MultiplexedPath, whose str() is not a filesystem path.
+        packaged = Path(str(files("core.default_config") / 'base.toml'))
+        if packaged.is_file():
+            return packaged.parent
+    except ModuleNotFoundError:
+        pass
 
     raise FileNotFoundError(
         "Could not locate config directory. "

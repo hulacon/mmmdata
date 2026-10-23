@@ -8,9 +8,8 @@
 # and tmp_path. Tests marked `requires_dataset` skip themselves
 # (conftest.py); they are the cluster's job, not CI's.
 #
-# Dependencies are listed explicitly rather than installed from a manifest
-# because the repo has no pyproject.toml and the shared Talapas conda env
-# is not reproducible on a runner. Everything here is pip-installable and
+# Dependencies come from pyproject.toml (the `test` extra), the one list
+# every consumer installs from. Everything there is pip-installable and
 # CPU-only -- no torch, which is why the stimulus-feature work is not in
 # scope for this workflow.
 
@@ -47,28 +46,20 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-          # Deliberately no `cache: pip`. That option derives its key from a
-          # requirements.txt or pyproject.toml, and this repo has neither --
-          # which is the same reason the Install step lists dependencies
-          # inline. Asking for it fails the job before any test runs.
 
-      # The dependency list lives in this file, so this file is what the
+      # The dependency list lives in pyproject.toml, so that is what the
       # cache key hashes: the install changes exactly when it changes.
       - uses: actions/cache@v6
         with:
           path: ~/.cache/pip
-          key: pip-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('.github/workflows/tests.yml') }}
+          key: pip-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
           restore-keys: |
             pip-${{ runner.os }}-py${{ matrix.python-version }}-
 
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          # mcp, plotly and pyarrow: the MCP server (src/python/mmmdata_mcp),
-          # its plot tools, and the parquet fixture in test_mcp_portability.py.
-          pip install pytest pytest-cov tomli_w \
-                      pandas numpy pybids duckdb matplotlib seaborn nibabel nilearn \
-                      "mcp>=2.0" plotly pyarrow
+          pip install -e ".[test]"
 
       - name: Confirm the runner has neither GPFS nor SLURM
         # If either appeared, the suite would silently start exercising a
@@ -78,8 +69,8 @@ jobs:
           ! command -v sbatch >/dev/null || { echo "SLURM present on runner"; exit 1; }
 
       - name: Test (off-cluster tier)
-        # No PYTHONPATH: the repo-root conftest.py puts src/python on
-        # sys.path, and running without it is the regression this guards.
+        # No PYTHONPATH: the editable install puts src/python on the path.
+        # A clone with no install relies on conftest.py's bootstrap instead.
         run: pytest -q -rs
 
       - name: MCP launcher starts off-cluster
@@ -89,3 +80,22 @@ jobs:
         env:
           MMMDATA_MCP_PYTHON: python
         run: bin/mmmdata-mcp --list-toolsets
+
+      - name: A pinned install works without a clone
+        # What a project gets from `mmmdata @ git+...@<ref>`: a wheel, run
+        # from outside the checkout, so config comes from the packaged
+        # base.toml and nothing can be found by walking up to the repo.
+        run: |
+          pip wheel --no-deps -w "$RUNNER_TEMP/wheel" .
+          python -m venv "$RUNNER_TEMP/pinned"
+          "$RUNNER_TEMP/pinned/bin/pip" install --quiet "$RUNNER_TEMP"/wheel/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/pinned/bin/python" - <<'PY'
+          from core.config import _find_config_dir, load_config
+          import mmmget
+          from resultsview import page
+          assert _find_config_dir().parts[-2:] == ("core", "default_config")
+          assert load_config()["paths"]["bids_project_dir"]
+          assert (page.VENDOR_DIR / "vega.min.js").is_file()
+          print("pinned install OK, mmmget", mmmget.__version__)
+          PY
