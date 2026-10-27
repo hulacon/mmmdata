@@ -949,103 +949,6 @@ Every run is pre-populated with a stub so the pipeline gate is never blocked by 
 
 ## dwi
 
-### `fd_mean` — Mean framewise displacement (mm)
-
-*lower is better*
-
-**Why it is here.** Head motion is the dominant nuisance in functional MRI and the one most likely to masquerade as a real effect. It biases connectivity estimates systematically rather than randomly, and because motion correlates with age, clinical status and task difficulty, it can manufacture group differences outright.
-
-**What to look for.** Open the MRIQC carpet plot and the FD trace together. A few tall spikes on an otherwise flat trace is transient motion and is usually salvageable by censoring; a trace that drifts upward across the run means the participant is settling or sliding and the later volumes are misregistered. Check whether FD spikes line up with dark or bright bands running across the whole carpet plot — that coincidence is what distinguishes real motion from a noisy estimate.
-
-**Flagged automatically.** Flagged when outside the 1.5x IQR fence of the runs in scope. No absolute cutoff is applied.
-
-**A priori threshold.** For excluding a whole run, the citable rule is Parkes et al. (2018), whose stringent criterion excludes a participant for mean FD above 0.25 mm, more than 20% of frames above 0.2 mm, or any single frame above 5 mm. Note what this is not: Power's widely quoted 0.5 mm (2012) and 0.2 mm (2014) are thresholds for censoring individual frames, not for excluding runs. Applying them to a run's mean FD is a category error, and a common one.
-
-**Caveats.** FD sums absolute rotational and translational displacements, converting rotations to millimetres on a sphere of radius 50 mm. Its value depends on TR — shorter TRs sample motion more finely and report higher FD for identical movement — so it does not compare across studies with different TRs. In multiband or fast-TR data, respiration enters the motion estimates as pseudo-motion from B0 changes rather than true head displacement, inflating FD; neither MRIQC nor fMRIPrep filters this by default, so thresholds derived from single-band data are systematically too strict here.
-
-**Sources.**
-
-- [Parkes et al. (2018)](https://doi.org/10.1016/j.neuroimage.2017.12.073), NeuroImage 171:415-436 — benchmark of denoising strategies and participant-exclusion criteria
-- [Power et al. (2012)](https://doi.org/10.1016/j.neuroimage.2011.10.018), NeuroImage 59(3):2142-2154 — defines framewise displacement and motion-induced distance artifact
-- [Power et al. (2014)](https://doi.org/10.1016/j.neuroimage.2013.08.048), NeuroImage 84:320-341 — FD/DVARS censoring; stricter thresholds than the 2012 paper
-- [MRIQC documentation — Measures](https://mriqc.readthedocs.io/en/latest/measures.html), mriqc.readthedocs.io — canonical definition of every IQM below
-- [NeuroStars — Excluding subjects based on MRIQC](https://neurostars.org/t/excluding-subjects-based-on-mriqc/2662), neurostars.org/t/excluding-subjects-based-on-mriqc/2662 — recurring question about exclusion criteria; no consensus threshold
-
-### `fd_num` — Number of high-motion frames (volumes)
-
-*lower is better*
-
-**Why it is here.** Distinguishes a run ruined by a few discrete jerks from one degraded throughout. The former can be censored and still yield usable data; the latter cannot. Mean FD alone conflates the two.
-
-**What to look for.** Compare against the run's total volume count to judge how much data survives censoring, and check on the FD trace whether the flagged frames are clustered — a single burst at the start of a run is far less costly than the same count scattered across it, because censoring removes neighbouring frames too.
-
-**Flagged automatically.** Flagged when outside the 1.5x IQR fence of the runs in scope. No absolute cutoff is applied.
-
-**Caveats.** MRIQC counts frames above its own FD threshold (0.2 mm by default), which is not necessarily the threshold used elsewhere in this dashboard. Read it as a count under MRIQC's definition.
-
-**Sources.**
-
-- [Power et al. (2014)](https://doi.org/10.1016/j.neuroimage.2013.08.048), NeuroImage 84:320-341 — FD/DVARS censoring; stricter thresholds than the 2012 paper
-- [MRIQC documentation — Measures](https://mriqc.readthedocs.io/en/latest/measures.html), mriqc.readthedocs.io — canonical definition of every IQM below
-
-### `fd_perc` — Percent of high-motion frames (%)
-
-*lower is better*
-
-**Why it is here.** The scale-free version of fd_num, and the quantity that actually determines whether enough data survives censoring. Runs of different lengths are only comparable on this measure.
-
-**What to look for.** Decide whether the surviving volumes still cover the design. For task data, check that censoring does not fall disproportionately on one condition — losing 20% of volumes matters much more if they are concentrated in a single trial type than if they are spread evenly.
-
-**Flagged automatically.** Flagged when outside the 1.5x IQR fence of the runs in scope. No absolute cutoff is applied.
-
-**A priori threshold.** fd_perc above 20 is directly backed by Parkes et al. (2018), whose stringent criterion excludes a participant when more than 20% of frames exceed 0.2 mm — the same threshold MRIQC uses by default, so the two line up exactly. Derived on resting-state connectivity data.
-
-**Caveats.** This is MRIQC's percentage, computed at 0.2 mm over N frames. It is not interchangeable with this dashboard's pct_high_motion, which uses a different threshold and denominator.
-
-**Sources.**
-
-- [Parkes et al. (2018)](https://doi.org/10.1016/j.neuroimage.2017.12.073), NeuroImage 171:415-436 — benchmark of denoising strategies and participant-exclusion criteria
-- [Power et al. (2014)](https://doi.org/10.1016/j.neuroimage.2013.08.048), NeuroImage 84:320-341 — FD/DVARS censoring; stricter thresholds than the 2012 paper
-- [MRIQC documentation — Measures](https://mriqc.readthedocs.io/en/latest/measures.html), mriqc.readthedocs.io — canonical definition of every IQM below
-
-### `gsr_x` — Ghost-to-signal ratio (x)
-
-*lower is better*
-
-**Why it is here.** Quantifies Nyquist (N/2) ghosting, the replica of the brain that EPI sequences project half a field of view away along the phase-encoding direction. Ghosts overlap real tissue and inject signal that is correlated with the brain but spatially wrong.
-
-**What to look for.** Look for a faint offset copy of the brain in the background of the MRIQC mosaic, displaced along the phase-encode axis. Confirm that the displacement direction matches the axis this metric names — a ghost along the other axis suggests the phase-encoding direction is mislabelled in the BIDS metadata, which matters for fieldmap correction.
-
-**Flagged automatically.** Flagged when outside the 1.5x IQR fence of the runs in scope. No absolute cutoff is applied.
-
-**A priori threshold.** None. MRIQC publishes no cutoff, and the source it cites is a phantom study of how sequence parameters affect ghosting rather than a proposal for excluding human data.
-
-**Caveats.** Only the axis that is actually phase-encoded is meaningful; the other reflects background noise. Confirm which applies from the PhaseEncodingDirection field in the BIDS sidecar before reading either value — MRIQC computes both regardless.
-
-**Sources.**
-
-- [Giannelli et al. (2010)](https://doi.org/10.1120/jacmp.v11i4.3237), Journal of Applied Clinical Medical Physics 11(4):3237 — phantom characterisation of Nyquist ghosting in EPI; proposes no exclusion cutoff
-- [MRIQC documentation — Measures](https://mriqc.readthedocs.io/en/latest/measures.html), mriqc.readthedocs.io — canonical definition of every IQM below
-- [MRIQC documentation — Visual reports](https://mriqc.readthedocs.io/en/latest/reports.html), mriqc.readthedocs.io — what each reportlet in the visual report shows
-
-### `gsr_y` — Ghost-to-signal ratio (y)
-
-*lower is better*
-
-**Why it is here.** As gsr_x, for the other in-plane axis. Which of the two carries the signal depends on the phase-encoding direction of the acquisition.
-
-**What to look for.** Same check as gsr_x: an offset replica of the brain in the background of the mosaic, displaced along the phase-encode axis.
-
-**Flagged automatically.** Flagged when outside the 1.5x IQR fence of the runs in scope. No absolute cutoff is applied.
-
-**Caveats.** Interpret only for the axis that is actually phase-encoded; the other is dominated by background noise.
-
-**Sources.**
-
-- [Giannelli et al. (2010)](https://doi.org/10.1120/jacmp.v11i4.3237), Journal of Applied Clinical Medical Physics 11(4):3237 — phantom characterisation of Nyquist ghosting in EPI; proposes no exclusion cutoff
-- [MRIQC documentation — Measures](https://mriqc.readthedocs.io/en/latest/measures.html), mriqc.readthedocs.io — canonical definition of every IQM below
-- [MRIQC documentation — Visual reports](https://mriqc.readthedocs.io/en/latest/reports.html), mriqc.readthedocs.io — what each reportlet in the visual report shows
-
 ### `efc` — Entropy focus criterion
 
 *lower is better*
@@ -1082,24 +985,6 @@ Every run is pre-populated with a stub so the pipeline gate is never blocked by 
 - [MRIQC documentation — Measures](https://mriqc.readthedocs.io/en/latest/measures.html), mriqc.readthedocs.io — canonical definition of every IQM below
 - [Shehzad et al. (2015)](https://doi.org/10.3389/conf.fnins.2015.91.00047), Frontiers in Neuroscience, conference abstract (QAP) — origin of FBER; a conference abstract, not a peer-reviewed paper
 
-### `snr` — Signal-to-noise ratio
-
-*higher is better*
-
-**Why it is here.** A static, single-volume estimate of signal against background noise. For functional data it is a weaker guide than tSNR, which captures the temporal stability that actually limits detection, but it does catch coil and reconstruction faults that tSNR can mask.
-
-**What to look for.** Check for coil dropout: a region of the brain that is systematically darker than its counterpart on the other side, usually adjacent to a failed coil element. This is visible on the mosaic and is a scanner fault worth reporting, not just a data-quality issue.
-
-**Flagged automatically.** Flagged when outside the 1.5x IQR fence of the runs in scope. No absolute cutoff is applied.
-
-**A priori threshold.** None that transfers across protocols; it scales with voxel volume, field strength and coil.
-
-**Caveats.** For BOLD data prefer tSNR. Read this measure mainly as a check on hardware, not on usability.
-
-**Sources.**
-
-- [MRIQC documentation — Measures](https://mriqc.readthedocs.io/en/latest/measures.html), mriqc.readthedocs.io — canonical definition of every IQM below
-
 ### `fwhm_avg` — Estimated smoothness (average FWHM) (voxels)
 
 *lower is better*
@@ -1119,3 +1004,63 @@ Every run is pre-populated with a stub so the pipeline gate is never blocked by 
 - [MRIQC documentation — Measures](https://mriqc.readthedocs.io/en/latest/measures.html), mriqc.readthedocs.io — canonical definition of every IQM below
 - [Forman et al. (1995)](https://doi.org/10.1002/mrm.1910330508), Magnetic Resonance in Medicine 33(5):636-647 — the smoothness estimation MRIQC cites for FWHM
 - [AFNI 3dFWHMx](https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dFWHMx.html), AFNI program documentation — the smoothness estimator MRIQC calls
+
+### `snr_cc_shell0` — b0 SNR in the corpus callosum
+
+*higher is better*
+
+**Why it is here.** Mean b0 signal in a corpus-callosum mask divided by the spread (MAD) of that signal. The b0 volumes carry no diffusion weighting, so this is the baseline signal the diffusion-weighted shells are measured against; a low value means every shell starts noisy.
+
+**What to look for.** In the MRIQC report, check the b0 mosaic for low overall signal, coil-element dropout, or a corpus-callosum mask that has slipped off the white matter (which lowers the mean and inflates the spread).
+
+**Flagged automatically.** Flagged when outside the 1.5x IQR fence of the runs in scope. No absolute cutoff is applied.
+
+**Caveats.** Depends on the corpus-callosum mask MRIQC derives from the FA map; a poor mask moves the number without any change in the data.
+
+**Sources.**
+
+- [MRIQC documentation — Measures](https://mriqc.readthedocs.io/en/latest/measures.html), mriqc.readthedocs.io — canonical definition of every IQM below
+
+### `snr_cc_shell_dw` — Diffusion-weighted SNR in the corpus callosum (per shell)
+
+*higher is better*
+
+**Why it is here.** Corpus-callosum signal in one diffusion shell divided by the b0 spread. 'Worst' takes the gradient direction closest to x, along which the callosal fibres run and the signal is most attenuated; 'best' averages the directions closest to y and z. Worst-case SNR falls with b-value, and a shell where it approaches 1 is close to the noise floor.
+
+**What to look for.** Compare against the same shell in other runs and sessions rather than against a fixed value. A drop in one run with a normal b0 SNR points at that run's diffusion volumes (dropout, vibration), not at the coil or the participant.
+
+**Flagged automatically.** Flagged when outside the 1.5x IQR fence of the runs in scope. No absolute cutoff is applied.
+
+**Caveats.** MRIQC 24.x numbers these shells one off: ``snr_cc_shell1_*`` is the b0 again (best equals worst), ``shell2`` the first diffusion shell, and the highest shell is never reported. Read the shell from ``qc.DWI_KEY_IQMS``, not from the key.
+
+**Sources.**
+
+- [MRIQC documentation — Measures](https://mriqc.readthedocs.io/en/latest/measures.html), mriqc.readthedocs.io — canonical definition of every IQM below
+
+### `fa_nans` — NaN voxels in the FA map (ppm of brain-mask voxels)
+
+*lower is better*
+
+**Why it is here.** MRIQC fits a tensor model and counts brain voxels whose fractional anisotropy came out as not-a-number. Those voxels had signal the model could not fit at all: zeros, dropout, or a broken gradient table.
+
+**What to look for.** Any non-zero value: open the FA map in the MRIQC report and find where the holes are. Clustered in one slab suggests slice dropout; scattered across the brain suggests the b-vectors or b-values do not match the data.
+
+**Flagged automatically.** Flagged when outside the 1.5x IQR fence of the runs in scope. No absolute cutoff is applied.
+
+**Sources.**
+
+- [MRIQC documentation — Measures](https://mriqc.readthedocs.io/en/latest/measures.html), mriqc.readthedocs.io — canonical definition of every IQM below
+
+### `fa_degenerate` — Degenerate voxels in the FA map (ppm of brain-mask voxels)
+
+*lower is better*
+
+**Why it is here.** Brain voxels whose fractional anisotropy fell outside [0, 1], which a valid tensor cannot produce. They mark voxels where the measured signal is inconsistent with diffusion: artifacts, or a gradient table that does not describe the acquisition.
+
+**What to look for.** Any non-zero value: inspect the FA map for speckle or bright rims, and check the run's b-vector orientation against the colour-FA image (callosum red, corticospinal tract blue).
+
+**Flagged automatically.** Flagged when outside the 1.5x IQR fence of the runs in scope. No absolute cutoff is applied.
+
+**Sources.**
+
+- [MRIQC documentation — Measures](https://mriqc.readthedocs.io/en/latest/measures.html), mriqc.readthedocs.io — canonical definition of every IQM below
