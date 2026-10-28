@@ -291,3 +291,25 @@ def test_reduce_refuses_trial_count_mismatch(tmp_path):
 def test_load_tables_missing_is_loud(tmp_path):
     with pytest.raises(FileNotFoundError, match="tier1.py glmsingle"):
         dqgs.load_tables(tmp_path)
+
+
+def test_write_cell_with_subject_space_parcellation_files(tmp_path, atlases):
+    """A fit outside the atlases' space reads its parcellations from explicit files; atlases_dir is not touched."""
+    fdir = _fake_fit(tmp_path / "glmsingle_tb")
+    keys = dqgs.fit_keys(fdir)
+    files = {"Schaefer17n400": (atlases / "sch.nii.gz", atlases / "sch.tsv"),
+             "HOSPA": (atlases / "ho.nii.gz", atlases / "ho.tsv")}
+    prov = {"input_atlases_sha256": "x" * 64, "code_version": "t"}
+    t1w = dqgs.write_cell(tmp_path / "dq_t1w", "03", "enc", "T1w", fdir, _mask(), np.eye(4),
+                          tmp_path / "no_atlases_here", keys, prov, log=lambda m: None, parcellation_files=files)
+    assert t1w["space"] == "T1w"
+    assert dqgs.cell_exists(tmp_path / "dq_t1w", "03", "enc", "T1w")
+    dqgs.write_cell(tmp_path / "dq_mni", "03", "enc", SPACE, fdir, _mask(), np.eye(4), atlases, keys, prov,
+                    log=lambda m: None)
+    a = pd.read_csv(dqgs.cell_paths(tmp_path / "dq_t1w", "03", "enc", "T1w")["parcels"], sep="\t")
+    b = pd.read_csv(dqgs.cell_paths(tmp_path / "dq_mni", "03", "enc", SPACE)["parcels"], sep="\t")
+    pd.testing.assert_frame_equal(a, b)
+    with pytest.raises(FileNotFoundError, match="Parcellation file missing"):
+        dqgs.write_cell(tmp_path / "dq_bad", "03", "enc", "T1w", fdir, _mask(), np.eye(4), atlases, keys, prov,
+                        log=lambda m: None,
+                        parcellation_files={**files, "HOSPA": (tmp_path / "missing.nii.gz", atlases / "ho.tsv")})
