@@ -36,6 +36,11 @@ stimfeat_env = "/gpfs/projects/hulacon/shared/envs/stimfeat"
 # encoders read the virtual probe set's features from it.
 fit_corpora_dir = "/gpfs/projects/hulacon/shared/psytwill/fit-corpora"
 
+# NSD (Natural Scenes Dataset) release tree, the directory holding nsddata/. An outside
+# comparison dataset: MMMData's images are NSD's shared1000. Read by
+# src/python/neuroimaging/nsd.py; its betas may live elsewhere (each tool takes --betas).
+nsd_dir = "/gpfs/projects/hulacon/shared/nsd"
+
 # MATLAB toolboxes for the pRF fit (analyzePRF + its knkutils dependency),
 # pinned clones outside the BIDS tree; commits are recorded in every fit
 # sidecar. fit_prf_analyzeprf.sbatch exports them for prf_analyzeprf_fit.m.
