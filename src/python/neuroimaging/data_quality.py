@@ -106,14 +106,29 @@ def load_parcellation(
     Raises ValueError when the atlas grid is not the run's grid: parcels
     resampled on the fly would silently move between runs.
     """
-    import nibabel as nib
-
     spec = PARCELLATIONS[name]
     nifti = Path(atlases_dir) / f"{spec['stem']}.nii.gz"
     tsv = Path(atlases_dir) / f"{spec['stem']}.tsv"
     for p in (nifti, tsv):
         if not p.exists():
             raise FileNotFoundError(f"Atlas file missing: {p}. Stage it under derivatives/atlases first.")
+    return load_parcellation_files(name, nifti, tsv, mask_bool, affine)
+
+
+def load_parcellation_files(
+    name: str, nifti: Path, tsv: Path, mask_bool: np.ndarray, affine: np.ndarray
+) -> Parcellation:
+    """:func:`load_parcellation` from explicit files, e.g. a subject-space copy of the atlas.
+
+    ``tsv`` is the atlas's label table; ``name`` picks the exclusions in
+    :data:`PARCELLATIONS`. Same grid rule: no resampling.
+    """
+    import nibabel as nib
+
+    spec = PARCELLATIONS[name]
+    for p in (nifti, tsv):
+        if not p.exists():
+            raise FileNotFoundError(f"Parcellation file missing: {p}")
     img = nib.load(str(nifti))
     if img.shape != mask_bool.shape or not np.allclose(img.affine, affine, atol=1e-3):
         raise ValueError(

@@ -454,8 +454,13 @@ def parcel_rows(red: dict[str, Any], parc: dq.Parcellation, sets: dict[str, dict
 
 def write_cell(tree_root: Path, subject: str, arm: str, space: str, fdir: Path, mask: np.ndarray,
                affine: np.ndarray, atlases_dir: Path, keys: dict, provenance: dict,
-               log=print) -> dict:
-    """Load the three beta dicts one at a time, reduce, and write the cell. Returns the sidecar."""
+               log=print, parcellation_files: Optional[dict[str, tuple[Path, Path]]] = None) -> dict:
+    """Load the three beta dicts one at a time, reduce, and write the cell. Returns the sidecar.
+
+    ``parcellation_files`` maps each :data:`dq.PARCELLATIONS` name to ``(nifti, tsv)``
+    on the fit's grid, for a fit outside the atlases' space (e.g. T1w); by default
+    the atlases under ``atlases_dir`` are used.
+    """
     import gc
     import time
 
@@ -463,7 +468,11 @@ def write_cell(tree_root: Path, subject: str, arm: str, space: str, fdir: Path, 
 
     ti = pd.read_csv(Path(fdir) / "trial_info.csv")
     sets = condition_sets(ti)
-    parcs = [dq.load_parcellation(name, atlases_dir, mask, affine) for name in dq.PARCELLATIONS]
+    if parcellation_files is None:
+        parcs = [dq.load_parcellation(name, atlases_dir, mask, affine) for name in dq.PARCELLATIONS]
+    else:
+        parcs = [dq.load_parcellation_files(name, *parcellation_files[name], mask, affine)
+                 for name in dq.PARCELLATIONS]
     volumes: dict[str, np.ndarray] = {}
     per_type: dict[str, dict] = {}
     parcel_table: list[dict] = []

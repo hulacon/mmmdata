@@ -54,6 +54,13 @@ Usage:
     python glmsingle_tb.py --subject sub-03 --arm enc
     python glmsingle_tb.py --subject sub-03 --arm pooled
     python glmsingle_tb.py --subject sub-03 --arm ret-word --sessions ses-04 ses-05
+    python glmsingle_tb.py --subject sub-## --arm enc --space T1w --output-base <scratch>/glmsingle_tb_T1w
+
+--space picks the fMRIPrep volume space (the `space-` entity of the preproc
+BOLD). The default, MNI152NLin2009cAsym_res-2, is what derivatives/glmsingle_tb
+holds. Any other space needs --output-base: the tree's paths carry no space
+entity, so a second space written there would sit beside the MNI fits
+indistinguishably.
 """
 
 import argparse
@@ -87,7 +94,7 @@ def load_config():
     return cfg
 
 
-SPACE = "MNI152NLin2009cAsym_res-2"
+SPACE = "MNI152NLin2009cAsym_res-2"   # default --space; the derivatives tree's space
 OUTPUT_TREE = "glmsingle_tb"
 
 # ses-18 exists for retrieval but not encoding; ses-30 is the final cued recall.
@@ -119,9 +126,9 @@ ARM_SPECS = {
 
 # ── path helpers ─────────────────────────────────────────────────────────────
 
-def bold_path(fmriprep_dir, subject, session, task, run):
+def bold_path(fmriprep_dir, subject, session, task, run, space=SPACE):
     return (fmriprep_dir / subject / session / "func"
-            / f"{subject}_{session}_task-{task}_{run}_space-{SPACE}_desc-preproc_bold.nii.gz")
+            / f"{subject}_{session}_task-{task}_{run}_space-{space}_desc-preproc_bold.nii.gz")
 
 
 def confounds_path(fmriprep_dir, subject, session, task, run):
@@ -134,11 +141,11 @@ def events_path(bids_root, subject, session, task, run):
             / f"{subject}_{session}_task-{task}_{run}_events.tsv")
 
 
-def detect_runs(fmriprep_dir, subject, session, task):
+def detect_runs(fmriprep_dir, subject, session, task, space=SPACE):
     func_dir = fmriprep_dir / subject / session / "func"
     if not func_dir.is_dir():
         return []
-    pattern = f"{subject}_{session}_task-{task}_run-*_space-{SPACE}_desc-preproc_bold.nii.gz"
+    pattern = f"{subject}_{session}_task-{task}_run-*_space-{space}_desc-preproc_bold.nii.gz"
     return sorted(p.name.split("_")[3] for p in func_dir.glob(pattern))
 
 
@@ -160,7 +167,7 @@ def run_cue_label(bids_root, subject, session, task, run):
 
 
 def discover_sessions(bids_root, fmriprep_dir, subject, arm, sessions=None,
-                      drop_ses18=False):
+                      drop_ses18=False, space=SPACE):
     """Discover the arm's sessions/runs across its tasks.
 
     Returns list of (session, [(task, run, subgroup), ...]) tuples, sessions
@@ -179,7 +186,7 @@ def discover_sessions(bids_root, fmriprep_dir, subject, arm, sessions=None,
         for task, cue in specs:
             if ses not in TASK_SESSIONS[task]:
                 continue
-            for r in detect_runs(fmriprep_dir, subject, ses, task):
+            for r in detect_runs(fmriprep_dir, subject, ses, task, space):
                 if task == "TBencoding":
                     subgroup = "enc"
                 else:
@@ -330,6 +337,25 @@ def build_spike_regressors(fmriprep_dir, subject, session, task, run, n_volumes)
     return spikes
 
 
+def off_grid_runs(paths):
+    """Runs whose voxel grid (shape + affine) differs from the first run's.
+
+    GLMsingle fits one voxel grid. Template spaces guarantee it; a native
+    space such as T1w does only if fMRIPrep resampled every run onto the
+    same reference, so check rather than assume.
+    """
+    ref = None
+    off = []
+    for p in paths:
+        img = nib.load(str(p))
+        grid = (img.shape[:3], np.round(img.affine, 4))
+        if ref is None:
+            ref = grid
+        elif grid[0] != ref[0] or not np.array_equal(grid[1], ref[1]):
+            off.append(str(p))
+    return off
+
+
 # ── derivative-tree bookkeeping ──────────────────────────────────────────────
 
 def ensure_dataset_description(output_base, fmriprep_dir):
@@ -366,7 +392,7 @@ def ensure_dataset_description(output_base, fmriprep_dir):
 # ── runner ───────────────────────────────────────────────────────────────────
 
 def run(bids_root, fmriprep_dir, subject, session_runs, output_dir, arm,
-        stimdur, use_spike_regressors=False, dry_run=False):
+        stimdur, use_spike_regressors=False, dry_run=False, space=SPACE):
     run_list, run_labels, session_indices, run_subgroups = [], [], [], []
     for ses_idx, (session, typed) in enumerate(session_runs):
         for task, r, subgroup in typed:
@@ -404,7 +430,7 @@ def run(bids_root, fmriprep_dir, subject, session_runs, output_dir, arm,
     print("\nResolving BOLD...")
     n_volumes_per_run, missing = [], []
     for session, task, r in run_list:
-        bp = bold_path(fmriprep_dir, subject, session, task, r)
+        bp = bold_path(fmriprep_dir, subject, session, task, r, space)
         if not bp.exists():
             missing.append(str(bp))
             n_volumes_per_run.append(None)
@@ -416,6 +442,14 @@ def run(bids_root, fmriprep_dir, subject, session_runs, output_dir, arm,
             print(f"    {m}")
         sys.exit(1)
     print(f"  {n_total_runs} runs, volumes: {sorted(set(n_volumes_per_run))}")
+    off = off_grid_runs(bold_path(fmriprep_dir, subject, s, t, r, space)
+                        for s, t, r in run_list)
+    if off:
+        print(f"  ERROR: {len(off)} runs are not on the first run's voxel grid "
+              f"(space-{space}); GLMsingle needs one grid. Resample them first:")
+        for m in off[:5]:
+            print(f"    {m}")
+        sys.exit(1)
 
     print("\nBuilding design matrices...")
     designs, trial_info = build_design_matrices(
@@ -426,7 +460,7 @@ def run(bids_root, fmriprep_dir, subject, session_runs, output_dir, arm,
     manifest = {
         "subject": subject, "arm": arm,
         "tasks": sorted({t for _, t, _ in run_list}),
-        "fmriprep_dir": str(fmriprep_dir),
+        "fmriprep_dir": str(fmriprep_dir), "space": space,
         "sessions": [s for s, _ in session_runs],
         "runs_per_session": {s: [r for _, r, _ in t] for s, t in session_runs},
         "run_labels": run_labels, "run_subgroups": run_subgroups,
@@ -466,7 +500,7 @@ def run(bids_root, fmriprep_dir, subject, session_runs, output_dir, arm,
     data_list = []
     for session, task, r in run_list:
         data_list.append(
-            nib.load(str(bold_path(fmriprep_dir, subject, session, task, r)))
+            nib.load(str(bold_path(fmriprep_dir, subject, session, task, r, space)))
             .get_fdata(dtype=np.float32))
 
     extra_regressors, spike_counts = None, {}
@@ -535,6 +569,9 @@ def parse_args():
                    help="Exclude ses-18 (retrieval-only; no super repeats, no CV leverage)")
     p.add_argument("--stimdur", type=float, default=STIMDUR_DEFAULT,
                    help=f"Modelled event duration (default {STIMDUR_DEFAULT}s)")
+    p.add_argument("--space", default=SPACE,
+                   help=f"fMRIPrep volume space of the preproc BOLD (default {SPACE}); "
+                        "any other space requires --output-base")
     p.add_argument("--fmriprep-dir", default=None,
                    help="Override fMRIPrep derivatives dir (default: derivatives/fmriprep)")
     p.add_argument("--output-base", default=None,
@@ -548,6 +585,10 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.space != SPACE and not args.output_base:
+        sys.exit(f"ERROR: --space {args.space} needs --output-base. "
+                 f"derivatives/{OUTPUT_TREE} holds space-{SPACE} fits and its paths "
+                 "carry no space entity, so another space must go to its own tree.")
     cfg = load_config()
     bids_root = Path(cfg["bids_project_dir"])
     fmriprep_dir = (Path(args.fmriprep_dir) if args.fmriprep_dir
@@ -558,18 +599,20 @@ def main():
 
     print(f"BIDS root:  {bids_root}")
     print(f"fMRIPrep:   {fmriprep_dir}")
+    print(f"Space:      {args.space}")
     print(f"Output:     {output_dir}")
 
     ensure_dataset_description(output_base, fmriprep_dir)
 
     print(f"\nDiscovering TB runs for {args.subject} [{args.arm}]...")
     session_runs = discover_sessions(bids_root, fmriprep_dir, args.subject,
-                                     args.arm, args.sessions, args.drop_ses18)
+                                     args.arm, args.sessions, args.drop_ses18,
+                                     args.space)
     if not session_runs:
         sys.exit(f"ERROR: no runs found for {args.subject} [{args.arm}]")
 
     run(bids_root, fmriprep_dir, args.subject, session_runs, output_dir,
-        args.arm, args.stimdur, args.spike_regressors, args.dry_run)
+        args.arm, args.stimdur, args.spike_regressors, args.dry_run, args.space)
 
 
 if __name__ == "__main__":

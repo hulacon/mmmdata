@@ -443,13 +443,36 @@ def glmsingle_root(args: argparse.Namespace, paths: Paths) -> Path:
     return Path(args.glmsingle_root or paths.output_dir / dqgs.FIT_TREE)
 
 
+def glmsingle_space(args: argparse.Namespace) -> str:
+    """The fits' space. A non-default one needs its own --tree-root: such fits live
+    outside derivatives/glmsingle_tb, and the production tree is what the catalog sweeps."""
+    if args.space != DEFAULT_SPACE and not args.tree_root:
+        sys.exit(f"--space {args.space} needs --tree-root: only {DEFAULT_SPACE} cells go in the "
+                 "production data_quality tree.")
+    return args.space
+
+
+def subject_parcellations(paths: Paths, sub: str, space: str) -> dict[str, tuple[Path, Path]]:
+    """Each parcellation's subject-space copy (data_quality/sub-##/anat, on the BOLD grid) and the
+    atlas label table it was resampled from."""
+    anat = paths.output_dir / dq.TREE_NAME / f"sub-{sub}" / "anat"
+    out = {}
+    for name, spec in dq.PARCELLATIONS.items():
+        hits = sorted(anat.glob(f"sub-{sub}_space-{space}_seg-{name}_*dseg.nii.gz"))
+        if len(hits) != 1:
+            sys.exit(f"sub-{sub}: expected one space-{space} seg-{name} dseg under {anat}, found {hits}")
+        out[name] = (hits[0], paths.atlases_dir / f"{spec['stem']}.tsv")
+    return out
+
+
 def cmd_glmsingle_plan(args: argparse.Namespace) -> None:
     paths = Paths(args)
+    space = glmsingle_space(args)
     root = glmsingle_root(args, paths)
     fits = dqgs.find_fits(root, args.sub, args.arm)
     atlases_sha = dq.atlases_sha256(paths.atlases_dir)
     stale = [(s, a) for s, a in fits
-             if not dqgs.is_current(paths.tree_root, s, a, DEFAULT_SPACE,
+             if not dqgs.is_current(paths.tree_root, s, a, space,
                                     dqgs.fit_keys(dqgs.fit_dir(root, s, a)), atlases_sha)]
     print(f"GLMsingle fits under {root} (arms {list(dqgs.ARMS)}): {len(fits)}  missing/stale cells: {len(stale)}")
     for s, a in stale:
@@ -467,6 +490,7 @@ def cmd_glmsingle(args: argparse.Namespace) -> None:
     import pandas as pd
 
     paths = Paths(args)
+    space = glmsingle_space(args)
     root = glmsingle_root(args, paths)
     if args.units:
         if args.index is None:
@@ -485,7 +509,7 @@ def cmd_glmsingle(args: argparse.Namespace) -> None:
     t0 = time.time()
     keys = dqgs.fit_keys(fdir)
     atlases_sha = dq.atlases_sha256(paths.atlases_dir)
-    if not args.force and dqgs.is_current(paths.tree_root, sub, arm, DEFAULT_SPACE, keys, atlases_sha):
+    if not args.force and dqgs.is_current(paths.tree_root, sub, arm, space, keys, atlases_sha):
         print(f"sub-{sub} {arm}: cell current, skipping")
         return
 
@@ -494,7 +518,7 @@ def cmd_glmsingle(args: argparse.Namespace) -> None:
     mask, affine, mask_shas = None, None, {}
     for ses, task, run in dqgs.fit_runs(ti):
         found = [r for r in fmriprep_runs_on_disk(subject=sub, session=ses, task=task, run=run,
-                                                  variant=paths.variant, space=DEFAULT_SPACE,
+                                                  variant=paths.variant, space=space,
                                                   bids_root=paths.bids_root, allow_mixed_designs=True)
                  if r.mask is not None and (r.run or "") == run]
         if len(found) != 1:
@@ -519,8 +543,13 @@ def cmd_glmsingle(args: argparse.Namespace) -> None:
         "input_masks_sha256": hashlib.sha256("\n".join(f"{k}:{v}" for k, v in sorted(mask_shas.items())).encode()).hexdigest(),
         "n_mask_runs": len(mask_shas),
     }
-    side = dqgs.write_cell(paths.tree_root, sub, arm, DEFAULT_SPACE, fdir, mask, affine, paths.atlases_dir,
-                           keys, provenance, log=lambda m: print(m, flush=True))
+    parc_files = None
+    if space != DEFAULT_SPACE:
+        parc_files = subject_parcellations(paths, sub, space)
+        provenance["parcellations"] = {k: str(v[0]) for k, v in parc_files.items()}
+        provenance["glmsingle_root"] = str(root)
+    side = dqgs.write_cell(paths.tree_root, sub, arm, space, fdir, mask, affine, paths.atlases_dir,
+                           keys, provenance, log=lambda m: print(m, flush=True), parcellation_files=parc_files)
     print(f"sub-{sub} {arm}: cell written ({side['n_voxels_floor']} floored voxels) in {time.time() - t0:.0f} s")
 
 
@@ -755,6 +784,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--sub", help="bare label, e.g. 03")
     p.add_argument("--arm", choices=dqgs.ARMS)
     p.add_argument("--glmsingle-root", help="override <output_dir>/glmsingle_tb")
+    p.add_argument("--space", default=DEFAULT_SPACE,
+                   help="the fits' fMRIPrep volume space (default %(default)s); others need --tree-root")
     p.add_argument("--units", help="write one `sub<TAB>arm` line per cell to (re)build here")
     p.set_defaults(func=cmd_glmsingle_plan)
 
@@ -763,6 +794,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--sub", help="bare label, e.g. 03")
     p.add_argument("--arm", choices=dqgs.ARMS)
     p.add_argument("--glmsingle-root", help="override <output_dir>/glmsingle_tb")
+    p.add_argument("--space", default=DEFAULT_SPACE,
+                   help="the fits' fMRIPrep volume space (default %(default)s); others need --tree-root, and "
+                        "take their parcellations from data_quality/sub-##/anat")
     p.add_argument("--units", help="units file written by glmsingle-plan")
     p.add_argument("--index", type=int, help="1-based line in --units")
     p.add_argument("--force", action="store_true", help="rebuild a current cell")
