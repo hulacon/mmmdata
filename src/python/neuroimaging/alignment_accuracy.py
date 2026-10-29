@@ -248,3 +248,40 @@ def bootstrap_specificity(counts_by_arm: dict[str, pd.DataFrame], n_boot: int = 
         tot = s.sum(axis=1)
         out[a] = np.where(tot > 0, s[:, 0] / np.where(tot > 0, tot, 1), np.nan)
     return pd.DataFrame(out)
+
+
+#: An arm beats A on ribbon specificity by at least this much (absolute share), with its paired CI above 0.
+MIN_SPECIFICITY_GAIN = 0.010
+#: ncsnr no-worse margin, as a share of A's median ncsnr over the signal parcels.
+NCSNR_MARGIN_FRAC = 0.10
+
+
+def compare_arms(counts_a: pd.DataFrame, counts_b: pd.DataFrame, ncsnr_a: pd.Series, ncsnr_b: pd.Series,
+                 n_boot: int = N_BOOT, seed: int = RANDOM_SEED) -> dict:
+    """Arm B against A on one subject: ribbon specificity gain and the ncsnr no-worse check, both paired by parcel.
+
+    ``counts_*`` are :func:`parcel_counts` tables over the same signal parcels; ``ncsnr_*`` are per-parcel median
+    ncsnr indexed by parcel. Specificity: B's minus A's pooled share, with a paired parcel bootstrap CI. ncsnr:
+    the median over parcels of B - A, with a bootstrap CI over the same parcel draws; the margin is
+    :data:`NCSNR_MARGIN_FRAC` of A's median. ``wins`` needs both, before visual review.
+    """
+    boot = bootstrap_specificity({"A": counts_a, "B": counts_b}, n_boot=n_boot, seed=seed)
+    gain = specificity(counts_b)["specificity"] - specificity(counts_a)["specificity"]
+    g_ci = np.nanpercentile(boot["B"] - boot["A"], [2.5, 97.5])
+    parcels = counts_a["parcel"].to_numpy()
+    missing = set(parcels) - set(ncsnr_a.dropna().index) | set(parcels) - set(ncsnr_b.dropna().index)
+    if missing:
+        raise ValueError(f"no ncsnr for signal parcels {sorted(missing)} in one of the arms")
+    d = (ncsnr_b.reindex(parcels) - ncsnr_a.reindex(parcels)).to_numpy(np.float64)
+    draws = np.random.default_rng(seed).integers(0, len(parcels), size=(n_boot, len(parcels)))
+    n_ci = np.percentile(np.median(d[draws], axis=1), [2.5, 97.5])
+    margin = NCSNR_MARGIN_FRAC * float(np.median(ncsnr_a.reindex(parcels)))
+    spec_ok = bool(gain >= MIN_SPECIFICITY_GAIN and g_ci[0] > 0)
+    ncsnr_ok = bool(n_ci[0] >= -margin)
+    return {"n_parcels": int(len(parcels)),
+            "specificity_A": specificity(counts_a)["specificity"], "specificity_B": specificity(counts_b)["specificity"],
+            "specificity_gain": float(gain), "specificity_gain_ci95": [float(g_ci[0]), float(g_ci[1])],
+            "min_gain": MIN_SPECIFICITY_GAIN, "specificity_passes": spec_ok,
+            "ncsnr_median_A": float(np.median(ncsnr_a.reindex(parcels))),
+            "ncsnr_median_diff": float(np.median(d)), "ncsnr_median_diff_ci95": [float(n_ci[0]), float(n_ci[1])],
+            "ncsnr_margin": margin, "ncsnr_no_worse": ncsnr_ok, "wins": spec_ok and ncsnr_ok}

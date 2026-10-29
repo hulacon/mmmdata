@@ -113,3 +113,27 @@ def test_network_and_component_groups_from_schaefer_names():
     assert aa.component_group(names, "PFCd") == [2, 3]
     with pytest.raises(ValueError):
         aa.network_groups(pd.Series({1: "Background"}))
+
+
+def _counts(x_gm, x_wm):
+    n = len(x_gm)
+    return pd.DataFrame({"parcel": np.arange(1, n + 1), "n_gm": 100, "n_wm_band": 100, "n_csf_side": 50,
+                         "x_gm": x_gm, "x_wm_band": x_wm, "x_csf_side": 5})
+
+
+def test_compare_arms_gain_and_ncsnr_no_worse():
+    rng = np.random.default_rng(1)
+    a = _counts(rng.integers(70, 90, 40), rng.integers(10, 20, 40))
+    b = a.copy()
+    b["x_wm_band"] = (b.x_wm_band - 6).clip(lower=0)            # B moves signal out of the WM band
+    nc_a = pd.Series(rng.uniform(0.15, 0.25, 40), index=a.parcel)
+    r = aa.compare_arms(a, b, nc_a, nc_a + 0.001)
+    assert r["specificity_gain"] > aa.MIN_SPECIFICITY_GAIN and r["specificity_gain_ci95"][0] > 0
+    assert r["ncsnr_no_worse"] and r["wins"]
+    assert r["ncsnr_margin"] == pytest.approx(aa.NCSNR_MARGIN_FRAC * np.median(nc_a))
+    worse = aa.compare_arms(a, b, nc_a, nc_a - 0.1)                # ncsnr falls by ~half: fails no-worse
+    assert worse["specificity_passes"] and not worse["ncsnr_no_worse"] and not worse["wins"]
+    same = aa.compare_arms(a, a.copy(), nc_a, nc_a)
+    assert same["specificity_gain"] == 0 and not same["wins"]
+    with pytest.raises(ValueError, match="no ncsnr"):
+        aa.compare_arms(a, b, nc_a.iloc[:-1], nc_a)

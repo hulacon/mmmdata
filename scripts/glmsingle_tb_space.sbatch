@@ -25,18 +25,21 @@
 #   sbatch --partition=compute --mem=150G --time=18:00:00 ...
 #
 # Usage:
-#   sbatch glmsingle_tb_space.sbatch <sub-##> <arm> <space> <output_base>
+#   sbatch glmsingle_tb_space.sbatch <sub-##> <arm> <space> <output_base> [<fmriprep_dir>]
 #   sbatch glmsingle_tb_space.sbatch sub-## enc T1w <scratch>/glmsingle_tb_T1w
+# <fmriprep_dir> (optional) reads the BOLD from another fMRIPrep tree, e.g. an
+# alignment arm's backfill output (default: derivatives/fmriprep).
 #==============================================================================
 
-if [ $# -ne 4 ]; then
-    echo "usage: sbatch glmsingle_tb_space.sbatch <subject> <arm> <space> <output_base>" >&2
+if [ $# -ne 4 ] && [ $# -ne 5 ]; then
+    echo "usage: sbatch glmsingle_tb_space.sbatch <subject> <arm> <space> <output_base> [<fmriprep_dir>]" >&2
     exit 2
 fi
 SUBJECT=$1
 ARM=$2
 SPACE=$3
 OUTPUT_BASE=$4
+FMRIPREP_DIR=${5:-}
 
 echo "=========================================="
 echo "GLMsingle TB (space) — SLURM Job Info"
@@ -45,6 +48,7 @@ echo "Job ID: ${SLURM_JOB_ID}"
 echo "Node: ${SLURMD_NODENAME}"
 echo "Subject: ${SUBJECT}  Arm: ${ARM}  Space: ${SPACE}"
 echo "Output base: ${OUTPUT_BASE}"
+echo "fMRIPrep dir: ${FMRIPREP_DIR:-<default>}"
 echo "Start Time: $(date)"
 echo "=========================================="
 echo ""
@@ -57,7 +61,8 @@ python ${REPO_ROOT}/scripts/glmsingle_tb.py \
     --subject ${SUBJECT} \
     --arm ${ARM} \
     --space ${SPACE} \
-    --output-base ${OUTPUT_BASE}
+    --output-base ${OUTPUT_BASE} \
+    ${FMRIPREP_DIR:+--fmriprep-dir ${FMRIPREP_DIR}}
 
 EXIT_STATUS=$?
 

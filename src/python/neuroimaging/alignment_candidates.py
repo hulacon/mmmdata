@@ -109,6 +109,25 @@ def read_ants_mat(path: Path) -> np.ndarray:
     return dqa.itk_affine_to_matrix(mat[key], mat["fixed"])
 
 
+def write_itk_txt(M: np.ndarray, path: Path) -> Path:
+    """Write a 4x4 LPS point map as a one-transform ITK text file (zero centre), as fMRIPrep writes its xfms."""
+    M = np.asarray(M, dtype=np.float64)
+    params = " ".join(f"{v:.10g}" for v in [*M[:3, :3].ravel(), *M[:3, 3]])
+    Path(path).write_text("#Insight Transform File V1.0\n#Transform 0\nTransform: AffineTransform_double_3_3\n"
+                          f"Parameters: {params}\nFixedParameters: 0 0 0\n")
+    return Path(path)
+
+
+def arm_b_coreg(coreg_a: np.ndarray, run_to_template: np.ndarray, template_to_t1w: np.ndarray) -> np.ndarray:
+    """Arm B's boldref->T1w transform (T1w point -> native boldref point) from A's and the stage 0 corrections.
+
+    ``template_to_t1w`` maps a T1w point to the B template (bbregister), ``run_to_template`` maps a template
+    point to the A-placed run (the run's rigid registration to the template), and ``coreg_a`` (fMRIPrep's
+    ``from-boldref_to-T1w`` xfm) maps a T1w point to the native boldref. The point maps chain in that order.
+    """
+    return coreg_a @ run_to_template @ template_to_t1w
+
+
 def apply_affine(M: np.ndarray, points: np.ndarray) -> np.ndarray:
     p = np.asarray(points, dtype=np.float64)
     return (M @ np.c_[p, np.ones(len(p))].T).T[:, :3]
@@ -213,7 +232,12 @@ def bbregister_to_t1w(moving: Path, subjects_dir: Path, subject: str, fsnative_t
     if len(costs) != 1:
         raise FileNotFoundError(f"expected one bbregister .mincost in {workdir}, found {costs}")
     cost = float(costs[0].read_text().split()[0])
-    return read_itk_txt(itk) @ read_itk_txt(fsnative_to_t1w), cost
+    return bbreg_t1w_map(itk, fsnative_to_t1w), cost
+
+
+def bbreg_t1w_map(bbreg_itk: Path, fsnative_to_t1w: Path) -> np.ndarray:
+    """T1w point -> moving-image point, from bbregister's ITK export and fMRIPrep's fsnative->T1w xfm."""
+    return read_itk_txt(bbreg_itk) @ read_itk_txt(fsnative_to_t1w)
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +266,91 @@ def cell_paths(out_root: Path, subject: str) -> dict[str, Path]:
             "funcrefC": d / f"sub-{subject}_desc-funcrefC_boldref.nii.gz",
             "t2w_in_t1w": d / f"sub-{subject}_desc-t2wInT1w_T2w.nii.gz",
             "check": d / "check"}
+
+
+#: fMRIPrep's per-run boldref->T1w transform, the one file an arm tree replaces.
+COREG_SUFFIX = "_from-boldref_to-T1w_mode-image_desc-coreg_xfm.txt"
+#: Production files that stay out of an arm tree (reports; FreeSurfer is passed with --fs-subjects-dir).
+ARM_TREE_SKIP = ("figures", "log", "logs", "sourcedata")
+#: Largest |arm-tree displacement - stage 0 displacement| accepted, mm (the stage 0 table has 4 decimals).
+ARM_TREE_TOL_MM = 1e-3
+
+
+def build_arm_tree(fmriprep_tree: Path, stage0_root: Path, subject: str, arm: str, sessions: Sequence[str],
+                   tasks: Sequence[str], out_tree: Path, log: Callable[[str], None] = print) -> pd.DataFrame:
+    """An fMRIPrep derivatives tree that differs from production only in the coreg xfm of the chosen runs.
+
+    Every production file of the subject's anatomy and of ``sessions`` is symlinked; for runs of ``tasks``
+    the ``from-boldref_to-T1w`` xfm is replaced by the arm's (arm ``A`` replaces nothing: a control tree).
+    fMRIPrep given this tree with ``--derivatives`` reuses every fit and resamples once with the arm's
+    placement. Each written xfm's displacement from A over the T1w brain mask must reproduce the stage 0
+    table's, or this raises. Returns one row per replaced (or, for A, matched) run.
+    """
+    import nibabel as nib
+
+    if arm not in ("A", "B"):
+        raise ValueError(f"arm must be A (control) or B; got {arm!r}")
+    fmriprep_tree, out_tree = Path(fmriprep_tree), Path(out_tree)
+    if out_tree.resolve() == fmriprep_tree.resolve():
+        raise ValueError("the arm tree must not be the production tree")
+    sub_src, sub_dst = fmriprep_tree / f"sub-{subject}", out_tree / f"sub-{subject}"
+
+    def link_tree(src: Path, dst: Path) -> None:
+        for f in sorted(src.rglob("*")):
+            if f.is_file():
+                d = dst / f.relative_to(src)
+                d.parent.mkdir(parents=True, exist_ok=True)
+                if d.is_symlink() or d.exists():
+                    d.unlink()
+                d.symlink_to(f)
+
+    out_tree.mkdir(parents=True, exist_ok=True)
+    for f in fmriprep_tree.iterdir():
+        if f.is_file() and f.suffix in (".json", ".tsv"):
+            (out_tree / f.name).unlink(missing_ok=True)
+            (out_tree / f.name).symlink_to(f)
+    for d in sub_src.iterdir():
+        if d.is_dir() and d.name not in ARM_TREE_SKIP and not d.name.startswith("ses-"):
+            link_tree(d, sub_dst / d.name)
+    for s in sessions:
+        if not (sub_src / f"ses-{s}").is_dir():
+            raise FileNotFoundError(f"no production session {sub_src / f'ses-{s}'}")
+        link_tree(sub_src / f"ses-{s}", sub_dst / f"ses-{s}")
+
+    anat = _anat(fmriprep_tree, subject)
+    bm = nib.load(str(anat["brain_mask"]))
+    pts, _ = mask_points_lps(np.asarray(bm.dataobj) > 0, bm.affine)
+    paths = cell_paths(stage0_root, subject)
+    stage0 = pd.read_csv(paths["table"], sep="\t", dtype=str)
+    T_B = bbreg_t1w_map(paths["xfm"] / "B_bbreg" / "bbreg_itk.txt", anat["fsnative_to_t1w"]) if arm == "B" else None
+    rows = []
+    for s in sessions:
+        for coreg in sorted((sub_dst / f"ses-{s}" / "func").glob(f"sub-{subject}_ses-{s}_*{COREG_SUFFIX}")):
+            prefix = coreg.name[: -len(COREG_SUFFIX)]
+            ent = dict(kv.split("-", 1) for kv in prefix.split("_"))
+            if ent["task"] not in tasks:
+                continue
+            C_A = read_itk_txt(coreg.resolve())
+            if arm == "B":
+                D = read_ants_mat(paths["xfm"] / f"B_run_{prefix}_0GenericAffine.mat")
+                M = arm_b_coreg(C_A, D, T_B)
+                coreg.unlink()
+                write_itk_txt(M, coreg)
+            else:
+                M = C_A
+            disp = summarise(apply_affine(M, pts), apply_affine(C_A, pts), "disp")
+            hit = stage0[(stage0.ses == s) & (stage0.task == ent["task"]) & (stage0.run == ent.get("run", "n/a"))]
+            ref = float(hit["B_mean_mm"].iloc[0]) if arm == "B" and len(hit) == 1 else 0.0
+            if abs(disp["disp_mean_mm"] - ref) > ARM_TREE_TOL_MM:
+                raise ValueError(f"{prefix}: arm {arm} xfm moves the brain {disp['disp_mean_mm']:.4f} mm from A, "
+                                 f"stage 0 says {ref:.4f}")
+            rows.append({"ses": s, "task": ent["task"], "run": ent.get("run", "n/a"), **disp,
+                         "stage0_mean_mm": ref, "coreg": str(coreg)})
+    if not rows:
+        raise ValueError(f"sub-{subject}: no {COREG_SUFFIX} for tasks {list(tasks)} in sessions {list(sessions)}")
+    log(f"sub-{subject}: arm {arm} tree at {out_tree}: {len(rows)} runs, displacement from A "
+        f"median {np.median([r['disp_mean_mm'] for r in rows]):.3f} mm")
+    return pd.DataFrame(rows)
 
 
 def build_cell(out_root: Path, fmriprep_tree: Path, bids_root: Path, subject: str, runs: list[FmriprepRun],

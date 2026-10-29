@@ -4,6 +4,8 @@
   edge    pial/CSF edge r for every T1w boldref
   ribbon  ribbon specificity of one GLMsingle data-quality cell (T1w), over the signal
           parcels, which are fixed from arm A and passed to every other arm
+  compare one arm against A: ribbon specificity gain (paired parcel bootstrap) and the
+          ncsnr no-worse check, from both arms' ``ribbon`` counts and data-quality cells
 
 The anatomy (ribbon, aseg, CSF probseg, Schaefer-400 on the BOLD grid) always
 comes from the production fMRIPrep and data_quality trees; only the boldrefs
@@ -30,6 +32,7 @@ Outputs under ``<out>/sub-##/``::
     sub-##_arm-<arm>_fit-<fit>_set-<set>_desc-ribbon_counts.tsv     (ribbon) per signal parcel: voxels, null-beating voxels
     sub-##_arm-<arm>_fit-<fit>_set-<set>_desc-ribbon_qc.json        (ribbon) specificity, bootstrap CI, settings
     sub-##_arm-<arm>_fit-<fit>_set-<set>_desc-ribbonshift_qc.tsv    (ribbon --shift-check)
+    sub-##_arm-<arm>_fit-<fit>_set-<set>_desc-compare_qc.json       (compare: the arm against A)
     sub-##_fit-<fit>_set-<set>_desc-signalparcels.tsv               (ribbon, when computed from this cell)
 
 Usage:
@@ -299,10 +302,44 @@ def cmd_ribbon(args, deriv: Path) -> None:
     Path(f"{stem}_desc-ribbon_qc.json").write_text(json.dumps(side, indent=2))
 
 
+def parcel_ncsnr(parcels_tsv: Path, cond_set: str) -> pd.Series:
+    """Per-parcel median TYPED ncsnr (Schaefer-400) of one GLMsingle data-quality cell, indexed by parcel."""
+    t = pd.read_csv(parcels_tsv, sep="\t", na_values=["n/a"])
+    t = t[(t.atlas == SIGNAL_ATLAS) & (t.beta_type == SIGNAL_BETA)]
+    return t.set_index("parcel")[f"{cond_set}_ncsnr_median"]
+
+
+def cmd_compare(args, deriv: Path) -> None:
+    """Arm vs A: ribbon specificity gain and ncsnr no-worse, from both arms' ``ribbon`` outputs and cells."""
+    sub, tag = args.sub, f"fit-{args.fit}_set-{args.set}"
+    d = args.out / f"sub-{sub}"
+    counts = {}
+    for arm in ("A", args.arm):
+        f = d / f"sub-{sub}_arm-{arm}_{tag}_desc-ribbon_counts.tsv"
+        if not f.exists():
+            sys.exit(f"missing {f}: run `accuracy.py ribbon --arm {arm}` first")
+        counts[arm] = pd.read_csv(f, sep="\t")
+    ncsnr = {arm: parcel_ncsnr(dqgs.cell_paths(tree, sub, args.fit, args.space)["parcels"], args.set)
+             for arm, tree in (("A", args.cell_tree_a), (args.arm, args.cell_tree))}
+    res = aa.compare_arms(counts["A"], counts[args.arm], ncsnr["A"], ncsnr[args.arm])
+    print(f"sub-{sub} {args.arm} vs A ({tag}, {res['n_parcels']} parcels): specificity "
+          f"{res['specificity_A']:.4f} -> {res['specificity_B']:.4f}, gain {res['specificity_gain']:+.4f} "
+          f"[{res['specificity_gain_ci95'][0]:+.4f}, {res['specificity_gain_ci95'][1]:+.4f}] "
+          f"(needs >= {res['min_gain']:.3f}, CI > 0: {'pass' if res['specificity_passes'] else 'fail'}); "
+          f"ncsnr median diff {res['ncsnr_median_diff']:+.4f} [{res['ncsnr_median_diff_ci95'][0]:+.4f}, "
+          f"{res['ncsnr_median_diff_ci95'][1]:+.4f}] vs margin -{res['ncsnr_margin']:.4f} "
+          f"({'no worse' if res['ncsnr_no_worse'] else 'WORSE'}); wins before visual review: {res['wins']}",
+          flush=True)
+    Path(d / f"sub-{sub}_arm-{args.arm}_{tag}_desc-compare_qc.json").write_text(json.dumps(_stamp({
+        "subject": sub, "arm": args.arm, "against": "A", "fit": args.fit, "set": args.set, "space": args.space,
+        "cells": {"A": str(args.cell_tree_a), args.arm: str(args.cell_tree)}, **res,
+        "bootstrap": {"n": aa.N_BOOT, "seed": aa.RANDOM_SEED}}), indent=2))
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("edge", "ribbon"):
+    for name in ("edge", "ribbon", "compare"):
         p = sp.add_parser(name)
         p.add_argument("--sub", required=True, help="bare label, e.g. 04")
         p.add_argument("--arm", required=True, help="arm label written into the outputs, e.g. A")
@@ -316,6 +353,12 @@ def main(argv=None) -> None:
         else:
             p.add_argument("--cell-tree", required=True, type=Path,
                            help="data_quality tree holding the arm's GLMsingle cell")
+        if name == "compare":
+            p.add_argument("--cell-tree-a", required=True, type=Path, help="data_quality tree holding arm A's cell")
+            p.add_argument("--fit", required=True, choices=dqgs.ARMS, help="GLMsingle arm, e.g. enc")
+            p.add_argument("--set", required=True, choices=("anchor", "repeat"), help="condition set")
+            p.add_argument("--space", default="T1w")
+        elif name == "ribbon":
             p.add_argument("--fit", required=True, choices=dqgs.ARMS, help="GLMsingle arm, e.g. enc")
             p.add_argument("--set", required=True, choices=("anchor", "repeat"), help="condition set")
             p.add_argument("--space", default="T1w")
@@ -324,7 +367,7 @@ def main(argv=None) -> None:
     args = ap.parse_args(argv)
     deriv = Path(load_config()["paths"]["output_dir"])
     t0 = time.time()
-    {"edge": cmd_edge, "ribbon": cmd_ribbon}[args.cmd](args, deriv)
+    {"edge": cmd_edge, "ribbon": cmd_ribbon, "compare": cmd_compare}[args.cmd](args, deriv)
     print(f"sub-{args.sub}: {time.time() - t0:.0f} s", flush=True)
 
 
