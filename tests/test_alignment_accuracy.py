@@ -38,6 +38,23 @@ def test_compartments_on_a_flat_sheet():
     assert not (c.pial_band & c.wm).any()
 
 
+def test_anatomy_compartments_register_sub_voxel_shifts():
+    # 1 mm anatomy along x: WM below 16, a 4 mm ribbon 16-19, outside from 20; 2 mm BOLD grid.
+    fine = np.zeros((48, 6, 6), np.int32)
+    fine[:16] = 2
+    ribbon = np.zeros(fine.shape, bool)
+    ribbon[16:20] = True
+    fine[16:20] = 3
+    eye, bold = np.eye(4), np.diag([2.0, 2.0, 2.0, 1.0])
+    gm_x = lambda c: sorted(set(np.nonzero(c.gm)[0]))  # noqa: E731
+    base = aa.anatomy_compartments(ribbon, eye, fine, eye, (24, 3, 3), bold)
+    assert (aa.anatomy_compartments(ribbon, eye, fine, eye, (24, 3, 3), bold, shift=(0, 0.0)).gm == base.gm).all()
+    half = aa.anatomy_compartments(ribbon, eye, fine, eye, (24, 3, 3), bold, shift=(0, 0.5))
+    assert gm_x(half) != gm_x(base)                 # a quarter-voxel move changes the boundary voxels
+    whole = aa.anatomy_compartments(ribbon, eye, fine, eye, (24, 3, 3), bold, shift=(0, 2.0))
+    assert gm_x(whole) == [x + 1 for x in gm_x(base)]
+
+
 def test_pial_edge_r_falls_as_the_run_shifts_off_the_boundary():
     gm, wm, out, x = _slab()
     c = aa.compartments(gm, wm, out)
