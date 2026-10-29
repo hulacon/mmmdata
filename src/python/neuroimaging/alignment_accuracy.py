@@ -113,6 +113,26 @@ def compartments(ribbon_frac: np.ndarray, wm_frac: np.ndarray, outside_frac: np.
     return Compartments(gm, wm, outside, wm_band, csf_side, pial_band)
 
 
+def anatomy_compartments(ribbon: np.ndarray, ribbon_affine: np.ndarray, aseg: np.ndarray,
+                         aseg_affine: np.ndarray, shape: tuple, ref_affine: np.ndarray,
+                         shift: Optional[tuple[int, float]] = None) -> Compartments:
+    """Compartments on the ``(shape, ref_affine)`` grid from the fine ribbon mask and aseg labels.
+
+    ``shift`` is ``(world axis, mm)``: the anatomy is translated by that much
+    before it is put on the grid. Because the fine masks go through
+    :func:`coverage_fraction`, a sub-voxel shift changes the fractions and so
+    which boundary voxels pass :data:`FRACTION_IN`.
+    """
+    rib_aff, aseg_aff = ribbon_affine.copy(), aseg_affine.copy()
+    if shift is not None:
+        axis, d = shift
+        rib_aff[axis, 3] += d
+        aseg_aff[axis, 3] += d
+    return compartments(coverage_fraction(np.asarray(ribbon) > 0, rib_aff, shape, ref_affine),
+                        coverage_fraction(np.isin(aseg, ASEG_WM), aseg_aff, shape, ref_affine),
+                        coverage_fraction(np.isin(aseg, ASEG_OUTSIDE), aseg_aff, shape, ref_affine))
+
+
 def nearest_labels(labels: np.ndarray, where: np.ndarray) -> np.ndarray:
     """``labels`` with every ``where`` voxel given its nearest nonzero label (others 0)."""
     from scipy.ndimage import distance_transform_edt

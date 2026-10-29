@@ -12,7 +12,9 @@ src/python/neuroimaging/alignment_accuracy.py.
 
 ``--shift-check N`` also translates the first N runs' boldrefs by known
 amounts along each world axis and records edge r at each shift; for ``ribbon``
-it shifts the null-beating map against the fixed anatomy instead. A measure
+it moves the anatomy against the fixed null-beating map instead (``shift_mm`` is
+the map's shift relative to the anatomy), rebuilding the compartments from the
+fine masks so that sub-voxel shifts count. A measure
 that tracks the anatomy should peak near zero shift for a well-aligned arm; a
 peak elsewhere is either a real offset or a bias of the measure, and is read
 before any arm comparison.
@@ -103,14 +105,6 @@ def load_on_grid(boldref: Path, shape, affine, shift=None) -> np.ndarray:
     return dqv.onto_grid(v, np.ones(v.shape, bool), a, shape, affine)[0]
 
 
-def shifted_mask(m: np.ndarray, affine: np.ndarray, axis: int, d: float) -> np.ndarray:
-    """A boolean map on its own grid, translated by ``d`` mm along world ``axis`` (trilinear, kept >= 0.5)."""
-    a = affine.copy()
-    a[axis, 3] += d
-    v = dqv.onto_grid(m.astype(np.float32), np.ones(m.shape, bool), a, m.shape, affine)[0]
-    return np.nan_to_num(v) >= 0.5
-
-
 class Anatomy:
     """The subject's T1w BOLD grid, Schaefer-400 labels on it, the compartments and the CSF probseg."""
 
@@ -134,17 +128,18 @@ class Anatomy:
                        ("csf", "_label-CSF_probseg.nii.gz"))}
         rib = nib.load(str(self.files["ribbon"]))
         aseg = nib.load(str(self.files["aseg"]))
-        aseg_v = np.asarray(aseg.dataobj).astype(np.int32)
+        self._fine = (np.asarray(rib.dataobj) > 0, rib.affine, np.asarray(aseg.dataobj).astype(np.int32), aseg.affine)
         grid = (self.shape, self.affine)
-        self.comp = aa.compartments(
-            aa.coverage_fraction(np.asarray(rib.dataobj) > 0, rib.affine, *grid),
-            aa.coverage_fraction(np.isin(aseg_v, aa.ASEG_WM), aseg.affine, *grid),
-            aa.coverage_fraction(np.isin(aseg_v, aa.ASEG_OUTSIDE), aseg.affine, *grid))
+        self.comp = self.compartments()
         csf_img = nib.load(str(self.files["csf"]))
         csf_v = np.asarray(csf_img.dataobj, dtype=np.float32)
         self.csf = dqv.onto_grid(csf_v, np.ones(csf_v.shape, bool), csf_img.affine, *grid)[0]
         self.names = pd.read_csv(deriv / "atlases" / SCHAEFER_NAMES, sep="\t").set_index("index")["name"]
         print(f"sub-{sub}: compartments {self.comp.sizes()}", flush=True)
+
+    def compartments(self, shift=None) -> aa.Compartments:
+        """Compartments on the BOLD grid; ``shift`` = (axis, mm) moves the anatomy first."""
+        return aa.anatomy_compartments(*self._fine, self.shape, self.affine, shift=shift)
 
     def provenance(self) -> dict:
         return {"anat": {k: str(v) for k, v in self.files.items()}, "parcellation": str(self.parcellation),
@@ -283,8 +278,11 @@ def cmd_ribbon(args, deriv: Path) -> None:
         rows = []
         for ai, axis in enumerate(AXES):
             for d in SHIFTS_MM:
-                c = aa.parcel_counts(shifted_mask(exceed, an.affine, ai, d), shifted_mask(keep, an.affine, ai, d),
-                                     an.comp, an.labels, parcels)
+                # Moving the map +d against the anatomy = moving the anatomy -d. The anatomy moves
+                # because its fine masks keep sub-voxel shifts; the thresholded map would snap them
+                # to whole voxels.
+                comp = an.comp if d == 0 else an.compartments(shift=(ai, -d))
+                c = aa.parcel_counts(exceed, keep, comp, an.labels, parcels)
                 rows.append({"axis": axis, "shift_mm": d, **aa.specificity(c)})
         shift = pd.DataFrame(rows)
         shift.to_csv(f"{stem}_desc-ribbonshift_qc.tsv", sep="\t", index=False, float_format="%.6g")

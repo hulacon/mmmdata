@@ -1,9 +1,8 @@
-"""scripts/alignment/accuracy.py helpers: signal-parcel rule and the shifted-mask used by the ribbon shift check."""
+"""scripts/alignment/accuracy.py helpers: the signal-parcel rule."""
 
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -23,11 +22,3 @@ def test_signal_parcels_take_typed_schaefer_rows_over_the_threshold(tmp_path):
     with pytest.raises(SystemExit, match="no repeat_frac_exceed"):
         acc.signal_parcels(f, "repeat")
 
-
-def test_shifted_mask_moves_by_whole_voxels_and_keeps_zero_shift():
-    m = np.zeros((10, 4, 4), bool)
-    m[4] = True
-    aff = np.diag([2.0, 2.0, 2.0, 1.0])
-    assert (acc.shifted_mask(m, aff, 0, 0.0) == m).all()
-    moved = acc.shifted_mask(m, aff, 0, 2.0)  # +2 mm on a 2 mm grid = one voxel up the x index
-    assert moved[5].all() and not moved[4].any()
