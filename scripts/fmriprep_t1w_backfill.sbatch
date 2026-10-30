@@ -36,6 +36,11 @@
 #          fmriprep_t1w_backfill.sbatch
 # Env: SUBJECT, SESSION (bare labels, required); OUT_ROOT (fMRIPrep output
 # dir, default: a staging dir on hulacon scratch); SPACES (default "T1w").
+#
+# Alignment arms (scripts/alignment/arm_tree.py): DERIV_TREE replaces the
+# campaign tree as the source of precomputed derivatives (an arm tree: the
+# campaign tree with some runs' coreg xfm swapped); BOLD_TASK limits the BOLD
+# runs to one task; WORK_BASE moves the work dirs (keep it short).
 #==============================================================================
 
 set -u
@@ -57,6 +62,7 @@ source "${REPO_ROOT}/scripts/load_config.sh"
 
 FMRIPREP_TREE="${OUTPUT_DIR}/fmriprep"                 # the campaign tree (read)
 FS_SUBJECTS_DIR="${FMRIPREP_TREE}/sourcedata/freesurfer"
+DERIV_TREE="${DERIV_TREE:-$FMRIPREP_TREE}"               # precomputed derivatives (read)
 CONTAINER="${SINGULARITY_DIR}/fmriprep-25.2.5.sif"
 FS_LICENSE="${CODE_ROOT}/../fs_license.txt"
 SPACES="${SPACES:-T1w}"
@@ -64,22 +70,24 @@ OUT_ROOT="${OUT_ROOT:-/gpfs/scratch/hulacon/${USER}/t1w_pilot/fmriprep}"
 
 # Short on purpose (path-buffer trap, see the campaign record); per-unit so
 # concurrent sessions never share a nipype cache.
-WORK_DIR="/gpfs/scratch/hulacon/dbw/t1w/sub-${SUBJECT}_ses-${SESSION}"
+WORK_DIR="${WORK_BASE:-/gpfs/scratch/hulacon/dbw/t1w}/sub-${SUBJECT}_ses-${SESSION}"
 export SINGULARITYENV_TEMPLATEFLOW_HOME="$WORK_DIR/templateflow"
 export SINGULARITY_TMPDIR="$WORK_DIR/tmp"
 mkdir -p "$WORK_DIR" "$SINGULARITYENV_TEMPLATEFLOW_HOME" "$SINGULARITY_TMPDIR" "$OUT_ROOT"
 
 # Same per-session filter duckbrain writes: func-side suffixes only, anat unfiltered.
 FILTER="$WORK_DIR/bids_filter.json"
+BOLD_TASK_FILTER=""
+[ -n "${BOLD_TASK:-}" ] && BOLD_TASK_FILTER=", \"task\": \"${BOLD_TASK}\""
 cat > "$FILTER" <<JSON
 {
-  "bold": {"session": "${SESSION}"},
+  "bold": {"session": "${SESSION}"${BOLD_TASK_FILTER}},
   "sbref": {"session": "${SESSION}"},
   "fmap": {"session": "${SESSION}"}
 }
 JSON
 
-for p in "$CONTAINER" "$FS_LICENSE" "$FMRIPREP_TREE/dataset_description.json" \
+for p in "$CONTAINER" "$FS_LICENSE" "$DERIV_TREE/dataset_description.json" \
          "$FS_SUBJECTS_DIR/sub-${SUBJECT}/scripts/recon-all.done"; do
     [ -e "$p" ] || { echo "ERROR: missing $p"; exit 2; }
 done
@@ -96,6 +104,7 @@ singularity run --cleanenv --env PYTHONNOUSERSITE=1 \
   -B "${OUT_ROOT}:${OUT_ROOT}" \
   -B "$WORK_DIR:$WORK_DIR" \
   -B "${CODE_ROOT}/..:${CODE_ROOT}/..:ro" \
+  -B "${DERIV_TREE}:${DERIV_TREE}:ro" \
   "$CONTAINER" \
   "${BIDS_DIR}" "${OUT_ROOT}" participant \
   --participant-label "${SUBJECT}" \
@@ -106,7 +115,7 @@ singularity run --cleanenv --env PYTHONNOUSERSITE=1 \
   --nprocs "${SLURM_CPUS_PER_TASK}" \
   --mem-mb $(( SLURM_MEM_PER_NODE - 8192 )) \
   -w "$WORK_DIR" \
-  --derivatives "fmriprep=${FMRIPREP_TREE}" \
+  --derivatives "fmriprep=${DERIV_TREE}" \
   --fs-no-resume \
   --no-track-sessions --subject-anatomical-reference unbiased \
   --skip-bids-validation --notrack
