@@ -13,8 +13,12 @@ reference is NSD's single-rater manual segmentation of the 7T high-resolution T2
   Manual labels and arms both reach it through the same 0.3 mm grid; label = plurality.
 
 **Manual label coding.** ``HRT2/MTL_rawlabels`` holds values 1-20, not ``MTL.ctab`` codes: ctab label =
-ceil(k / 2), **odd = right hemisphere, even = left** (:func:`decode_manual`). Hippocampus = SUB, CA1, CA2, CA3,
-DG (head and body) + HT (tail, no subfields).
+ceil(k / 2), and the code's parity marks the hemisphere (**odd = right, even = left**). The parity is not
+trusted on its own: a rater can key the wrong parity, which strands a few voxels across the midline. The
+scorer assigns hemisphere by **side of the midplane** instead (:func:`manual_hemisphere`): the world-x
+plane halfway between the median positions of the odd- and even-coded voxels. The number of voxels whose
+side disagrees with their parity is written to the registration table (``manual_hemi_reassigned``).
+Hippocampus = SUB, CA1, CA2, CA3, DG (head and body) + HT (tail, no subfields).
 
 **HRT2 <-> T1.** NSD's HRT2 header is in the 7T session's scanner space and NSD ships no transform to the anat
 grid. ``HRT2/T2matched`` is ``T2_0pt8`` after NSD's own rigid registration onto the HRT2 grid, so a rigid
@@ -131,13 +135,44 @@ ARMS = (
 # Pure helpers (tested on synthetic data)
 # ---------------------------------------------------------------------------
 
-def decode_manual(raw: np.ndarray) -> dict[str, np.ndarray]:
-    """``MTL_rawlabels`` (1-20) -> canonical labels per hemisphere: ctab = ceil(k/2), odd = R, even = L."""
+def manual_hemisphere(raw: np.ndarray, affine: np.ndarray) -> tuple[np.ndarray, int]:
+    """Right-hemisphere mask for labelled voxels by side of the midplane, and how many disagree with parity.
+
+    The midplane is the world-x plane halfway between the median x of the odd-coded (right) and even-coded
+    (left) voxels; the side of the odd-coded median is right. A voxel's hemisphere is the side it lies on,
+    whatever its code's parity. Returns (``is_right``, bool over ``raw``'s shape, False where unlabelled;
+    ``n_reassigned``, labelled voxels whose side differs from their parity).
+    """
+    raw = np.asarray(raw).astype(np.int64)
+    lab = raw > 0
+    ijk = np.argwhere(lab)
+    x = nib.affines.apply_affine(np.asarray(affine, float), ijk)[:, 0]
+    odd = raw[lab] % 2 == 1
+    if odd.all() or not odd.any():
+        raise ValueError("manual labels hold only one parity; cannot place the midplane")
+    x_r, x_l = float(np.median(x[odd])), float(np.median(x[~odd]))
+    mid = (x_r + x_l) / 2
+    right = x > mid if x_r > x_l else x < mid
+    is_right = np.zeros(raw.shape, bool)
+    is_right[tuple(ijk.T)] = right
+    return is_right, int((right != odd).sum())
+
+
+def decode_manual(raw: np.ndarray, affine: np.ndarray | None = None) -> dict[str, np.ndarray]:
+    """``MTL_rawlabels`` (1-20) -> canonical labels per hemisphere; ctab = ceil(k/2).
+
+    With ``affine``, hemisphere = side of the midplane (:func:`manual_hemisphere`), which corrects parity
+    slips; without it, hemisphere = code parity (odd = R, even = L). The scorer always passes the affine.
+    """
     raw = np.asarray(raw).astype(np.int64)
     ctab = np.where(raw > 0, (raw + 1) // 2, 0)
+    if affine is None:
+        is_right = (raw > 0) & (raw % 2 == 1)
+    else:
+        is_right, _ = manual_hemisphere(raw, affine)
     out = {}
-    for h, parity in (("L", 0), ("R", 1)):
-        out[h] = hc.to_canon(np.where((raw > 0) & (raw % 2 == parity), ctab, 0), NATIVE_TO_CANON["manual"])
+    for h, mask in (("L", (raw > 0) & ~is_right), ("R", is_right)):
+        out[h] = hc.to_canon(np.where(mask, ctab, 0), NATIVE_TO_CANON["manual"])
     return out
 
 
@@ -381,7 +416,11 @@ def build_subject(out_root: Path, deriv: Path, ppdata: Path, subject: str, prove
     if not np.allclose(raw_img.affine, hrt2_img.affine) or raw_img.shape != hrt2_img.shape:
         raise ValueError("MTL_rawlabels is not on the HRT2_raw grid")
     t1_img = nib.load(str(anat / "T1_0pt8_masked.nii.gz"))
-    manual_hrt2 = decode_manual(np.asarray(raw_img.dataobj))
+    raw_manual = np.asarray(raw_img.dataobj)
+    manual_hrt2 = decode_manual(raw_manual, raw_img.affine)
+    n_reassigned = manual_hemisphere(raw_manual, raw_img.affine)[1]
+    if n_reassigned:
+        log(f"sub-{subject}: {n_reassigned} manual voxels take their hemisphere from the midplane, not parity")
     inputs = {a.name: arm_inputs(a, deriv, ppdata, subject) for a in arms}
     slice_axis = int(np.argmax(hrt2_img.header.get_zooms()[:3]))
     hrt2_zooms = np.asarray(hrt2_img.header.get_zooms()[:3], float)
@@ -412,6 +451,8 @@ def build_subject(out_root: Path, deriv: Path, ppdata: Path, subject: str, prove
         m = M & (W > 0) & (T > 0)
         r_reg = float(np.corrcoef(W[m], T[m])[0, 1])
         reg_rows.append({"subject": subject, "check": "r_T2_vs_T2matched", "hemi": "", "region": "", "value": r_reg})
+        reg_rows.append({"subject": subject, "check": "manual_hemi_reassigned", "hemi": "", "region": "",
+                         "value": float(n_reassigned)})
         if not r_reg >= MIN_REG_R:
             raise RuntimeError(f"sub-{subject}: T1 -> HRT2 xfm fails its check (r = {r_reg:.3f} < {MIN_REG_R}); "
                                f"not scoring. Supply a validated xfm (xfm_from).")

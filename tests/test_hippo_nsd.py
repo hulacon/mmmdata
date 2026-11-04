@@ -32,6 +32,32 @@ def test_decode_manual_all_hippocampal_codes():
         assert both[k - 1] == expect.get((k + 1) // 2, 0)
 
 
+def test_decode_manual_midline_overrides_parity():
+    # x = i (identity affine). Right cluster (odd codes) at x 20-22, left (even) at x 0-2.
+    raw = np.zeros((23, 1, 1), np.int64)
+    raw[20:23, 0, 0] = 9          # CA1 right
+    raw[0:3, 0, 0] = 10           # CA1 left
+    raw[1, 0, 0] = 13             # CA3 coded right (odd) but lying in the left cluster: a parity slip
+    aff = np.eye(4)
+    is_right, n = hn.manual_hemisphere(raw, aff)
+    assert n == 1 and not is_right[1, 0, 0] and is_right[20:23, 0, 0].all()
+    out = hn.decode_manual(raw, aff)
+    assert out["L"][1, 0, 0] == 4 and out["R"][1, 0, 0] == 0      # CA3 stays CA3, moves to the left
+    # without the affine the old parity rule applies
+    par = hn.decode_manual(raw)
+    assert par["R"][1, 0, 0] == 4 and par["L"][1, 0, 0] == 0
+
+
+def test_manual_hemisphere_follows_orientation_and_needs_both_parities():
+    raw = np.zeros((10, 1, 1), np.int64)
+    raw[0, 0, 0], raw[9, 0, 0] = 7, 8                       # right at low i, left at high i
+    flip = np.diag([-1.0, 1, 1, 1])                         # x = -i: right is still +x
+    is_right, n = hn.manual_hemisphere(raw, flip)
+    assert is_right[0, 0, 0] and not is_right[9, 0, 0] and n == 0
+    with pytest.raises(ValueError):
+        hn.manual_hemisphere(np.where(raw == 7, 7, 0), np.eye(4))
+
+
 def test_collapse_primary_and_alt():
     canon = np.zeros((7, 1, 1), np.uint8)
     canon[:, 0, 0] = [0, 2, hn.SRLM, hn.SRLM, 5, hn.CA4, 0]
