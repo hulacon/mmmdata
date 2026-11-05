@@ -461,6 +461,26 @@ def is_done(stem: Path) -> bool:
     return stem.with_suffix(".meta.json").exists()
 
 
+# aud2psy models that read the stored diarize turn table: conversation derives
+# from it, and egemaps / speech_emotion gate on it (aud2psy >= 0.20.0, where
+# the diarize speech gate is the default).
+TURN_READERS = ("conversation", "egemaps", "speech_emotion")
+SPEECH_GATED = ("egemaps", "speech_emotion")
+
+
+def _speech_gate_args(src: Source, model: str) -> list[str]:
+    """Isolated spoken words keep the Silero gate.
+
+    Each file is one speaker saying one word, so a turn table adds nothing, and
+    the batched path (one aud2psy call over many files) cannot hand each file
+    its own turns. Pinning the gate also keeps the single-unit fallback
+    (_run_group_individually) gating exactly like the batch.
+    """
+    if src.source == "word_audio" and model in SPEECH_GATED:
+        return ["--speech-gate", "silero"]
+    return []
+
+
 def command_for(src: Source, unit: Unit, model: str) -> list[str]:
     stem = stem_for(src, unit, model)
     if src.package == "viz2psy":
@@ -473,12 +493,14 @@ def command_for(src: Source, unit: Unit, model: str) -> list[str]:
     if src.package == "aud2psy":
         cmd = [PY, "-m", "aud2psy.cli", model, *unit.inputs,
                "-o", str(stem), "--hop", str(GRID_HOP), *unit.extra]
-        if model == "conversation":
-            # derives from the stored diarize turn table rather than re-running
-            # pyannote; aud2psy fails loudly, naming this path, if the diarize
-            # cell has not run yet
+        gate = _speech_gate_args(src, model)
+        if model in TURN_READERS and not gate:
+            # the stored diarize turn table, rather than re-running pyannote;
+            # aud2psy fails loudly, naming this path, if the diarize cell has
+            # not run yet
             speakers = unit.out_dir / f"{src.prefix}diarize_speakers.csv"
             cmd += ["--speakers", str(speakers)]
+        cmd += gate
         if model == "speech_rate":
             # likewise: stored transcribe word timestamps, no Whisper re-run
             words = unit.out_dir / f"{src.prefix}transcribe_transcript_words.csv"
@@ -1054,9 +1076,7 @@ def _run_batch_group(group: list, args) -> tuple[int, int, list]:
     src, _, model = group[0]
     label = f"{src.key}/{model}"
     root = OUT_ROOT / src.set_ / src.source
-    manifest_dir = INPUT_DIR / "_batch"
-    manifest_dir.mkdir(parents=True, exist_ok=True)
-    manifest = manifest_dir / f"{src.set_}_{src.source}_{model}.csv"
+    manifest = INPUT_DIR / "_batch" / f"{src.set_}_{src.source}_{model}.csv"
 
     rows = []
     missing = []
@@ -1079,17 +1099,18 @@ def _run_batch_group(group: list, args) -> tuple[int, int, list]:
         print(f"  {label} SKIP: no inputs present ({len(missing)} missing)")
         return 0, len(group), [f"{label} (missing inputs)"]
 
+    cmd = [PY, "-m", "aud2psy.cli", model, "--inputs-from", str(manifest),
+           "-o", str(root), "--hop", str(GRID_HOP), *_speech_gate_args(src, model)]
+    if args.dry_run:  # before the manifest write: a dry run writes nothing
+        print(f"  [batch] {label}: {len(rows)} units in ONE invocation "
+              f"(model loads once)\n      {' '.join(cmd)}")
+        return 0, 0, []
+
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     with open(manifest, "w", newline="") as f:
         w = _csv.DictWriter(f, ["path", "stimulus_id", "output"])
         w.writeheader()
         w.writerows(rows)
-
-    cmd = [PY, "-m", "aud2psy.cli", model, "--inputs-from", str(manifest),
-           "-o", str(root), "--hop", str(GRID_HOP)]
-    if args.dry_run:
-        print(f"  [batch] {label}: {len(rows)} units in ONE invocation "
-              f"(model loads once)\n      {' '.join(cmd)}")
-        return 0, 0, []
 
     print(f"  [batch] {label}: {len(rows)} units, one model load ...", flush=True)
     t0 = time.time()
