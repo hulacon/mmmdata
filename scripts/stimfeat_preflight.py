@@ -19,6 +19,16 @@ Checks, in order:
   3. prefixes colliding with psytwill's reserved non-feature columns
      (hard failure -- a consumer would sweep the column into a space)
   4. that psytwill's EMBEDDING_RE actually parses each declared prefix
+  5. Contract B 1.2 labels (hard failure): every model class declares
+     `labels`; values are from the vocabularies; `derived_from` is present
+     exactly where the derivation needs it (checked on the default and on
+     each column entry merged over it). Per-column completeness needs the
+     emitted inventory, so it is each producer's own test, not this one.
+     Also reported, never a failure: `derived_from` values that equal
+     another family model's `checkpoint` (columns psytwill will flag
+     `circular_with` when both sit in one space). Only class-level
+     `checkpoint` attributes are visible here, so the preview can miss a
+     parent whose checkpoint is set at load time.
 
 Usage:  python stimfeat_preflight.py [--json]
 Exit:   0 clean, 1 on any hard failure.
@@ -71,6 +81,85 @@ def collect_prefixes() -> tuple[dict[str, list[str]], list[str]]:
     return owners, errors
 
 
+INTERPRETABILITY = {"nameable", "opaque"}
+DERIVATIONS = {
+    "formula", "formula-on-model", "trained-on-labels", "probe",
+    "zero-shot", "embedding", "bookkeeping",
+}
+NEEDS_PARENT = {"formula-on-model", "probe", "zero-shot"}
+
+
+def _entry_problems(entry: dict, where: str, complete: bool) -> list[str]:
+    """Vocabulary and derived_from rules for one (merged) label entry.
+
+    ``complete`` demands both required keys; a model default may leave
+    them to its column entries, so it is checked with ``complete=False``.
+    """
+    out = []
+    interp, deriv = entry.get("interpretability"), entry.get("derivation")
+    if interp is not None and interp not in INTERPRETABILITY:
+        out.append(f"{where}: interpretability {interp!r}")
+    if deriv is not None and deriv not in DERIVATIONS:
+        out.append(f"{where}: derivation {deriv!r}")
+    if complete:
+        for key in ("interpretability", "derivation"):
+            if entry.get(key) is None:
+                out.append(f"{where}: missing {key}")
+    if deriv is not None:
+        has_parent = bool(entry.get("derived_from"))
+        if deriv in NEEDS_PARENT and not has_parent:
+            out.append(f"{where}: derivation {deriv} needs derived_from")
+        if deriv not in NEEDS_PARENT and has_parent:
+            out.append(f"{where}: derived_from not allowed for {deriv}")
+    return out
+
+
+def check_labels() -> tuple[list[str], list[str], dict[str, list[str]]]:
+    """(problems, models without labels, {derived_from: [family owners]})."""
+    problems: list[str] = []
+    unlabelled: list[str] = []
+    checkpoints: dict[str, list[str]] = {}
+    parents: dict[str, set[str]] = {}
+    for pkg in PACKAGES:
+        registry = importlib.import_module(f"{pkg}.cli").MODEL_REGISTRY
+        for name, (module_path, class_name, _desc) in registry.items():
+            owner = f"{pkg}.{name}"
+            try:
+                cls = getattr(importlib.import_module(module_path), class_name)
+            except Exception:  # noqa: BLE001 - already reported by collect_prefixes
+                continue
+            ckpt = getattr(cls, "checkpoint", None)
+            if isinstance(ckpt, str) and ckpt:
+                checkpoints.setdefault(ckpt, []).append(owner)
+            labels = getattr(cls, "labels", None)
+            if not labels:
+                unlabelled.append(owner)
+                continue
+            default = dict(labels.get("default", {}))
+            columns = labels.get("columns", {})
+            # A default without a derivation is allowed only when column
+            # entries supply it (e.g. a model mixing probe and formula columns).
+            default_complete = bool(default.get("derivation")) or not columns
+            problems += _entry_problems(
+                default, f"{owner}[default]", complete=default_complete
+            )
+            for col, over in columns.items():
+                merged = {**default, **over}
+                problems += _entry_problems(merged, f"{owner}[{col}]", complete=True)
+                if merged.get("derived_from"):
+                    parents.setdefault(merged["derived_from"], set()).add(owner)
+            if default.get("derived_from"):
+                parents.setdefault(default["derived_from"], set()).add(owner)
+    # A model deriving columns from its own checkpoint (a formula over its
+    # own network's output) is not circular with another member.
+    circular = {}
+    for parent, users in parents.items():
+        others = [o for o in checkpoints.get(parent, []) if o not in users]
+        if others:
+            circular[parent] = {"derived_by": sorted(users), "checkpoint_of": others}
+    return problems, unlabelled, circular
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--json", action="store_true", help="machine-readable report")
@@ -100,7 +189,12 @@ def main() -> int:
         if not m or m.group("prefix") != p:
             unparsable.append(p)
 
-    hard_fail = bool(duplicates or undocumented or reserved_hits or unparsable)
+    label_problems, unlabelled, circular = check_labels()
+
+    hard_fail = bool(
+        duplicates or undocumented or reserved_hits or unparsable
+        or label_problems or unlabelled
+    )
 
     report = {
         "n_models": sum(
@@ -113,6 +207,9 @@ def main() -> int:
         "reserved_collisions": reserved_hits,
         "unparsable_by_embedding_re": sorted(unparsable),
         "import_errors": errors,
+        "labels_missing": sorted(unlabelled),
+        "label_problems": label_problems,
+        "circular_preview": circular,
         "clean": not hard_fail,
     }
 
@@ -125,6 +222,13 @@ def main() -> int:
         print(f"nested (UNDOCUMENTED): {report['nested_undocumented'] or 'none'}")
         print(f"reserved collisions:   {reserved_hits or 'none'}")
         print(f"EMBEDDING_RE failures: {report['unparsable_by_embedding_re'] or 'none'}")
+        print(f"models without labels: {sorted(unlabelled) or 'none'}")
+        print(f"label problems:        {label_problems or 'none'}")
+        print("circular preview (derived_from = a family checkpoint):")
+        for parent, info in sorted(circular.items()):
+            print(f"  {parent}: {info['derived_by']} <- checkpoint of {info['checkpoint_of']}")
+        if not circular:
+            print("  none")
         if errors:
             print("import errors:")
             for e in errors:
