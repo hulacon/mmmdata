@@ -99,3 +99,11 @@ def test_load_null_stacks_runs_and_draws(tmp_path):
     assert effect[1, 2, 0] == 12
     with pytest.raises(SystemExit):
         sc.load_null([tmp_path / "r0.npz"], "block_AvsBaseline")
+
+
+def test_models_flag_defaults_to_every_model_and_rejects_unknown():
+    base = ["--subject", "sub-##", "--task-dir", "t", "--null-dir", "n", "--rest-task", "rest", "--out", "o.json"]
+    assert sc.parse_args(base).models == list(sc.BAKEOFF)
+    assert sc.parse_args(base + ["--models", "motor"]).models == ["motor"]
+    with pytest.raises(SystemExit):
+        sc.parse_args(base + ["--models", "nomodel"])
