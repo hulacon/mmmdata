@@ -705,6 +705,15 @@ def test_parse_rescue_takes_a_named_projection_of_a_block(harness, tmp_path):
     assert got.name == "movies_A.interp.parquet" and got.with_suffix(".json").name == "movies_A.interp.json"
 
 
+def test_rescue_projection_k_defaults_to_the_fit_and_only_drops_components(rescue):
+    m = {"k": 49}
+    assert rescue.projection_k(m, None) == 49
+    assert rescue.projection_k(m, 24) == 24 and rescue.projection_k(m, 49) == 49
+    for bad in (0, 50):
+        with pytest.raises(SystemExit, match="only drop components"):
+            rescue.projection_k(m, bad)
+
+
 def _film_row(start=7, n=2, tr=1.5):
     return pd.DataFrame([{"stimulus_id": "film-a", "onset": 0.0, "start": start, "n": n,
                           "repetition_time": tr}])
