@@ -180,6 +180,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--noise", default="ar3-bc")
     p.add_argument("--space", default="T1w")
     p.add_argument("--regime", default="reference")
+    p.add_argument("--models", nargs="+", choices=tuple(BAKEOFF), default=list(BAKEOFF),
+                   help="models to score (default: all); each needs exactly one fit in --task-dir. "
+                        "The null draws share one seeded stream, so a subset's bands differ from an all-model run's")
     p.add_argument("--replicates", type=int, default=1000)
     p.add_argument("--seed", type=int, default=20261012)
     p.add_argument("--out", type=Path, required=True)
@@ -221,7 +224,7 @@ def main(argv=None) -> int:
             null_cache[key] = null_replicates(*null_arrays[shape], n_runs, args.replicates, rng)
         return {**null_cache[key], "requested_runs": int(n_runs)}
 
-    for model, contrasts in BAKEOFF.items():
+    for model, contrasts in ((m, BAKEOFF[m]) for m in args.models):
         metas = sorted(args.task_dir.glob(f"sub-{subject}_*model-{model}_space-{args.space}_noise-{args.noise}.json"))
         if len(metas) != 1:
             raise SystemExit(f"ERROR: expected one {model} fit for sub-{subject}, found {[m.name for m in metas]}")

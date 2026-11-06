@@ -20,6 +20,11 @@ Writes ``<stem>_runs.npz`` (per contrast: ``<name>_effect`` and ``<name>_varianc
 and ``affine``. That is the noise model itself, for consumers that need Σ rather than a
 contrast's variance (Part R's R-3).
 
+``--runs-from discover`` takes the run list from fMRIPrep run discovery (``adapter.adapt`` with no
+``runs``: QC exclusions applied) instead of a stand-in's recorded list, for subjects
+no stand-in has been fitted for. ``--tree``/``--desc`` are then unused. Run discovery and a stand-in
+over the same runs give the same fit; the run list actually used is recorded either way.
+
 ``--censor-fd MM`` censors volumes with framewise displacement above MM through braintwill's
 ``retain``; ``--confounds [COL ...]`` replaces the regime's named confound columns (none when
 given bare: aCompCor, cosines and non-steady-state spikes stay). Both are recorded in the JSON,
@@ -55,7 +60,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--subject", required=True)
     p.add_argument("--model", required=True)
     p.add_argument("--sessions", nargs="*", default=None,
-                   help="the stand-in's session pool: one session, or omit for the cross-session pool")
+                   help="the session pool: one session, or omit for the cross-session pool")
+    p.add_argument("--runs-from", choices=("stand-in", "discover"), default="stand-in",
+                   help="run list: a stand-in's *_run_metadata.json (default), or fMRIPrep run discovery")
     p.add_argument("--space", default="T1w")
     p.add_argument("--tree", default="nilearn_glm")
     p.add_argument("--desc", default="referenceOLS")
@@ -76,23 +83,28 @@ def main(argv=None) -> int:
     subject = args.subject.removeprefix("sub-")
     sessions = [s.removeprefix("ses-") for s in args.sessions] if args.sessions else None
     if sessions and len(sessions) > 1:
-        raise SystemExit("ERROR: a stand-in session pool is one session, or the whole subject")
+        raise SystemExit("ERROR: a session pool is one session, or the whole subject")
     model = load_model(args.model)
-    tree = derivatives_dir() / args.tree
-    meta, _ = stand_in(tree, subject, model, args.space, args.desc, sessions[0] if sessions else None)
-    wanted = [(r["session"], r["run"]) for r in meta["runs"]]
-    # include_excluded: the stand-in's recorded run list decides, so a run QC has
-    # excluded since must still be found, not reported missing
-    found = {(r.session, r.run): r for r in mmmget.runs(subject=subject, task=model.task,
-                                                        variant=meta["config"]["variant"],
-                                                        space=args.space, bids_root=config_bids_root(),
-                                                        include_excluded=True)}
-    missing = [w for w in wanted if w not in found]
-    if missing:
-        raise SystemExit(f"ERROR: stand-in runs not found now: {missing}")
     t0 = time.time()
-    cell = adapt(subject, args.model, space=args.space, regime=args.regime, runs=[found[w] for w in wanted],
-                 confounds=args.confounds, censor_fd=args.censor_fd)
+    if args.runs_from == "stand-in":
+        tree = derivatives_dir() / args.tree
+        meta, _ = stand_in(tree, subject, model, args.space, args.desc, sessions[0] if sessions else None)
+        wanted = [(r["session"], r["run"]) for r in meta["runs"]]
+        # include_excluded: the stand-in's recorded run list decides, so a run QC has
+        # excluded since must still be found, not reported missing
+        found = {(r.session, r.run): r for r in mmmget.runs(subject=subject, task=model.task,
+                                                            variant=meta["config"]["variant"],
+                                                            space=args.space, bids_root=config_bids_root(),
+                                                            include_excluded=True)}
+        missing = [w for w in wanted if w not in found]
+        if missing:
+            raise SystemExit(f"ERROR: stand-in runs not found now: {missing}")
+        cell = adapt(subject, args.model, space=args.space, regime=args.regime, runs=[found[w] for w in wanted],
+                     confounds=args.confounds, censor_fd=args.censor_fd)
+    else:
+        cell = adapt(subject, args.model, space=args.space, sessions=sessions, regime=args.regime,
+                     confounds=args.confounds, censor_fd=args.censor_fd)
+        wanted = [(ar.run.session, ar.run.run) for ar in cell.runs]
     noise = parse_noise(args.noise)
     n_vox = int(cell.mask.sum())
     print(f"sub-{subject} {model.name} {args.space}: {len(cell.runs)} runs, {n_vox} mask voxels, {noise.name}")
@@ -142,7 +154,10 @@ def main(argv=None) -> int:
                  affine=cell.mask_img.affine)
     record = {"subject": subject, "model": model.name, "space": args.space, "sessions": sessions,
               "noise": noise.name, "censor_fd": args.censor_fd, "confounds_override": args.confounds,
-              "stand_in_desc": args.desc, "stand_in_metadata_runs": wanted,
+              "runs_from": args.runs_from,
+              "stand_in_desc": args.desc if args.runs_from == "stand-in" else None,
+              # key kept for score_consistency.py; under discover it is the discovered list
+              "stand_in_metadata_runs": wanted,
               "mask_voxels": n_vox, "config": cell.cfg.to_dict(),
               "runs_per_contrast": {k: len(v["runs"]) for k, v in per_contrast.items()},
               "runs": runs_out, "seconds": round(time.time() - t0, 1)}
