@@ -70,6 +70,8 @@ extractor's unique R² by difference.
 Rescue spaces (``rescue-<B>`` and ``rescue-<B>+<member>``, psytwill-space-next settle 2): a
 reduced psytwill block's scores as band ``base``, alone or beside one member's model space
 as a second band, so one member's unique variance is the difference of two cached scores.
+``<B>`` is a block letter or a named projection ``<letter>.<tag>`` (``rescue-A.interp``), so
+several fits of one block's stream are scored side by side (``rescue.py compare``).
 The base is ``rescue.py project``'s projection of the reduced block's manifest; the member
 must be one of the block's stream's ``MODEL_TABLES``. On films both bands are window-centred
 modulators (as model spaces); on tb-enc (V only, image-keyed as ``TB_SPACES``) both are raw
@@ -922,22 +924,38 @@ RESCUE_TB_TABLE = "shared1000_image"
 RESCUE_PROJECTION = Path("rescue") / "projection"
 #: Register corpus -> the projection's corpus label (``rescue.py project --corpus``).
 RESCUE_CORPUS = {"films": "movies", "tb-enc": "shared1000"}
+#: A named projection of a block: ``<B>.<tag>``, so several fits of one block's stream (e.g.
+#: label-selected arms) are scored side by side. The tag names the projection file only.
+RESCUE_TAG = re.compile(r"[a-z0-9][a-z0-9_-]*")
+
+
+def rescue_stream(block: str) -> str:
+    """A rescue block name's stream letter: ``V`` -> ``V``, ``A.interp`` -> ``A``. Loud on a bad name."""
+    stream, dot, tag = block.partition(".")
+    if stream not in RESCUE_FILM_TABLE:
+        raise ValueError(f"block {block!r}: {stream!r} is not one of {sorted(RESCUE_FILM_TABLE)}")
+    if dot and not RESCUE_TAG.fullmatch(tag):
+        raise ValueError(f"block {block!r}: tag {tag!r} must match {RESCUE_TAG.pattern}")
+    return stream
 
 
 def parse_rescue(space: str) -> tuple[str, str | None]:
-    """``rescue-<B>`` -> (B, None); ``rescue-<B>+<member>`` -> (B, member). Loud on anything else."""
+    """``rescue-<B>`` -> (B, None); ``rescue-<B>+<member>`` -> (B, member), where B is a block
+    letter or a named projection ``<letter>.<tag>``. Loud on anything else."""
     if not space.startswith(RESCUE_PREFIX):
         raise ValueError(f"{space!r} is not a rescue space")
     block, _, member = space[len(RESCUE_PREFIX):].partition("+")
-    if block not in RESCUE_FILM_TABLE:
-        raise ValueError(f"{space}: block {block!r} is not one of {sorted(RESCUE_FILM_TABLE)}")
+    try:
+        table = RESCUE_FILM_TABLE[rescue_stream(block)]
+    except ValueError as exc:
+        raise ValueError(f"{space}: {exc}") from None
     if not member:
         if "+" in space:
             raise ValueError(f"{space}: no member after '+'")
         return block, None
-    if member not in MODEL_TABLES[RESCUE_FILM_TABLE[block]]:
-        raise ValueError(f"{space}: {member!r} is not a model of {RESCUE_FILM_TABLE[block]} "
-                         f"({', '.join(MODEL_TABLES[RESCUE_FILM_TABLE[block]])})")
+    if member not in MODEL_TABLES[table]:
+        raise ValueError(f"{space}: {member!r} is not a model of {table} "
+                         f"({', '.join(MODEL_TABLES[table])})")
     return block, member
 
 
@@ -1327,9 +1345,10 @@ class Request:
                 rescue = parse_rescue(args.space)
             except ValueError as exc:
                 raise SystemExit(str(exc))
-            if args.register in TS_REGISTERS or (args.register == "tb-enc" and rescue[0] not in RESCUE_TB_BLOCKS):
+            stream = rescue_stream(rescue[0])
+            if args.register in TS_REGISTERS or (args.register == "tb-enc" and stream not in RESCUE_TB_BLOCKS):
                 raise SystemExit(f"rescue-{rescue[0]} runs on films"
-                                 + (" and tb-enc" if rescue[0] in RESCUE_TB_BLOCKS else ""))
+                                 + (" and tb-enc" if stream in RESCUE_TB_BLOCKS else ""))
         elif args.space not in KNOWN_SPACES:
             raise SystemExit(f"unknown space {args.space!r}: one of {sorted(KNOWN_SPACES)}, or "
                              f"{RESCUE_PREFIX}<block>[+<member>]")
@@ -1363,7 +1382,8 @@ class Request:
                 base = read_projection(src)
                 long, gated = None, set()
                 if member is not None:
-                    long = load_model_long(paths.stimfeat, RESCUE_FILM_TABLE[block], member, self.rows)
+                    long = load_model_long(paths.stimfeat, RESCUE_FILM_TABLE[rescue_stream(block)], member,
+                                           self.rows)
                     gated = declared_undefined(paths.stimfeat).get(member, set())
                 feats, names = film_rescue_features(base, self.rows, long, member, gated)
                 gates = None
@@ -1373,7 +1393,8 @@ class Request:
                 self.label = {"space": args.space, "base": str(src),
                               "base_sidecar": json.loads(src.with_suffix(".json").read_text()),
                               "member": member, "modulators": "each band minus its mean over the film window's bins",
-                              **({"member_source": str(paths.stimfeat / "psytwill" / f"{RESCUE_FILM_TABLE[block]}_features.parquet"),
+                              **({"member_source": str(paths.stimfeat / "psytwill"
+                                                       / f"{RESCUE_FILM_TABLE[rescue_stream(block)]}_features.parquet"),
                                   "gates": gates} if member else {})}
             elif joint or model_space or args.space == ONOFF_SPACE:
                 models = list(TB_TS_SPACES[args.space])

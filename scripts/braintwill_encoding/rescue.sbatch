@@ -20,6 +20,9 @@
 #
 #   sbatch --array=0-14 --export=ALL,REGISTER=films,SPACES=rescue-V:rescue-V+m1:... rescue.sbatch
 #
+# A model space (model-<m>) may sit in SPACES too: it is scored with --group-sums, the rescue
+# spaces' spec, so rescue.py compare can pair it with them.
+#
 # Cached scores are read back, never refit, so a resubmitted array only fits what is missing.
 # Then: rescue.py read (rescue_cpu.sbatch).
 #==============================================================================
@@ -38,8 +41,9 @@ read -r SPACE SUB < <(cd "${DIR}" && "${PY}" - "${SLURM_ARRAY_TASK_ID}" "${SPACE
 import sys
 import harness as h
 spaces, subs = sys.argv[2].split(":"), list(h.fm.SUBJECTS)
-for s in spaces:
-    h.parse_rescue(s)
+for s in spaces:  # rescue spaces, or model spaces (scored at their --group-sums spec)
+    if s not in h.MODEL_SPACES:
+        h.parse_rescue(s)
 i = int(sys.argv[1])
 if i >= len(spaces) * len(subs):
     sys.exit(f"task {i} is past the {len(spaces)} x {len(subs)} grid")
@@ -49,6 +53,8 @@ PYEOF
 
 echo "Job ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} ${REGISTER} ${SPACE} sub-${SUB} on ${SLURMD_NODENAME}; start $(date)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+GS=()
+[[ "${SPACE}" == model-* ]] && GS=(--group-sums)  # the rescue spaces' spec, so rescue.py compare pairs them
 /usr/bin/time -v "${PY}" "${DIR}/harness.py" score --register "${REGISTER}" --space "${SPACE}" --sub "${SUB}" \
-    --backend torch_cuda
+    --backend torch_cuda "${GS[@]}"
 echo "End $(date)"

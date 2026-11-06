@@ -692,6 +692,19 @@ def test_parse_rescue_names_a_block_and_an_optional_member(harness):
             harness.parse_rescue(bad)
 
 
+def test_parse_rescue_takes_a_named_projection_of_a_block(harness, tmp_path):
+    assert harness.parse_rescue("rescue-A.interp") == ("A.interp", None)
+    assert harness.parse_rescue("rescue-A.ao-all+ebind_audio") == ("A.ao-all", "ebind_audio")
+    assert harness.rescue_stream("A.interp") == "A" and harness.rescue_stream("V") == "V"
+    for bad in ("rescue-A.", "rescue-A.Interp", "rescue-L.x", "rescue-A.x+clip", "rescue-.x"):
+        with pytest.raises(ValueError):
+            harness.parse_rescue(bad)
+    # the tag names the projection file; an untagged block keeps its old path
+    assert harness.rescue_projection(tmp_path, "A", "movies").name == "movies_A.parquet"
+    got = harness.rescue_projection(tmp_path, "A.interp", "movies")
+    assert got.name == "movies_A.interp.parquet" and got.with_suffix(".json").name == "movies_A.interp.json"
+
+
 def _film_row(start=7, n=2, tr=1.5):
     return pd.DataFrame([{"stimulus_id": "film-a", "onset": 0.0, "start": start, "n": n,
                           "repetition_time": tr}])
@@ -788,6 +801,40 @@ def test_verdict_needs_two_subjects_and_the_floor_in_one_roi(rescue):
     assert not rescue.verdict(small)["rescued"]  # reliable but under the .002 floor
     one = {"03": {"x": r(0.01, 0.001)}, "04": {"x": r(0.01, 0.2)}, "05": {"y": r(0.01, 0.001)}}
     assert not rescue.verdict(one)["rescued"]  # passes in one subject per ROI
+
+
+def test_compare_stats_are_paired_and_match_the_direct_r2(rescue):
+    import numpy as np
+    from braintwill.encoding import resampled_r2
+
+    a = _group_sums([0.8, 0.8, 0.8, 0.9, 0.9, 0.9])
+    b = _group_sums([0.9] * 6)
+    rois = {"gain": np.arange(3), "none": np.arange(3, 6), "(mask)": np.arange(6)}
+    counts = rescue.draw_counts(30, 500, 0)
+    got = rescue.compare_stats({"a": a, "b": b, "b2": b}, rois, counts, [("a", "b"), ("b", "b2")])
+    direct = resampled_r2(a, np.ones(30))
+    assert got["arms"]["a"]["gain"]["value"] == pytest.approx(direct[:3].mean())
+    assert got["arms"]["a"]["gain"]["lo"] <= got["arms"]["a"]["gain"]["value"] <= got["arms"]["a"]["gain"]["hi"]
+    ab = got["contrasts"]["a-b"]
+    assert ab["gain"]["value"] > 0.05 and ab["gain"]["lo"] > 0 and ab["gain"]["p_two_sided"] < 0.01
+    assert abs(ab["none"]["value"]) < 1e-12 and ab["none"]["p_two_sided"] > 0.5
+    # one draw serves every arm: an arm against itself is exactly 0 in every resample
+    same = got["contrasts"]["b-b2"]["gain"]
+    assert same["value"] == 0 and same["lo"] == 0 and same["hi"] == 0 and same["p_two_sided"] == 1.0
+    with pytest.raises(RuntimeError, match="different CV groups"):
+        rescue.compare_stats({"a": a, "b": {**b, "labels": b["labels"][::-1]}}, rois, counts, [("a", "b")])
+
+
+def test_compare_arms_and_contrasts_parse_loudly(rescue):
+    arms = rescue.parse_arms("E=model-ebind_audio,P=rescue-A.ao-all")
+    assert arms == {"E": "model-ebind_audio", "P": "rescue-A.ao-all"}
+    assert rescue.parse_contrasts("P-E", arms) == [("P", "E")]
+    for bad in ("E=model-ebind_audio", "E=x,E=y", "E,P=x"):
+        with pytest.raises(SystemExit):
+            rescue.parse_arms(bad)
+    for bad in ("P-X", "P-P", "PE", ""):
+        with pytest.raises(SystemExit):
+            rescue.parse_contrasts(bad, arms)
 
 
 def test_roi_columns_keep_masked_valid_columns_and_drop_small_rois(rescue):
