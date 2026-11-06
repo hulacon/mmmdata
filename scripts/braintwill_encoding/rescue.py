@@ -15,6 +15,9 @@ Verbs:
            only) -> ``<derivatives>/encoding_harness/rescue/projection/<corpus>_<B>.parquet``
            plus a ``.json`` sidecar pinning the manifest and weights by sha256
   read     one register's rule over every subject for a block and its members -> JSON + CSV
+  compare  descriptive, no rule: named arms (any harness spaces with per-group sums) side by
+           side per ROI, with paired bootstrap intervals for each arm and each named contrast
+           (arm minus arm) -> JSON + CSV + a median-over-subjects CSV
 
 The rule (``RULE``): per subject and ROI (HCP-MMP1's 22 sections, ``families.familyD``), the
 mean ΔR² over columns in the ROI and in the register's reliability mask; a one-sided
@@ -28,6 +31,9 @@ masked columns in a subject is not scored for that subject.
 Usage:
     python rescue.py project --block V --corpus movies --manifest <fit>.json
     python rescue.py read --block V --members m1,m2 --register films --out <dir>
+    python rescue.py project --block A.<tag> --corpus movies --manifest <fit>.json
+    python rescue.py compare --name <name> --register films --out <dir> \
+        --arms E=model-ebind_audio,P=rescue-A.<tag> --contrasts P-E
 """
 
 from __future__ import annotations
@@ -67,18 +73,35 @@ def sha256(path: Path) -> str:
     return d.hexdigest()
 
 
+def _stream(block: str) -> str:
+    try:
+        return h.rescue_stream(block)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+
+
+def _block(block: str) -> str:
+    """argparse type: a block letter or a named projection ``<letter>.<tag>``."""
+    try:
+        h.rescue_stream(block)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+    return block
+
+
 # ---------------------------------------------------------------------------
 # project
 # ---------------------------------------------------------------------------
 
 def projection_inputs(stimfeat: Path, block: str, corpus: str) -> tuple[Path, list[str]]:
     """The store table a block's members are read from on ``corpus``, and the key flags."""
+    stream = h.rescue_stream(block)
     if corpus == "movies":
-        table = h.RESCUE_FILM_TABLE[block]
+        table = h.RESCUE_FILM_TABLE[stream]
         return (Path(stimfeat) / "psytwill" / f"{table}_features.parquet",
                 ["--key", "stimulus_id,time", "--window", str(WINDOW_S)])
     if corpus == "shared1000":
-        if block not in h.RESCUE_TB_BLOCKS:
+        if stream not in h.RESCUE_TB_BLOCKS:
             raise SystemExit(f"block {block} is not scored on tb-enc (image-keyed only)")
         return Path(stimfeat) / "psytwill" / f"{h.RESCUE_TB_TABLE}_features.parquet", ["--key", "stimulus_id"]
     raise SystemExit(f"corpus {corpus!r}: one of {sorted(h.RESCUE_CORPUS.values())}")
@@ -91,8 +114,8 @@ def cmd_project(args) -> None:
     psytwill = Path(load_config()["paths"]["stimfeat_env"]) / "bin" / "psytwill"
     manifest = Path(args.manifest).resolve()
     m = json.loads(manifest.read_text())
-    if m.get("block") != args.block:
-        raise SystemExit(f"{manifest} is block {m.get('block')!r}, not {args.block}")
+    if m.get("block") != _stream(args.block):
+        raise SystemExit(f"{manifest} is block {m.get('block')!r}, not {_stream(args.block)}")
     weights = manifest.with_name(m["weights"])
     if not weights.exists():
         raise SystemExit(f"{weights} (the manifest's weights) is missing")
@@ -110,7 +133,7 @@ def cmd_project(args) -> None:
     version = subprocess.run([str(psytwill), "--version"], check=True, capture_output=True, text=True).stdout.strip()
     side = {
         "block": args.block, "corpus": args.corpus, "k": m["k"], "members": m["members"],
-        "outside_targets": m.get("outside_targets"),
+        "outside_targets": m.get("outside_targets"), "selection": m.get("selection"),
         "manifest": {"path": str(manifest), "sha256": sha256(manifest)},
         "weights": {"path": str(weights), "sha256": sha256(weights)},
         "features": {"path": str(features), "bytes": features.stat().st_size,
@@ -213,9 +236,11 @@ def roi_columns(labels: np.ndarray, mask: np.ndarray, valid: np.ndarray, min_col
 # read
 # ---------------------------------------------------------------------------
 
-def _cached(paths, cache, register: str, space: str, sub: str):
+def _cached(paths, cache, register: str, space: str, sub: str, group_sums: bool = False):
+    """A cached score with per-group sums. ``group_sums`` selects the group-sums spec for a model
+    space (rescue spaces always keep them)."""
     req = h.Request(argparse.Namespace(register=register, space=space, sub=sub, films=None,
-                                       solver="random_search", n_iter=None), paths)
+                                       solver="random_search", n_iter=None, group_sums=group_sums), paths)
     got = cache.get(req.key)
     if got is None:
         raise SystemExit(f"{space} sub-{sub} on {register} is not scored: {cache.path(req.key)}; "
@@ -286,23 +311,192 @@ def cmd_read(args) -> None:
     print(f"wrote {stem}.json, {stem}.csv")
 
 
+# ---------------------------------------------------------------------------
+# compare: arm vs arm, descriptive (no rule)
+# ---------------------------------------------------------------------------
+
+#: The whole register mask as one more "ROI" in ``compare``.
+ALL_ROI = "(mask)"
+#: Interval level of ``compare``'s percentile bootstrap intervals.
+CI = 0.95
+
+
+def parse_arms(text: str) -> dict[str, str]:
+    """``name=space,name=space`` -> {name: space}, in order; names unique, spaces harness spaces."""
+    arms = {}
+    for part in (p for p in text.split(",") if p):
+        name, eq, space = part.partition("=")
+        if not eq or not name or not space:
+            raise SystemExit(f"--arms entry {part!r}: expected name=space")
+        if name in arms:
+            raise SystemExit(f"--arms: {name!r} given twice")
+        arms[name] = space
+    if len(arms) < 2:
+        raise SystemExit("--arms: at least two arms")
+    return arms
+
+
+def parse_contrasts(text: str, arms: dict[str, str]) -> list[tuple[str, str]]:
+    """``a-b,c-d`` -> [(a, b), (c, d)]: each is arm a's R² minus arm b's."""
+    out = []
+    for part in (p for p in text.split(",") if p):
+        a, sep, b = part.partition("-")
+        if not sep or a not in arms or b not in arms or a == b:
+            raise SystemExit(f"--contrasts entry {part!r}: expected <arm>-<arm> with two different "
+                             f"arms from --arms ({', '.join(arms)})")
+        out.append((a, b))
+    if not out:
+        raise SystemExit("--contrasts: at least one")
+    return out
+
+
+def compare_stats(groups: dict[str, dict], rois: dict[str, np.ndarray], counts: np.ndarray,
+                  contrasts: list[tuple[str, str]], ci: float = CI) -> dict:
+    """Per arm and per contrast, per ROI (column indices): the observed ROI-mean R² (or ΔR²), a
+    percentile bootstrap interval, and for a contrast the two-sided bootstrap p of ΔR² = 0.
+
+    ``groups`` maps arm -> ``EncodingScore.groups`` of the same responses; every arm must hold
+    the same CV groups in the same order, so one row of ``counts`` resamples all arms alike.
+    """
+    from braintwill.encoding import resampled_r2
+
+    names = list(groups)
+    labels = list(groups[names[0]]["labels"])
+    for a in names[1:]:
+        if list(groups[a]["labels"]) != labels:
+            raise RuntimeError(f"arm {a} holds different CV groups from arm {names[0]}")
+    if not rois:
+        return {"arms": {}, "contrasts": {}}
+    cols = np.unique(np.concatenate(list(rois.values())))
+    at = {c: i for i, c in enumerate(cols)}
+    idx = {r: np.array([at[c] for c in v]) for r, v in rois.items()}
+    g = {a: _restrict(groups[a], cols) for a in names}
+    ones = np.ones(len(labels))
+    obs = {a: resampled_r2(g[a], ones) for a in names}
+    boot_arm = {a: {r: [] for r in rois} for a in names}
+    boot_con = {c: {r: [] for r in rois} for c in contrasts}
+    for s in range(0, counts.shape[0], DRAW_CHUNK):
+        c = counts[s:s + DRAW_CHUNK]
+        rs = {a: resampled_r2(g[a], c) for a in names}
+        for r, ix in idx.items():
+            m = {a: np.nanmean(rs[a][:, ix], axis=1) for a in names}
+            for a in names:
+                boot_arm[a][r].append(m[a])
+            for (a, b) in contrasts:
+                boot_con[(a, b)][r].append(m[a] - m[b])
+    lo, hi = (1 - ci) / 2, 1 - (1 - ci) / 2
+
+    def summary(value: float, bt: np.ndarray, contrast: bool) -> dict:
+        d = {"value": value, "lo": float(np.quantile(bt, lo)), "hi": float(np.quantile(bt, hi))}
+        if contrast:
+            tail = min(np.sum(bt <= 0), np.sum(bt >= 0))
+            d["p_two_sided"] = float(min(1.0, 2 * (1 + tail) / (bt.size + 1)))
+        return d
+
+    arms_out = {a: {r: {**summary(float(np.nanmean(obs[a][ix])), np.concatenate(boot_arm[a][r]), False),
+                        "n_cols": int(ix.size)} for r, ix in idx.items()} for a in names}
+    con_out = {f"{a}-{b}": {r: {**summary(float(np.nanmean(obs[a][ix]) - np.nanmean(obs[b][ix])),
+                                          np.concatenate(boot_con[(a, b)][r]), True),
+                                "n_cols": int(ix.size)} for r, ix in idx.items()}
+               for (a, b) in contrasts}
+    return {"arms": arms_out, "contrasts": con_out}
+
+
+def cmd_compare(args) -> None:
+    import families as fam
+    import grayordinates as go
+    from braintwill.encoding import ScoreCache, resampled_r2
+
+    import cha
+
+    paths = h.Paths()
+    cache = ScoreCache(paths.out)
+    arms = parse_arms(args.arms)
+    contrasts = parse_contrasts(args.contrasts, arms)
+    table = pd.read_csv(go.grayordinates_path(paths.cleaned), sep="\t")
+    labels = np.asarray(fam.family_labels(table, cha.Paths().atlases)[RULE["family"]])
+    subs = args.subs.split(",") if args.subs else list(h.fm.SUBJECTS)
+    rel = paths.out / "reliability" / f"register-{args.register}"
+    per, keys, checks = {}, {}, {}
+    for sub in subs:
+        mask_path = rel / f"sub-{sub}.npz"
+        if not mask_path.exists():
+            raise SystemExit(f"{mask_path} is missing; run reliability.py for this register")
+        with np.load(mask_path) as z:
+            mask = z["mask"]
+        got, valid = {}, None
+        keys[f"sub-{sub}"], checks[f"sub-{sub}"] = {}, {}
+        for name, space in arms.items():
+            k, s = _cached(paths, cache, args.register, space, sub, group_sums=True)
+            keys[f"sub-{sub}"][name] = {"space": space, "features": k["feature_hash"], "spec": k["spec_hash"]}
+            if valid is None:
+                valid = s.valid
+            elif not np.array_equal(s.valid, valid):
+                raise RuntimeError(f"sub-{sub} {name}: valid columns differ from the first arm's")
+            back = resampled_r2(_restrict(s.groups, np.flatnonzero(s.valid)), np.ones(len(s.groups["labels"])))
+            err = float(np.nanmax(np.abs(back - s.r2[s.valid])))
+            checks[f"sub-{sub}"][name] = err
+            if err > 1e-4:
+                raise RuntimeError(f"sub-{sub} {name}: per-group sums miss the stored R² by {err:.2g}")
+            got[name] = s.groups
+        rois = roi_columns(labels, mask, valid, RULE["min_cols"])
+        rois[ALL_ROI] = np.flatnonzero(np.asarray(mask, bool) & np.asarray(valid, bool))
+        counts = draw_counts(len(got[next(iter(arms))]["labels"]), RULE["n_boot"], RULE["seed"])
+        per[sub] = compare_stats(got, rois, counts, contrasts)
+        print(f"sub-{sub}: {len(rois)} ROIs, {len(arms)} arms, {len(contrasts)} contrasts", flush=True)
+    rows = []
+    for sub, d in per.items():
+        for kind in ("arms", "contrasts"):
+            for name, rs in d[kind].items():
+                for roi, x in rs.items():
+                    rows.append({"kind": kind[:-1], "name": name, "sub": sub, "roi": roi, **x})
+    df = pd.DataFrame(rows)
+    med = (df.groupby(["kind", "name", "roi"])["value"].agg(["median", "count"]).reset_index()
+           .rename(columns={"median": "median_over_subjects", "count": "n_subjects"}))
+    out = {"register": args.register, "subjects": subs, "arms": arms, "contrasts": [f"{a}-{b}" for a, b in contrasts],
+           "read": {"family": RULE["family"], "min_cols": RULE["min_cols"], "n_boot": RULE["n_boot"],
+                    "seed": RULE["seed"], "interval": f"{CI:.0%} percentile bootstrap over CV groups, "
+                    "one draw of counts per subject shared by every arm (paired)",
+                    "whole_mask_roi": ALL_ROI, "verdict": "none: descriptive"},
+           "per_subject": per, "keys": keys, "group_sums_check_max_abs": checks,
+           "provenance": h.provenance("compare", {}),
+           "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")}
+    dest = Path(args.out)
+    dest.mkdir(parents=True, exist_ok=True)
+    stem = dest / f"compare_{args.name}_{args.register}"
+    stem.with_suffix(".json").write_text(json.dumps(out, indent=2) + "\n")
+    df.to_csv(stem.with_suffix(".csv"), index=False)
+    med.to_csv(dest / f"compare_{args.name}_{args.register}_median.csv", index=False)
+    print(f"wrote {stem}.json, {stem}.csv, {stem}_median.csv")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="verb", required=True)
     p = sub.add_parser("project")
-    p.add_argument("--block", required=True, choices=sorted(h.RESCUE_FILM_TABLE))
+    p.add_argument("--block", required=True, type=_block,
+                   help="a block letter, or a named projection <letter>.<tag> (e.g. A.interp)")
     p.add_argument("--corpus", required=True, choices=sorted(h.RESCUE_CORPUS.values()))
     p.add_argument("--manifest", required=True, help="the reduced block's `psytwill space fit` manifest")
     p.add_argument("--chunk-size", type=int, default=10, help="stimulus_ids per projection chunk")
     p.add_argument("--force", action="store_true")
     r = sub.add_parser("read")
-    r.add_argument("--block", required=True, choices=sorted(h.RESCUE_FILM_TABLE))
+    r.add_argument("--block", required=True, type=_block, help="a block letter or <letter>.<tag>")
     r.add_argument("--members", required=True, help="comma-separated members scored as rescue-<B>+<m>")
     r.add_argument("--register", required=True, choices=sorted(h.RESCUE_CORPUS))
     r.add_argument("--subs", help="comma-separated subjects (default: the harness's)")
     r.add_argument("--out", required=True, help="directory for rescue_<B>_<register>.{json,csv}")
+    c = sub.add_parser("compare")
+    c.add_argument("--name", required=True, help="output stem: compare_<name>_<register>")
+    c.add_argument("--arms", required=True,
+                   help="comma-separated name=space, e.g. E=model-ebind_audio,P=rescue-A.all (model spaces "
+                        "are read at their --group-sums spec)")
+    c.add_argument("--contrasts", required=True, help="comma-separated <arm>-<arm>, e.g. P-E,interp-E")
+    c.add_argument("--register", required=True, choices=sorted(h.RESCUE_CORPUS))
+    c.add_argument("--subs", help="comma-separated subjects (default: the harness's)")
+    c.add_argument("--out", required=True, help="output directory")
     args = ap.parse_args()
-    {"project": cmd_project, "read": cmd_read}[args.verb](args)
+    {"project": cmd_project, "read": cmd_read, "compare": cmd_compare}[args.verb](args)
 
 
 if __name__ == "__main__":
