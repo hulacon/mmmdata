@@ -13,7 +13,11 @@ Verbs:
   project  the reduced block's fit (a ``psytwill space fit`` manifest) projected onto one
            corpus: ``movies`` (the films' frames, 0.5 s grid) or ``shared1000`` (images, V
            only) -> ``<derivatives>/encoding_harness/rescue/projection/<corpus>_<B>.parquet``
-           plus a ``.json`` sidecar pinning the manifest and weights by sha256
+           plus a ``.json`` sidecar pinning the manifest and weights by sha256. ``--k``
+           projects through fewer components than the fit's k: a row is placed only where
+           its present members span k directions, so a block with gated (often absent)
+           members needs k at or below its always-present members' whitened rank to place
+           every frame
   read     one register's rule over every subject for a block and its members -> JSON + CSV
   compare  descriptive, no rule: named arms (any harness spaces with per-group sums) side by
            side per ROI, with paired bootstrap intervals for each arm and each named contrast
@@ -31,7 +35,7 @@ masked columns in a subject is not scored for that subject.
 Usage:
     python rescue.py project --block V --corpus movies --manifest <fit>.json
     python rescue.py read --block V --members m1,m2 --register films --out <dir>
-    python rescue.py project --block A.<tag> --corpus movies --manifest <fit>.json
+    python rescue.py project --block A.<tag> --corpus movies --manifest <fit>.json [--k <k>]
     python rescue.py compare --name <name> --register films --out <dir> \
         --arms E=model-ebind_audio,P=rescue-A.<tag> --contrasts P-E
 """
@@ -107,6 +111,16 @@ def projection_inputs(stimfeat: Path, block: str, corpus: str) -> tuple[Path, li
     raise SystemExit(f"corpus {corpus!r}: one of {sorted(h.RESCUE_CORPUS.values())}")
 
 
+def projection_k(manifest: dict, k: int | None) -> int:
+    """The k a projection runs at: the fit's own k, or a smaller one (a projection only drops components)."""
+    k_fit = int(manifest["k"])
+    if k is None:
+        return k_fit
+    if not 1 <= k <= k_fit:
+        raise SystemExit(f"--k {k} is outside this fit's 1..{k_fit}; a projection can only drop components")
+    return int(k)
+
+
 def cmd_project(args) -> None:
     from core.config import load_config
 
@@ -116,6 +130,7 @@ def cmd_project(args) -> None:
     m = json.loads(manifest.read_text())
     if m.get("block") != _stream(args.block):
         raise SystemExit(f"{manifest} is block {m.get('block')!r}, not {_stream(args.block)}")
+    k = projection_k(m, args.k)
     weights = manifest.with_name(m["weights"])
     if not weights.exists():
         raise SystemExit(f"{weights} (the manifest's weights) is missing")
@@ -127,12 +142,12 @@ def cmd_project(args) -> None:
         raise SystemExit(f"{out} exists; a projection is replaced only with --force")
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [str(psytwill), "space", "project", "--features", str(features), *key, "--space", str(manifest),
-           "--chunk-size", str(args.chunk_size), "-o", str(out)]
+           "--chunk-size", str(args.chunk_size), "--k", str(k), "-o", str(out)]
     print("+", " ".join(cmd), flush=True)
     subprocess.run(cmd, check=True)
     version = subprocess.run([str(psytwill), "--version"], check=True, capture_output=True, text=True).stdout.strip()
     side = {
-        "block": args.block, "corpus": args.corpus, "k": m["k"], "members": m["members"],
+        "block": args.block, "corpus": args.corpus, "k": k, "k_fit": m["k"], "members": m["members"],
         "outside_targets": m.get("outside_targets"), "selection": m.get("selection"),
         "manifest": {"path": str(manifest), "sha256": sha256(manifest)},
         "weights": {"path": str(weights), "sha256": sha256(weights)},
@@ -479,6 +494,8 @@ def main() -> None:
     p.add_argument("--corpus", required=True, choices=sorted(h.RESCUE_CORPUS.values()))
     p.add_argument("--manifest", required=True, help="the reduced block's `psytwill space fit` manifest")
     p.add_argument("--chunk-size", type=int, default=10, help="stimulus_ids per projection chunk")
+    p.add_argument("--k", type=int, help="project through the first K block components (default: the fit's k); "
+                   "a row is placed only where its present members span K directions")
     p.add_argument("--force", action="store_true")
     r = sub.add_parser("read")
     r.add_argument("--block", required=True, type=_block, help="a block letter or <letter>.<tag>")
