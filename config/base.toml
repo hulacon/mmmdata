@@ -36,6 +36,14 @@ stimfeat_env = "/gpfs/projects/hulacon/shared/envs/stimfeat"
 # encoders read the virtual probe set's features from it.
 fit_corpora_dir = "/gpfs/projects/hulacon/shared/psytwill/fit-corpora"
 
+# The reviewed viz2psy framing table: one letterbox/pillarbox box per source
+# video (MMMData films and the external fit corpora), keyed on each video's
+# absolute path as spelled here (symlinks not followed). Every viz2psy video
+# extraction passes it (`--framing-table`), so the models score each film's
+# picture without its bars, at square pixels. Built by `viz2psy framing`
+# (detect -> review -> finalize); a generated table, so it lives on GPFS.
+framing_table = "/gpfs/projects/hulacon/shared/psytwill/fit-corpora/space/framing/v1/framing_table.csv"
+
 # NSD (Natural Scenes Dataset) release tree, the directory holding nsddata/. An outside
 # comparison dataset: MMMData's images are NSD's shared1000. Read by
 # src/python/neuroimaging/nsd.py; its betas may live elsewhere (each tool takes --betas).

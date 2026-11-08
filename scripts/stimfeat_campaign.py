@@ -17,6 +17,14 @@ Every cell writes one §4.1 family -- `<stem>.csv` (or `<stem>_frames.csv` /
 `<stem>_chunks.csv`) plus exactly one `<stem>.meta.json`. The sidecar is the
 done-marker: a cell whose `.meta.json` exists is skipped, which makes the whole
 campaign idempotent and resumable at model granularity with no state file.
+One exception: a viz2psy cell that read a video is done only if its sidecar
+was framed with the current framing table (`input.framing.framing_table_sha256`),
+so a cell extracted before the table, or under an older one, is re-run.
+
+Framing: every viz2psy cell that reads a video passes the reviewed framing
+table (`[paths] framing_table` in config/base.toml; `$STIMFEAT_FRAMING_TABLE`
+overrides it, and setting it to the empty string runs without a table, which
+viz2psy records -- for a staging root whose videos have no table rows).
 
 Usage
 -----
@@ -64,8 +72,10 @@ try:
     from core.config import load_config
     _config = load_config(config_dir=_REPO_ROOT / "config")
     BIDS_ROOT = Path(_config["paths"]["bids_project_dir"])
+    _FRAMING_CFG = _config["paths"].get("framing_table")
 except Exception:
     BIDS_ROOT = Path("/gpfs/projects/hulacon/shared/mmmdata")
+    _FRAMING_CFG = None
 # A staging root laid out like the dataset (stimuli/stimulus_registry/,
 # stimuli/<set>/, derivatives/stimuli_features/) runs the same matrix on a
 # different set of inputs -- the tb-timelines render falsifier feeds three
@@ -457,8 +467,54 @@ def stem_for(src: Source, unit: Unit, model: str) -> Path:
     return unit.out_dir / f"{name}.csv"
 
 
+VIDEO_SUFFIXES = {".mkv", ".mp4", ".mov", ".avi", ".webm", ".m4v"}
+_framing_sha: dict = {}
+
+
+def framing_table() -> Path | None:
+    """The framing table every viz2psy video cell passes (None: explicitly none)."""
+    if "STIMFEAT_FRAMING_TABLE" in os.environ:
+        value = os.environ["STIMFEAT_FRAMING_TABLE"]
+        return Path(value) if value else None
+    if not _FRAMING_CFG:
+        sys.exit("ERROR: no framing table configured ([paths] framing_table in config/base.toml); "
+                 "set $STIMFEAT_FRAMING_TABLE to a table, or to '' to extract video without one")
+    return Path(_FRAMING_CFG)
+
+
+def framing_sha256() -> str | None:
+    """The configured table's sha256, from the parameter record viz2psy writes beside it."""
+    table = framing_table()
+    if table is None:
+        return None
+    if table not in _framing_sha:
+        rec = table.with_name(table.name + ".json")
+        if not rec.is_file():
+            sys.exit(f"ERROR: framing table {table} has no parameter record {rec}")
+        _framing_sha[table] = json.loads(rec.read_text())["sha256"]
+    return _framing_sha[table]
+
+
+def is_video_cell(src: "Source", unit: "Unit") -> bool:
+    """A viz2psy cell whose input is one video file."""
+    return (src.package == "viz2psy" and len(unit.inputs) == 1
+            and Path(unit.inputs[0]).suffix.lower() in VIDEO_SUFFIXES)
+
+
 def is_done(stem: Path) -> bool:
-    return stem.with_suffix(".meta.json").exists()
+    """The sidecar exists; for a viz2psy video cell, it was also framed with the
+    current framing table (or, with no table configured, without one)."""
+    meta = stem.with_suffix(".meta.json")
+    if not meta.exists():
+        return False
+    try:
+        side = json.loads(meta.read_text())
+    except (OSError, ValueError):
+        return False
+    inp = side.get("input") or {}
+    if side.get("extractor") != "viz2psy" or inp.get("type") != "video":
+        return True
+    return (inp.get("framing") or {}).get("framing_table_sha256") == framing_sha256()
 
 
 # aud2psy models that read the stored diarize turn table: conversation derives
@@ -488,6 +544,8 @@ def command_for(src: Source, unit: Unit, model: str) -> list[str]:
                "-o", str(stem), "--batch-size", "64", "--no-viz", "--quiet"]
         if src.source in ("frames",):
             cmd += ["--frame-interval", str(GRID_HOP), "--no-save-frames"]
+        if is_video_cell(src, unit) and (table := framing_table()) is not None:
+            cmd += ["--framing-table", str(table)]
         cmd += unit.extra
         return cmd
     if src.package == "aud2psy":
