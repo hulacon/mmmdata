@@ -39,7 +39,7 @@ Usage
     stimfeat_campaign.py aggregate --dry-run       # psytwill groups
     stimfeat_campaign.py aggregate --set movies    # build them
 
-Filters (`--set/--source/--model/--unit`) compose and apply to every verb.
+Filters (`--set/--source/--model/--skip-model/--unit`) compose and apply to every verb.
 `--dry-run` on `run` prints the commands it would execute and exits 0.
 
 Env: /gpfs/projects/hulacon/shared/envs/stimfeat (needs all three extractors).
@@ -103,6 +103,37 @@ STIMFEAT_ENV = Path("/gpfs/projects/hulacon/shared/envs/stimfeat")
 PY = str(STIMFEAT_ENV / "bin" / "python")
 
 GRID_HOP = 0.5  # §4.2.5 shared movie grid, seconds
+
+# viz2psy caption_vlm (Qwen3-VL frame captions; psytwill-space 0.2.0 caption
+# member): video only. Greedy bf16 captions differ across GPU types (~12 % of
+# frames reword between two H100s, ~34 % A100 vs H100), so its cells run only
+# on GPUs whose name contains CAPTION_VLM_GPU ($CAPTION_VLM_GPU overrides; ""
+# turns the check off), at the batch size of the reference run.
+CAPTION_VLM = "caption_vlm"
+CAPTION_VLM_GPU = os.environ.get("CAPTION_VLM_GPU", "H100")
+VIZ_BATCH = {CAPTION_VLM: 32}  # every other viz2psy model: 64
+
+
+def gpu_names() -> list[str]:
+    """Names of the GPUs this process can see (nvidia-smi; [] when there is none)."""
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return [n.strip() for n in r.stdout.splitlines() if n.strip()] if r.returncode == 0 else []
+
+
+def caption_vlm_gpu_problem(models: set, names: list, want: str = CAPTION_VLM_GPU) -> str | None:
+    """Why caption_vlm cells may not run on these GPUs, or None when they may."""
+    if CAPTION_VLM not in models or not want:
+        return None
+    if names and all(want in n for n in names):
+        return None
+    return (f"{CAPTION_VLM} cells must run on {want} GPUs (captions differ across GPU "
+            f"types); this job sees {names or 'no GPU'}. Submit them on {want} nodes "
+            f"(e.g. sbatch --partition=preempt --gres=gpu:1 --constraint=h100 ...), "
+            f"run the rest with --skip-model {CAPTION_VLM}, or set CAPTION_VLM_GPU to override.")
 VOICES = ("echo", "nova", "onyx", "shimmer")
 
 
@@ -257,6 +288,17 @@ def _movie_caption_units() -> list[Unit]:
     return out
 
 
+def _movie_vlmcap_units() -> list[Unit]:
+    out = []
+    for row in movies():
+        mid = row["stimulus_id"]
+        d = OUT_ROOT / "movies" / mid
+        out.append(Unit(id=mid, out_dir=d, inputs=[str(d / f"{CAPTION_VLM}.csv")],
+                        extra=["--text-column", f"{CAPTION_VLM}_text",
+                               "--id-column", "stimulus_id"]))
+    return out
+
+
 def build_sources() -> list[Source]:
     S = []
 
@@ -265,8 +307,9 @@ def build_sources() -> list[Source]:
         "shared1000", "image", "viz2psy", "", True,
         "1,000 NSD images, one invocation per model",
         _image_units,
-        # motion is video-only (flow between frames); still images would error
-        exclude=("motion",),
+        # motion is video-only (flow between frames); still images would error.
+        # caption_vlm is for video: stills keep COCO human captions (humancap).
+        exclude=("motion", CAPTION_VLM),
     ))
     S.append(Source(
         "shared1000", "caption", "word2psy", "caption_", True,
@@ -340,6 +383,15 @@ def build_sources() -> list[Source]:
              "family'). Keep for the human-vs-machine contrast only.",
     ))
     S.append(Source(
+        "movies", "vlmcap", "word2psy", "vlmcap_", True,
+        f"{CAPTION_VLM} (Qwen3-VL-8B) captions of each movie's frames, scored as text",
+        _movie_vlmcap_units,
+        depends=f"movies/frames/{CAPTION_VLM}",
+        note="psytwill-space 0.2.0 frame-caption member (DECIDED 2026-11-05): "
+             "released as an L/VL family, not fit. Its viz2psy cells run only "
+             f"on {CAPTION_VLM_GPU or 'any'} GPUs (see CAPTION_VLM_GPU).",
+    ))
+    S.append(Source(
         "movies", "annot", "word2psy", "annot_", True,
         "human SEG-C segment descriptions (fine sub-segments, one row per segment)",
         lambda: _text_unit("segc", OUT_ROOT / "movies",
@@ -371,7 +423,7 @@ def build_sources() -> list[Source]:
         "movies", "cue", "viz2psy", "", True,
         "60 movie cue images",
         _cue_units,
-        exclude=("motion",),  # video-only, see shared1000/image
+        exclude=("motion", CAPTION_VLM),  # video-only, see shared1000/image
     ))
     S.append(Source(
         "movies", "cue_caption", "word2psy", "caption_", True,
@@ -541,7 +593,7 @@ def command_for(src: Source, unit: Unit, model: str) -> list[str]:
     stem = stem_for(src, unit, model)
     if src.package == "viz2psy":
         cmd = [PY, "-m", "viz2psy.cli", model, *unit.inputs,
-               "-o", str(stem), "--batch-size", "64", "--no-viz", "--quiet"]
+               "-o", str(stem), "--batch-size", str(VIZ_BATCH.get(model, 64)), "--no-viz", "--quiet"]
         if src.source in ("frames",):
             cmd += ["--frame-interval", str(GRID_HOP), "--no-save-frames"]
         if is_video_cell(src, unit) and (table := framing_table()) is not None:
@@ -983,6 +1035,12 @@ def _split_annotations(tsv: Path, segb: Path, segc: Path) -> None:
 # ---------------------------------------------------------------------------
 # Verbs
 # ---------------------------------------------------------------------------
+def _selected_models(src: Source, args) -> list[str]:
+    """``src``'s models after ``--model`` and ``--skip-model``."""
+    skip = set(getattr(args, "skip_model", None) or ())
+    return [m for m in src.models if (not args.model or m == args.model) and m not in skip]
+
+
 def _filtered(args) -> list[tuple[Source, Unit, str]]:
     cells = []
     for src in build_sources():
@@ -997,7 +1055,7 @@ def _filtered(args) -> list[tuple[Source, Unit, str]]:
         except FileNotFoundError as e:
             print(f"  warning: {src.key} units unavailable: {e}", file=sys.stderr)
             continue
-        models = [m for m in src.models if not args.model or m == args.model]
+        models = _selected_models(src, args)
         # Within a source, a model that derives from another model's stored
         # table runs after it: aud2psy `speech_rate` reads transcribe's word
         # timestamps and `conversation` reads diarize's turns (command_for
@@ -1031,7 +1089,7 @@ def cmd_plan(args) -> int:
         except FileNotFoundError as e:
             rows.append(dict(key=src.key, package=src.package, error=str(e)))
             continue
-        models = [m for m in src.models if not args.model or m == args.model]
+        models = _selected_models(src, args)
         runnable = [m for m in models if m not in UNAVAILABLE]
         blocked = [m for m in models if m in UNAVAILABLE]
         done = todo = 0
@@ -1230,6 +1288,10 @@ def cmd_run(args) -> int:
                  "requires a clean prefix pre-flight before any extraction. "
                  "Fix: run `python scripts/stimfeat_preflight.py` and resolve "
                  "what it reports.")
+    if not args.dry_run:
+        problem = caption_vlm_gpu_problem({m for _, _, m in todo}, gpu_names())
+        if problem:
+            sys.exit(f"ERROR: {problem}")
 
     print(f"{len(cells)} cells matched: {len(todo)} to run, {skipped} already done"
           + (" (--redo: done cells are being re-extracted)" if redo else "")
@@ -1517,8 +1579,11 @@ def main() -> int:
         p.add_argument("--set", dest="set", metavar="NAME",
                        help="shared1000 | twp1000 | movies")
         p.add_argument("--source", metavar="NAME",
-                       help="image | frames | audio | word | caption | humancap | annot | cue")
+                       help="image | frames | audio | word | caption | vlmcap | humancap | annot | cue")
         p.add_argument("--model", metavar="NAME", help="one registry model name")
+        p.add_argument("--skip-model", action="append", metavar="NAME",
+                       help="leave this registry model out (repeatable), e.g. caption_vlm "
+                            "on a job that is not on its pinned GPU type")
         p.add_argument("--unit", metavar="ID", help="one unit id (e.g. a movie stimulus_id)")
         p.add_argument("--shard", metavar="I/N",
                        help="process only shard I of N (1-based), splitting the "

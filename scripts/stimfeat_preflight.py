@@ -60,6 +60,9 @@ KNOWN_NESTED = {
     # (2026-08-25) — resolves for the same reason as speech_emotion.
     # Added to contracts §4.1.
     ("speech_rate", "speech"),
+    # viz2psy 0.18.0 `caption_vlm` emits only `caption_vlm_text`; `caption`
+    # emits only `caption_text`. Longest-first resolution keeps them apart.
+    ("caption_vlm", "caption"),
 }
 
 
