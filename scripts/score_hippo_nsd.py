@@ -3,8 +3,10 @@
 
 Per subject: the T1-space -> HRT2 rigid transform is recovered, every arm is put on the HRT2 grid (primary),
 NSD's 0.8 mm T1 grid (cross-check) and eight phases of a 1.8 x 1.8 x 2 mm grid, and scored for both scoring
-variants (``primary``, ``alt``). ``--group`` concatenates the subject tables. Library and rules:
-src/python/neuroimaging/hippo_nsd.py.
+variants (``primary``, ``alt``). ``--group`` concatenates the subject tables into ``scores/group_desc-*``, then
+writes the group read to ``<eval-root>/group/``: per-hemisphere values, per-arm summary, rule-7 pairwise wins,
+rule-8 leaders and flags, the rule-6 gate (``desc-<table>_hippnsd.tsv`` + one JSON sidecar), and three figures
+under ``group/figures/``. Library and rules: src/python/neuroimaging/hippo_nsd.py.
 
 NSD data stay outside this dataset: ``--ppdata`` is NSD's ``nsddata/ppdata``; ``--eval-root`` holds the arm
 trees under ``derivatives/`` and receives ``scores/``.
@@ -20,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -36,7 +39,7 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     who = ap.add_mutually_exclusive_group(required=True)
     who.add_argument("--sub", help="bare two-digit subject label (NSD subj0N -> 0N)")
-    who.add_argument("--group", action="store_true", help="concatenate every subject's tables")
+    who.add_argument("--group", action="store_true", help="concatenate every subject's tables and write the group read")
     ap.add_argument("--eval-root", type=Path, required=True, help="holds derivatives/<arm trees>; scores/ is written here")
     ap.add_argument("--ppdata", type=Path, help="NSD nsddata/ppdata (required with --sub)")
     ap.add_argument("--xfm-dir", type=Path, help="validated sub-##_from-T1w_to-HRT2_mode-image_xfm.mat files to "
@@ -53,6 +56,24 @@ def main(argv=None) -> None:
             dst = out / f"group_desc-{name}_stats.tsv"
             df.to_csv(dst, sep="\t", index=False, float_format="%.6g")
             print(f"{dst}: {len(df)} rows, {df['subject'].nunique()} subjects")
+        group_dir = args.eval_root / "group"
+        group_dir.mkdir(parents=True, exist_ok=True)
+        read = hn.group_read(tables)
+        n_hemi = read["perhemi"][["subject", "hemi"]].drop_duplicates().shape[0]
+        for name in ("perhemi", "summary", "pairwise", "leaders", "gate"):
+            dst = group_dir / f"desc-{name}_hippnsd.tsv"
+            read[name].to_csv(dst, sep="\t", index=False, float_format="%.6g")
+            print(f"{dst}: {len(read[name])} rows")
+        figs = hn.group_figures(read, group_dir / "figures")
+        side = {"code_version": dq.code_version(REPO_ROOT), "n_hemispheres": n_hemi, "n_expected": hn.N_HEMIS,
+                "subjects": sorted(read["perhemi"]["subject"].unique()), "rule7_bar": hn.RULE7_BAR,
+                "rule8_margins": list(hn.RULE8_MARGINS), "complete": n_hemi == hn.N_HEMIS,
+                "figures": [f.name for f in figs]}
+        (group_dir / "desc-group_hippnsd.json").write_text(json.dumps(side, indent=2) + "\n")
+        if n_hemi != hn.N_HEMIS:
+            print(f"INTERIM: {n_hemi}/{hn.N_HEMIS} hemispheres; pairs not yet decided are 'open'", flush=True)
+        for f in figs:
+            print(f)
         return
     if args.ppdata is None:
         ap.error("--sub needs --ppdata")

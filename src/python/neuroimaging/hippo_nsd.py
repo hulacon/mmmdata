@@ -697,3 +697,306 @@ def collect(out_root: Path) -> dict[str, pd.DataFrame]:
         out[k] = pd.concat([pd.read_csv(f, sep="\t", dtype={"subject": str, "offset": str}) for f in files],
                            ignore_index=True)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Group read (rules 6-8)
+# ---------------------------------------------------------------------------
+
+#: Rule 7: arm A beats arm B on a metric when it scores higher in at least this many hemispheres.
+RULE7_BAR = 13
+#: The NSD manual labels cover 8 subjects x 2 hemispheres.
+N_HEMIS = 16
+#: Rule 8: a leader whose narrowest margin is one of these is flagged (as is a top-two reversal under ``alt``).
+RULE8_MARGINS = (13, 14)
+
+_KEY = ["subject", "hemi", "arm", "variant"]
+
+
+def per_hemisphere(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """One value per hemisphere x arm x variant x metric (long), from :func:`collect`'s tables.
+
+    Metric names: ``dice_<grid>_<region>``, ``sub_coverage_<grid>``, ``assign_<grid>`` and
+    ``purity_bold_<region>``. BOLD-grid values are means over the eight offsets.
+    """
+    rows = []
+    sc = tables["scores"]
+    for metric in ("dice", "sub_coverage"):
+        d = sc[sc["metric"] == metric]
+        g = d.groupby(_KEY + ["grid", "region"], as_index=False)["value"].mean()
+        if metric == "dice":
+            g["metric"] = "dice_" + g["grid"] + "_" + g["region"]
+        else:
+            g["metric"] = "sub_coverage_" + g["grid"]
+        rows.append(g[_KEY + ["grid", "metric", "value"]])
+    a = tables["assignment"].groupby(_KEY + ["grid"], as_index=False)["agree"].mean().rename(columns={"agree": "value"})
+    a["metric"] = "assign_" + a["grid"]
+    rows.append(a[_KEY + ["grid", "metric", "value"]])
+    p = tables["purity"].groupby(_KEY + ["region"], as_index=False)["purity"].mean().rename(columns={"purity": "value"})
+    p["grid"] = "bold"
+    p["metric"] = "purity_bold_" + p["region"]
+    rows.append(p[_KEY + ["grid", "metric", "value"]])
+    out = pd.concat(rows, ignore_index=True).dropna(subset=["value"])
+    return out.sort_values(["metric", "variant", "arm", "subject", "hemi"], ignore_index=True)
+
+
+def _wide(long: pd.DataFrame, variant: str, metric: str) -> pd.DataFrame:
+    g = long[(long["variant"] == variant) & (long["metric"] == metric)]
+    return g.pivot_table(index=["subject", "hemi"], columns="arm", values="value")
+
+
+def pairwise(long: pd.DataFrame, n_total: int = N_HEMIS, bar: int = RULE7_BAR) -> pd.DataFrame:
+    """Rule 7 for every ordered arm pair, metric and variant.
+
+    ``wins`` counts hemispheres where ``a`` is strictly higher than ``b`` (both present). ``status``: ``beats``
+    (wins >= bar), ``tied`` (all hemispheres in and wins < bar), and, while hemispheres are outstanding,
+    ``open`` or ``cannot`` (wins + outstanding < bar).
+    """
+    rows = []
+    for (var, met), _ in long.groupby(["variant", "metric"]):
+        wide = _wide(long, var, met)
+        n_have = len(wide)
+        for a, b in itertools.permutations(list(wide.columns), 2):
+            both = wide[[a, b]].dropna()
+            if both.empty:
+                continue
+            wins = int((both[a] > both[b]).sum())
+            left = n_total - n_have + (n_have - len(both))
+            if wins >= bar:
+                status = "beats"
+            elif left <= 0:
+                status = "tied"
+            else:
+                status = "cannot" if wins + left < bar else "open"
+            rows.append({"variant": var, "metric": met, "a": a, "b": b, "n": len(both), "wins": wins, "status": status})
+    return pd.DataFrame(rows)
+
+
+def leaders(long: pd.DataFrame, pairs: pd.DataFrame, bar: int = RULE7_BAR,
+            flag_margins: Sequence[int] = RULE8_MARGINS) -> pd.DataFrame:
+    """Per metric: the leader by median under each variant, its narrowest win, and the rule-8 flag.
+
+    ``top2_reversed``: the primary variant's leader and runner-up swap order under ``alt``.
+    ``rule8_flag``: the primary leader's narrowest margin is in ``flag_margins``, or ``top2_reversed``.
+    ``beats_all``: the primary leader reaches ``bar`` against every other arm.
+    """
+    med = long.groupby(["metric", "variant", "arm"])["value"].median()
+    rows = []
+    for met in sorted(long["metric"].unique()):
+        r = {"metric": met, "grid": long.loc[long["metric"] == met, "grid"].iloc[0]}
+        for var in VARIANTS:
+            if (met, var) not in med.index.droplevel("arm"):
+                continue
+            m = med.loc[(met, var)].sort_values(ascending=False)
+            lead, run = m.index[0], (m.index[1] if len(m) > 1 else None)
+            pw = pairs[(pairs["metric"] == met) & (pairs["variant"] == var) & (pairs["a"] == lead)]
+            low = pw.sort_values("wins").iloc[0] if len(pw) else None
+            r.update({f"leader_{var}": lead, f"leader_median_{var}": float(m.iloc[0]),
+                      f"runner_up_{var}": run, f"runner_up_median_{var}": float(m.iloc[1]) if run else np.nan,
+                      f"min_wins_{var}": int(low["wins"]) if low is not None else np.nan,
+                      f"min_wins_vs_{var}": low["b"] if low is not None else None})
+        if "leader_alt" in r and r.get("runner_up_primary"):
+            m_alt = med.loc[(met, "alt")]
+            a, b = r["leader_primary"], r["runner_up_primary"]
+            r["top2_reversed"] = bool(a in m_alt and b in m_alt and m_alt[b] > m_alt[a])
+            r["leader_changed"] = r["leader_alt"] != r["leader_primary"]
+        else:
+            r["top2_reversed"] = r["leader_changed"] = False
+        mw = r.get("min_wins_primary")
+        r["beats_all"] = bool(mw is not None and pd.notna(mw) and mw >= bar)
+        r["rule8_flag"] = bool((mw in tuple(flag_margins)) or r["top2_reversed"])
+        rows.append(r)
+    return pd.DataFrame(rows)
+
+
+def gate_summary(tables: dict[str, pd.DataFrame], variant: str = "primary") -> pd.DataFrame:
+    """Rule 6: tissue share per arm (median, min, max over hemispheres)."""
+    g = tables["gate"]
+    g = g[g["variant"] == variant]
+    return (g.groupby("arm")["tissue_share"].agg(n="count", median="median", min="min", max="max")
+            .reset_index())
+
+
+def group_read(tables: dict[str, pd.DataFrame], n_total: int = N_HEMIS) -> dict[str, pd.DataFrame]:
+    """Every group table: per-hemisphere values, per-arm summary, rule-7 pairs, rule-8 leaders, rule-6 gate."""
+    long = per_hemisphere(tables)
+    summary = (long.groupby(["variant", "metric", "arm"])["value"]
+               .agg(n="count", median="median", q1=lambda v: v.quantile(0.25), q3=lambda v: v.quantile(0.75),
+                    min="min", max="max").reset_index())
+    pairs = pairwise(long, n_total=n_total)
+    gate_rows = tables["gate"][tables["gate"]["variant"] == "primary"]
+    return {"perhemi": long, "summary": summary, "pairwise": pairs, "leaders": leaders(long, pairs),
+            "gate": gate_summary(tables), "gate_rows": gate_rows}
+
+
+#: Default figure contents for :func:`group_figures` (presentation choices; the tables carry every metric).
+HEADLINE_METRICS = ("dice_hrt2_hipp", "dice_hrt2_Sub", "dice_hrt2_CA1", "dice_hrt2_CA23", "dice_hrt2_DG",
+                    "assign_bold", "dice_bold_CA1", "dice_bold_DG")
+RULE7_METRICS = ("dice_hrt2_hipp", "dice_hrt2_hippNoSRLM", "dice_hrt2_Sub", "dice_hrt2_CA1", "dice_hrt2_CA2",
+                 "dice_hrt2_CA3", "dice_hrt2_CA23", "dice_hrt2_DG", "sub_coverage_hrt2", "assign_hrt2",
+                 "dice_bold_hipp", "dice_bold_Sub", "dice_bold_CA1", "dice_bold_CA2", "dice_bold_CA3",
+                 "dice_bold_CA23", "dice_bold_DG", "assign_bold", "purity_bold_Sub", "purity_bold_CA1",
+                 "purity_bold_CA23", "purity_bold_DG")
+PAIRED_ARMS = (("Hhr", "U1iso"), ("Hiso", "U1iso"), ("U1iso", "U2iso"), ("U1hr", "U2hr"))
+PAIRED_METRICS = ("dice_hrt2_hipp", "dice_hrt2_Sub", "dice_hrt2_CA1", "dice_hrt2_CA2", "dice_hrt2_CA3",
+                  "dice_hrt2_CA23", "dice_hrt2_DG", "sub_coverage_hrt2", "assign_bold", "purity_bold_Sub",
+                  "purity_bold_DG", "purity_bold_CA23")
+
+
+# Arm styling for group figures: hue = tool (validated categorical slots), fill = input (filled HRT2, hollow 0.8 mm).
+ARM_STYLE = {
+    "U1iso": ("#2a78d6", False), "U1hr": ("#2a78d6", True),
+    "U2iso": ("#1baf7a", False), "U2hr": ("#1baf7a", True),
+    "Hiso": ("#eb6834", False), "Hhr": ("#eb6834", True),
+    "FSaseg": ("#8a8f98", False), "FSsf": ("#8a8f98", True),
+}
+_INK, _INK2, _GRID = "#1a1a19", "#5f5e58", "#e4e3df"
+
+
+def _metric_label(m: str) -> str:
+    grid = {"hrt2": "HRT2", "bold": "BOLD", "t1_0p8": "T1 0.8"}
+    for g, name in grid.items():
+        for pre, what in (("dice_", "Dice"), ("purity_", "purity")):
+            if m.startswith(f"{pre}{g}_"):
+                return f"{what} {m[len(pre) + len(g) + 1:]} · {name}"
+        if m == f"assign_{g}":
+            return f"assignment · {name}"
+        if m == f"sub_coverage_{g}":
+            return f"SUB coverage · {name}"
+    return m
+
+
+def _style_axes(ax):
+    ax.grid(axis="y", color=_GRID, lw=0.6, zorder=0)
+    for s in ("top", "right"):
+        ax.spines[s].set_visible(False)
+    ax.tick_params(labelsize=8, colors=_INK2)
+
+
+def group_figures(read: dict[str, pd.DataFrame], out_dir: Path, headline: Sequence[str] = HEADLINE_METRICS,
+                  paired: Sequence[tuple] = PAIRED_ARMS, paired_metrics: Sequence[str] = PAIRED_METRICS,
+                  rule7_metrics: Sequence[str] = RULE7_METRICS) -> list[Path]:
+    """Three figures: per-hemisphere strips of ``headline`` metrics (+ the rule-6 gate), the rule-7 margin of each
+    metric's leader over every other arm, and per-hemisphere paired differences for ``paired`` arm pairs."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.lines import Line2D
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    long, lead, pairs = read["perhemi"], read["leaders"], read["pairwise"]
+    prim = long[long["variant"] == "primary"]
+    n_hemi = prim[["subject", "hemi"]].drop_duplicates().shape[0]
+    order = [a.name for a in ARMS]
+    written = []
+
+    def strip(ax, data: dict[str, np.ndarray], title: str):
+        shown = [a for a in order if a in data and len(data[a])]
+        for k, a in enumerate(shown):
+            y = data[a]
+            col, filled = ARM_STYLE[a]
+            x = k + np.linspace(-0.22, 0.22, len(y))
+            ax.scatter(x, y, s=16, facecolors=col if filled else "#ffffff", edgecolors=col, linewidths=1.1, zorder=3)
+            ax.plot([k - 0.32, k + 0.32], [np.median(y)] * 2, color=_INK, lw=1.4, zorder=4)
+        ax.set_xticks(range(len(shown)), shown, rotation=45, ha="right")
+        ax.set_title(title, fontsize=9, color=_INK)
+        _style_axes(ax)
+
+    # 1. headline strips
+    panels = list(headline) + ["gate"]
+    ncol = 3
+    nrow = int(np.ceil(len(panels) / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(4.2 * ncol, 3.1 * nrow), squeeze=False)
+    for ax, met in zip(axes.flat, panels):
+        if met == "gate":
+            g = read["gate_rows"]
+            data = {a: g.loc[g["arm"] == a, "tissue_share"].to_numpy() for a in order}
+            strip(ax, data, "rule 6 gate: tissue share of disagreements")
+            ax.axhline(0.5, color=_INK2, lw=0.9, ls="--", zorder=2)
+            continue
+        d = prim[prim["metric"] == met]
+        strip(ax, {a: d.loc[d["arm"] == a, "value"].to_numpy() for a in order}, _metric_label(met))
+    for ax in list(axes.flat)[len(panels):]:
+        ax.set_visible(False)
+    handles = [Line2D([], [], marker="o", ls="", color=c, markerfacecolor=c, label=n) for n, c in
+               (("HippUnfold 1.5.2", "#2a78d6"), ("HippUnfold 2.2.0", "#1baf7a"), ("HSF", "#eb6834"),
+                ("FreeSurfer", "#8a8f98"))]
+    handles += [Line2D([], [], marker="o", ls="", color=_INK2, markerfacecolor=_INK2, label="filled: HRT2 input"),
+                Line2D([], [], marker="o", ls="", color=_INK2, markerfacecolor="#ffffff", label="hollow: 0.8 mm T2")]
+    fig.legend(handles=handles, loc="lower center", ncol=len(handles), fontsize=8, frameon=False)
+    fig.suptitle(f"NSD accuracy against manual labels: one dot per hemisphere ({n_hemi}), bar = median; "
+                 "primary variant", fontsize=10, color=_INK)
+    fig.tight_layout(rect=(0, 0.05, 1, 0.96))
+    p = out_dir / "group_desc-headline_hippnsd.png"
+    fig.savefig(p, dpi=130)
+    plt.close(fig)
+    written.append(p)
+
+    # 2. rule-7 margin of each metric's leader over every other arm
+    mets = [m for m in rule7_metrics if m in set(lead["metric"])]
+    m = np.full((len(mets), len(order)), np.nan)
+    leader_of = {}
+    for i, met in enumerate(mets):
+        row = lead[lead["metric"] == met].iloc[0]
+        L = row["leader_primary"]
+        leader_of[met] = L
+        pw = pairs[(pairs["metric"] == met) & (pairs["variant"] == "primary") & (pairs["a"] == L)]
+        for _, r in pw.iterrows():
+            m[i, order.index(r["b"])] = r["wins"]
+    fig, ax = plt.subplots(figsize=(1.0 * len(order) + 3.2, 0.36 * len(mets) + 1.6))
+    ramp = LinearSegmentedColormap.from_list("wins", ["#f4f3ef", "#cde2fb", "#6da7ec", "#256abf", "#0d366b"])
+    ax.imshow(np.ma.masked_invalid(m), cmap=ramp, vmin=8, vmax=16, aspect="auto")
+    for i, met in enumerate(mets):
+        for j, a in enumerate(order):
+            if a == leader_of[met]:
+                ax.text(j, i, "lead", ha="center", va="center", fontsize=7.5, color=_INK, fontweight="bold")
+            elif np.isfinite(m[i, j]):
+                w = int(m[i, j])
+                ax.text(j, i, f"{w}", ha="center", va="center", fontsize=8,
+                        color="#ffffff" if w >= 14 else _INK, fontweight="bold" if w in RULE8_MARGINS else "normal")
+                if w in RULE8_MARGINS:
+                    ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False, ec="#c2410c", lw=1.6))
+    ax.set_xticks(range(len(order)), order, rotation=45, ha="right", fontsize=8)
+    ax.set_yticks(range(len(mets)), [_metric_label(x) for x in mets], fontsize=8)
+    for s in ax.spines.values():
+        s.set_visible(False)
+    ax.set_title(f"Rule 7: hemispheres (of {n_hemi}) where each metric's leader beats the column arm; "
+                 f">= {RULE7_BAR} = beats, boxed = rule-8 margin (13-14)", fontsize=9, color=_INK)
+    fig.tight_layout()
+    p = out_dir / "group_desc-rule7_hippnsd.png"
+    fig.savefig(p, dpi=130)
+    plt.close(fig)
+    written.append(p)
+
+    # 3. paired differences
+    fig, axes = plt.subplots(1, len(paired), figsize=(3.6 * len(paired), 0.32 * len(paired_metrics) + 1.8),
+                             sharey=True, squeeze=False)
+    for ax, (a, b) in zip(axes[0], paired):
+        for i, met in enumerate(paired_metrics):
+            w = _wide(long, "primary", met)
+            if a not in w or b not in w:
+                continue
+            d = (w[a] - w[b]).dropna().to_numpy()
+            yy = i + np.linspace(-0.2, 0.2, len(d))
+            ax.scatter(d, yy, s=10, color=ARM_STYLE[a][0], alpha=0.75, zorder=3, linewidths=0)
+            ax.plot([np.median(d)] * 2, [i - 0.3, i + 0.3], color=_INK, lw=1.4, zorder=4)
+            ax.text(1.02, i, f"{int((d > 0).sum())}:{int((d < 0).sum())}", transform=ax.get_yaxis_transform(),
+                    fontsize=7.5, va="center", color=_INK2)
+        ax.axvline(0, color=_INK2, lw=0.9, zorder=2)
+        ax.set_yticks(range(len(paired_metrics)), [_metric_label(x) for x in paired_metrics])
+        ax.set_title(f"{a} − {b}", fontsize=9, color=_INK)
+        ax.grid(axis="x", color=_GRID, lw=0.6, zorder=0)
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+        ax.tick_params(labelsize=8, colors=_INK2)
+    axes[0, 0].invert_yaxis()  # shared y: invert once, so the first metric is on top
+    fig.suptitle(f"Paired differences per hemisphere ({n_hemi}), bar = median; right margin = hemispheres won a:b",
+                 fontsize=10, color=_INK)
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    p = out_dir / "group_desc-paired_hippnsd.png"
+    fig.savefig(p, dpi=130)
+    plt.close(fig)
+    written.append(p)
+    return written
