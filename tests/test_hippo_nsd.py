@@ -4,6 +4,7 @@ import math
 
 import nibabel as nib
 import numpy as np
+import pandas as pd
 import pytest
 
 from neuroimaging import hippo_compare as hc
@@ -179,3 +180,102 @@ def test_bold_affine_offsets_and_cover():
 def test_nsd_subject_label():
     assert hn.nsd_subject("01") == "subj01"
     assert hn.nsd_subject("8") == "subj08"
+
+
+# --- group read (rules 6-8) ---------------------------------------------------
+
+HEMIS16 = [(f"{s:02d}", h) for s in range(1, 9) for h in ("L", "R")]
+
+
+def _long(values: dict, variant="primary", metric="dice_hrt2_hipp", grid="hrt2"):
+    """values: arm -> 16 numbers (None = missing)."""
+    rows = []
+    for arm, vs in values.items():
+        for (s, h), v in zip(HEMIS16, vs):
+            if v is not None:
+                rows.append({"subject": s, "hemi": h, "arm": arm, "variant": variant, "grid": grid, "metric": metric, "value": v})
+    return pd.DataFrame(rows)
+
+
+def test_pairwise_counts_strict_wins_and_statuses():
+    a = [0.9] * 13 + [0.1] * 3
+    b = [0.5] * 16
+    c = [0.9] * 12 + [0.1] * 4
+    pw = hn.pairwise(_long({"A": a, "B": b, "C": c})).set_index(["a", "b"])
+    assert pw.loc[("A", "B"), "wins"] == 13 and pw.loc[("A", "B"), "status"] == "beats"
+    assert pw.loc[("C", "B"), "wins"] == 12 and pw.loc[("C", "B"), "status"] == "tied"
+    # equal values are not wins for either side
+    assert pw.loc[("A", "C"), "wins"] == 1 and pw.loc[("C", "A"), "wins"] == 0
+
+
+def test_pairwise_interim_open_and_cannot():
+    a = [0.9] * 10 + [None] * 6
+    b = [0.5] * 10 + [None] * 6
+    c = [0.1] * 4 + [0.9] * 6 + [None] * 6
+    pw = hn.pairwise(_long({"A": a, "B": b, "C": c})).set_index(["a", "b"])
+    assert pw.loc[("A", "B"), "status"] == "open"     # 10 wins + 6 outstanding can reach 13
+    assert pw.loc[("B", "A"), "status"] == "cannot"   # 0 + 6 < 13
+    assert pw.loc[("C", "B"), "status"] == "cannot"   # 6 wins + 6 outstanding = 12 < 13
+    assert pw.loc[("B", "C"), "wins"] == 4
+
+
+def test_leaders_rule8_margin_and_reversal():
+    lead = [0.9] * 13 + [0.4] * 3       # beats B by exactly 13 -> flagged
+    run = [0.5] * 16
+    prim = _long({"A": lead, "B": run})
+    alt = _long({"A": [0.5] * 16, "B": [0.6] * 16}, variant="alt")  # B ahead under alt -> reversed
+    long = pd.concat([prim, alt], ignore_index=True)
+    out = hn.leaders(long, hn.pairwise(long)).iloc[0]
+    assert out["leader_primary"] == "A" and out["runner_up_primary"] == "B"
+    assert out["min_wins_primary"] == 13 and out["min_wins_vs_primary"] == "B"
+    assert out["beats_all"] and out["rule8_flag"]
+    assert out["top2_reversed"] and out["leader_changed"]
+
+
+def test_leaders_clear_lead_not_flagged():
+    long = pd.concat([_long({"A": [0.9] * 16, "B": [0.5] * 16}),
+                      _long({"A": [0.9] * 16, "B": [0.5] * 16}, variant="alt")], ignore_index=True)
+    out = hn.leaders(long, hn.pairwise(long)).iloc[0]
+    assert out["min_wins_primary"] == 16 and not out["rule8_flag"] and not out["top2_reversed"]
+
+
+def _tables():
+    sc, asg, pur, gate = [], [], [], []
+    for s, h in HEMIS16:
+        for arm, base in (("Hhr", 0.8), ("U1iso", 0.7)):
+            for var in hn.VARIANTS:
+                sc.append({"subject": s, "hemi": h, "arm": arm, "variant": var, "grid": "hrt2", "offset": "", "metric": "dice",
+                               "region": "hipp", "value": base})
+                for k, off in enumerate(("000", "001")):  # bold: mean over offsets
+                    sc.append({"subject": s, "hemi": h, "arm": arm, "variant": var, "grid": "bold", "offset": off, "metric": "dice",
+                                   "region": "CA1", "value": base + (0.1 if k else -0.1)})
+                    asg.append({"subject": s, "hemi": h, "arm": arm, "variant": var, "grid": "bold", "offset": off, "n_either": 10,
+                                    "agree": base})
+                    pur.append({"subject": s, "hemi": h, "arm": arm, "variant": var, "offset": off, "region": "DG", "n_vox_arm": 5,
+                                    "n_vox_manual": 5, "purity": base})
+                sc.append({"subject": s, "hemi": h, "arm": arm, "variant": var, "grid": "hrt2", "offset": "",
+                               "metric": "sub_coverage", "region": "Sub", "value": base})
+                gate.append({"subject": s, "hemi": h, "arm": arm, "variant": var, "n_differ": 10, "n_tissue": 6, "tissue_share": 0.6})
+    return {"scores": pd.DataFrame(sc), "assignment": pd.DataFrame(asg), "purity": pd.DataFrame(pur),
+            "gate": pd.DataFrame(gate)}
+
+
+def test_per_hemisphere_metric_names_and_offset_mean():
+    long = hn.per_hemisphere(_tables())
+    assert set(long["metric"]) == {"dice_hrt2_hipp", "dice_bold_CA1", "assign_bold", "purity_bold_DG",
+                                   "sub_coverage_hrt2"}
+    one = long[(long["metric"] == "dice_bold_CA1") & (long["arm"] == "Hhr") & (long["variant"] == "primary")]
+    assert len(one) == 16 and np.allclose(one["value"], 0.8)
+
+
+def test_group_read_and_figures(tmp_path):
+    read = hn.group_read(_tables())
+    assert set(read) >= {"perhemi", "summary", "pairwise", "leaders", "gate"}
+    assert (read["leaders"]["leader_primary"] == "Hhr").all()
+    assert read["gate"].set_index("arm").loc["Hhr", "median"] == pytest.approx(0.6)
+    figs = hn.group_figures(read, tmp_path, headline=("dice_hrt2_hipp", "assign_bold"),
+                            paired=(("Hhr", "U1iso"),), paired_metrics=("dice_hrt2_hipp",),
+                            rule7_metrics=("dice_hrt2_hipp", "assign_bold"))
+    assert [f.name for f in figs] == ["group_desc-headline_hippnsd.png", "group_desc-rule7_hippnsd.png",
+                                      "group_desc-paired_hippnsd.png"]
+    assert all(f.stat().st_size > 0 for f in figs)
