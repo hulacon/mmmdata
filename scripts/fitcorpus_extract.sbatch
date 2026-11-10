@@ -45,6 +45,12 @@
 # the transcript source reads audio's transcribe table. Without `--source`, a
 # task runs every source in order and its vlmcap cells fail on missing input.
 #
+# AVCaps frames go through viz2psy's video path as video sets (many clips per
+# call, each model loaded once; needs viz2psy >= 0.20.0), one unit per array
+# task, framing table applied. No caption_vlm, so one submission:
+#
+#   sbatch --array=0-<units-1> fitcorpus_extract.sbatch --corpus avcaps --source video
+#
 # Staged audio corpora (stage.py: librispeech, gigaspeech, fma, musopen,
 # narratives, twp-unpresented) split each unit across TWO jobs, because the
 # psychoacoustic model is CPU-only (MoSQITo) and ~70 % of the audio wall time
