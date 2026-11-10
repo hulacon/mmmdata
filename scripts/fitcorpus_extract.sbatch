@@ -24,6 +24,27 @@
 #   sbatch --array=0-43 fitcorpus_extract.sbatch --corpus movie10
 #   sbatch --array=0-71 fitcorpus_extract.sbatch --corpus friends
 #
+# Video corpora (movie10, friends, blender) take three submissions per corpus,
+# because viz2psy caption_vlm must run on H100s (greedy bf16 captions differ
+# across GPU types; the driver refuses any other GPU), the H100s are only on
+# `preempt`, and the word2psy `vlmcap` source scores caption_vlm's output:
+#
+#   N=43   # last unit index (`extract.py plan --corpus movie10` prints units)
+#   CAP=$(sbatch --parsable --array=0-$N --partition=preempt --gres=gpu:1 \
+#         --constraint=h100 --requeue fitcorpus_extract.sbatch \
+#         --corpus movie10 --source frames --model caption_vlm)
+#   sbatch --array=0-$N fitcorpus_extract.sbatch \
+#         --corpus movie10 --source frames --skip-model caption_vlm
+#   sbatch --array=0-$N --dependency=aftercorr:$CAP fitcorpus_extract.sbatch \
+#         --corpus movie10 --source vlmcap
+#
+# (`--gres=gpu:1` on the command line overrides the header's MIG slice. A
+# preempted task requeues and restarts its film; finished cells are kept.)
+# A corpus whose soundtrack is not yet extracted also needs `--source audio`,
+# then `--source transcript` after it (`--dependency=aftercorr:<audio job>`):
+# the transcript source reads audio's transcribe table. Without `--source`, a
+# task runs every source in order and its vlmcap cells fail on missing input.
+#
 # Staged audio corpora (stage.py: librispeech, gigaspeech, fma, musopen,
 # narratives, twp-unpresented) split each unit across TWO jobs, because the
 # psychoacoustic model is CPU-only (MoSQITo) and ~70 % of the audio wall time
@@ -75,10 +96,22 @@ export HF_TOKEN_PATH="${HF_TOKEN_PATH:-$HOME/.cache/huggingface/token}"
 export LD_LIBRARY_PATH="${STIMFEAT}/lib:${LD_LIBRARY_PATH:-}"
 PY="${STIMFEAT}/bin/python"
 
-# Site roots for the portable driver (it refuses to guess them).
-export PSYTWILL_FITCORPUS_DURABLE="${PSYTWILL_FITCORPUS_DURABLE:-/gpfs/projects/hulacon/shared/psytwill/fit-corpora}"
+# Site roots for the portable driver (it refuses to guess them), from
+# config/base.toml [paths] via load_config.sh; an exported PSYTWILL_* wins.
+# The framing table is required by every viz2psy cell that reads a video.
+export PSYTWILL_FITCORPUS_DURABLE="${PSYTWILL_FITCORPUS_DURABLE:-${FIT_CORPORA_DIR}}"
 export PSYTWILL_FITCORPUS_SCRATCH="${PSYTWILL_FITCORPUS_SCRATCH:-/gpfs/scratch/hulacon/bhutch/psytwill-fitcorpus}"
-export PSYTWILL_NSD_HDF5="${PSYTWILL_NSD_HDF5:-/gpfs/projects/hulacon/shared/nsd/nsddata_stimuli/stimuli/nsd/nsd_stimuli.hdf5}"
+export PSYTWILL_FITCORPUS_MEDIA="${PSYTWILL_FITCORPUS_MEDIA:-${FIT_CORPUS_MEDIA_DIR}}"
+export PSYTWILL_FRAMING_TABLE="${PSYTWILL_FRAMING_TABLE:-${FRAMING_TABLE}}"
+export PSYTWILL_NSD_HDF5="${PSYTWILL_NSD_HDF5:-${NSD_DIR}/nsddata_stimuli/stimuli/nsd/nsd_stimuli.hdf5}"
+for var in PSYTWILL_FITCORPUS_DURABLE PSYTWILL_FITCORPUS_MEDIA PSYTWILL_FRAMING_TABLE; do
+    if [[ ! -e "${!var}" ]]; then
+        echo "ERROR: ${var}=${!var} does not exist; check config/base.toml [paths] (or local.toml)" >&2
+        exit 1
+    fi
+done
+echo "media: ${PSYTWILL_FITCORPUS_MEDIA}"
+echo "framing table: ${PSYTWILL_FRAMING_TABLE}"
 
 DRIVER=/gpfs/projects/hulacon/shared/mmmdata/code/psytwill/scripts/fitcorpus/extract.py
 
