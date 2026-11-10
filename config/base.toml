@@ -42,7 +42,7 @@ fit_corpora_dir = "/gpfs/projects/hulacon/shared/psytwill/fit-corpora"
 # extraction passes it (`--framing-table`), so the models score each film's
 # picture without its bars, at square pixels. Built by `viz2psy framing`
 # (detect -> review -> finalize); a generated table, so it lives on GPFS.
-framing_table = "/gpfs/projects/hulacon/shared/psytwill/fit-corpora/space/framing/v1/framing_table.csv"
+framing_table = "/gpfs/projects/hulacon/shared/psytwill/fit-corpora/space/framing/v2/framing_table.csv"
 
 # NSD (Natural Scenes Dataset) release tree, the directory holding nsddata/. An outside
 # comparison dataset: MMMData's images are NSD's shared1000. Read by
