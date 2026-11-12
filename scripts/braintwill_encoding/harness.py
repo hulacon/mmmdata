@@ -78,6 +78,11 @@ modulators (as model spaces); on tb-enc (V only, image-keyed as ``TB_SPACES``) b
 per-image values. Their spec keeps per-group sums (``RESCUE_SPEC``), so ``rescue.py read``
 bootstraps over groups without refitting.
 
+Commonality spaces (``common-<arm>.<g>[+<g>...]``, mmmdata-agents model-readout settle 2b):
+each non-empty subset of a declared arm's groups (``COMMON_ARMS``: an opaque model, named
+members, timing/nuisance features), films only, one kernel band per group, per-group sums
+kept. ``commonality.py`` reads the 2^k - 1 cached scores into unique and shared terms.
+
 Feature sets: for films, the per-stimulus caches ``functional_space/encoding.py cache``
 writes (``<derivatives>/functional_space/features/<space>/``), only the register's films;
 for tb-enc, the shared1000 image tables under ``<derivatives>/stimuli_features/``. Either
@@ -1052,6 +1057,187 @@ def image_rescue_features(base: pd.DataFrame, member_long: pd.DataFrame | None, 
     return {sid: FrameFeatures(sid, [0.0], x[i:i + 1], 1.0, bands) for i, sid in enumerate(wide.index)}
 
 
+# ---------------------------------------------------------------------------
+# commonality arms (mmmdata-agents model-readout settle 2b)
+# ---------------------------------------------------------------------------
+
+COMMON_PREFIX = "common-"
+COMMON_ARM_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
+COMMON_GROUP_NAME = re.compile(r"[a-z][a-z0-9_]*")
+#: A commonality arm: named groups of sources, in group order. Every non-empty subset of an
+#: arm's groups is its own films space, ``common-<arm>.<g>+<g>`` (groups in arm order), fitted
+#: at read (b)'s solver with per-group sums and **one kernel band per group** (braintwill
+#: ``RidgeSpec.merge``: each source in a group contributes the same kernel trace, as in joint
+#: spaces). A group's columns are built the same way in every subset that holds it, so the
+#: subsets differ only in which groups enter. ``commonality.py`` reads the 2^k - 1 cached scores
+#: into commonality terms; the harness fits each subset on its own and partitions nothing.
+#:
+#: Sources: ``model:<m>`` a read-(b) visual or audio model space (``MODEL_TABLES``; text models
+#: need the word grid and are not offered yet); ``cache:<space>.<band>`` one band of a
+#: functional-space feature cache (``encoding.FEATURE_SPACES``, e.g. ``vgg19.conv4_3``);
+#: ``word-on`` the films' word-on band (``film_word_on``). Every source is a centred modulator
+#: over the film window's bins and 0 outside them, as model spaces are.
+#:
+#: ``dev`` arms exist to build and check designs before the real groups are fixed. Their group
+#: membership is a placeholder, not a decision, and their scores are not results.
+COMMON_ARMS: dict[str, dict[str, tuple[str, ...]]] = {
+    # model-readout pilot shape (opaque / named / timing), membership provisional until
+    # psytwill-space 0.2.0 fixes its members and the strict/learned split.
+    "dev-vgg19": {
+        "opaque": ("cache:vgg19.conv4_3",),
+        "named": ("model:faces", "model:depth"),
+        "timing": ("word-on", "model:onsets", "model:loudness", "model:llstat"),
+    },
+}
+
+
+def common_source(src: str) -> tuple[str, str, str | None]:
+    """``(kind, name, band)`` of one arm source; ``ValueError`` names what is wrong."""
+    if src == "word-on":
+        return "word-on", ONOFF_SPACE, None
+    kind, sep, rest = src.partition(":")
+    if kind == "model" and sep:
+        space = f"{MODEL_PREFIX}{rest}"
+        if space not in MODEL_SPACES:
+            raise ValueError(f"source {src!r}: no read-(b) model {rest!r}")
+        if MODEL_SPACES[space][0] == TEXT_TABLE:
+            raise ValueError(f"source {src!r}: text models are not offered in commonality arms yet")
+        return "model", rest, None
+    if kind == "cache" and sep:
+        space, dot, band = rest.partition(".")
+        spec = fs_enc.FEATURE_SPACES.get(space, {})
+        if not dot or band not in spec.get("bands", {}):
+            raise ValueError(f"source {src!r}: expected cache:<space>.<band> with a band of a feature-cache "
+                             f"space ({', '.join(s for s, v in fs_enc.FEATURE_SPACES.items() if 'bands' in v)})")
+        return "cache", space, band
+    raise ValueError(f"source {src!r}: expected model:<m>, cache:<space>.<band> or word-on")
+
+
+def source_band(src: str) -> str:
+    """The design band a source's columns are stacked under."""
+    kind, name, band = common_source(src)
+    return f"{name}.{band}" if kind == "cache" else name
+
+
+def check_arm(arm: str) -> dict[str, tuple[str, ...]]:
+    """An arm's declaration, checked: groups named, at least two, sources valid, bands unique."""
+    if arm not in COMMON_ARMS:
+        raise ValueError(f"unknown commonality arm {arm!r}: one of {sorted(COMMON_ARMS)}")
+    if not COMMON_ARM_NAME.fullmatch(arm):
+        raise ValueError(f"arm name {arm!r} must match {COMMON_ARM_NAME.pattern}")
+    groups = COMMON_ARMS[arm]
+    if len(groups) < 2:
+        raise ValueError(f"arm {arm!r}: a partition needs at least two groups")
+    seen: dict[str, str] = {}
+    for g, srcs in groups.items():
+        if not COMMON_GROUP_NAME.fullmatch(g):
+            raise ValueError(f"arm {arm!r}: group name {g!r} must match {COMMON_GROUP_NAME.pattern}")
+        if not srcs:
+            raise ValueError(f"arm {arm!r}: group {g!r} has no sources")
+        for s in srcs:
+            b = source_band(s)
+            if b in seen:
+                raise ValueError(f"arm {arm!r}: band {b!r} is in groups {seen[b]!r} and {g!r}")
+            seen[b] = g
+    return groups
+
+
+def parse_common(space: str) -> tuple[str, tuple[str, ...]]:
+    """``common-<arm>.<g>+<g>`` -> (arm, groups); the groups a non-empty subset in arm order."""
+    body = space[len(COMMON_PREFIX):]
+    arm, dot, rest = body.partition(".")
+    if not dot or not rest:
+        raise ValueError(f"{space!r}: expected {COMMON_PREFIX}<arm>.<group>[+<group>...]")
+    declared = list(check_arm(arm))
+    groups = tuple(rest.split("+"))
+    unknown = [g for g in groups if g not in declared]
+    if unknown:
+        raise ValueError(f"{space!r}: arm {arm!r} has no group(s) {unknown}; its groups: {declared}")
+    if len(set(groups)) != len(groups) or list(groups) != [g for g in declared if g in groups]:
+        raise ValueError(f"{space!r}: name each group once, in arm order ({'+'.join(declared)})")
+    return arm, groups
+
+
+def common_spaces(arm: str) -> list[str]:
+    """Every subset space of an arm, smallest subsets first, arm order within a size."""
+    import itertools
+
+    groups = list(check_arm(arm))
+    return [f"{COMMON_PREFIX}{arm}.{'+'.join(c)}" for k in range(1, len(groups) + 1)
+            for c in itertools.combinations(groups, k)]
+
+
+def common_merge(arm: str, groups: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+    """One kernel band per group: group -> its sources' design bands."""
+    decl = check_arm(arm)
+    return {g: tuple(source_band(s) for s in decl[g]) for g in groups}
+
+
+def film_cache_features(features_root: Path, space: str, band: str, rows: pd.DataFrame,
+                        grid: dict[str, int]) -> dict[str, FrameFeatures]:
+    """One band of a feature cache per window film, on the film's model grid, centred over the
+    window's bins and 0 outside them (``gated_modulators``, nothing gated).
+
+    Cache frames are placed by their grid time; every window bin must hold one, and frames past
+    the film's grid are outside every window and dropped.
+    """
+    out, name = {}, f"{space}.{band}"
+    for r in rows.itertuples(index=False):
+        f = fs_enc.load_features(fs_enc.cache_path(features_root, space, r.stimulus_id))
+        if band not in f.bands:
+            raise KeyError(f"{name}: cache for {r.stimulus_id} has bands {sorted(f.bands)}")
+        sl = f.bands[band]
+        t = np.asarray(f.times, float)
+        stamp = infer_stamp(t)
+        bins = np.rint((t - (fs_enc.FRAME_S / 2 if stamp == "center" else 0.0)) / fs_enc.FRAME_S).astype(int)
+        if np.unique(bins).size != bins.size:
+            raise RuntimeError(f"{name} {r.stimulus_id}: two cache frames in one grid bin")
+        n = grid[r.stimulus_id]
+        on = _window_on(r, n)
+        inside = bins < n
+        lost = sorted(set(np.flatnonzero(on)) - set(bins[inside]))
+        if lost:
+            raise RuntimeError(f"{name} {r.stimulus_id}: {len(lost)} window bins have no cache frame")
+        cols = [f"{name}_{i:04d}" for i in range(sl.stop - sl.start)]
+        w = pd.DataFrame(np.asarray(f.x[inside, sl], np.float64), index=bins[inside], columns=cols).reindex(range(n))
+        x, _ = gated_modulators(w.where(pd.Series(on, index=w.index), np.nan), on, set(),
+                                f"{r.stimulus_id} {name}")
+        out[r.stimulus_id] = FrameFeatures(r.stimulus_id, np.arange(n) * fs_enc.FRAME_S, x, fs_enc.FRAME_S,
+                                           {name: slice(0, x.shape[1])})
+    return out
+
+
+def film_common_features(paths: "Paths", rows: pd.DataFrame, arm: str, groups: tuple[str, ...]
+                         ) -> tuple[dict[str, FrameFeatures], dict]:
+    """A commonality subset's design bands (sources of each group, in arm order) and its label."""
+    decl = check_arm(arm)
+    srcs = [s for g in groups for s in decl[g]]
+    kinds = [common_source(s)[0] for s in srcs]
+    onsets = film_word_onsets(paths.stimfeat) if "word-on" in kinds else None
+    grid = film_grid(paths.stimfeat, rows) if ("word-on" in kinds or "cache" in kinds) else None
+    parts, gates = [], {}
+    for s in srcs:
+        kind, name, band = common_source(s)
+        if kind == "word-on":
+            parts.append(film_word_on(onsets, rows, grid))
+        elif kind == "model":
+            feats, names = load_film_model(paths.stimfeat, rows, f"{MODEL_PREFIX}{name}")
+            feats, gates[name] = prune_indicators(feats, name, names)
+            parts.append(feats)
+        else:
+            parts.append(film_cache_features(paths.features, name, band, rows, grid))
+    feats = stack_bands(parts) if len(parts) > 1 else parts[0]
+    label = {"space": f"{COMMON_PREFIX}{arm}.{'+'.join(groups)}", "arm": arm,
+             "arm_groups": {g: list(v) for g, v in decl.items()}, "groups": list(groups),
+             "kernel_bands": {g: list(v) for g, v in common_merge(arm, groups).items()},
+             "weighting": "within a group, each source's columns 1/sqrt(width) after standardization "
+                          "(equal kernel trace per source); one kernel band per group",
+             "modulators": "every source minus its mean over the film window's bins, 0 outside",
+             "gates": gates, "source": str(paths.stimfeat / "psytwill"), "cache": str(paths.features),
+             "development_arm": arm.startswith("dev")}
+    return feats, label
+
+
 def table_stream(table: str) -> str:
     """The on/off column a TB table's modulators ride on: a TB word is the spoken word."""
     return "audio" if "audio" in table or table == TEXT_TABLE else "visual"
@@ -1339,8 +1525,15 @@ class Request:
         self.paths = paths
         model_space = args.space in MODEL_SPACES
         joint = args.space in JOINT_SPACES
-        rescue = None
-        if args.space.startswith(RESCUE_PREFIX):
+        rescue = common = None
+        if args.space.startswith(COMMON_PREFIX):
+            try:
+                common = parse_common(args.space)
+            except ValueError as exc:
+                raise SystemExit(str(exc))
+            if args.register != "films":
+                raise SystemExit(f"{COMMON_PREFIX} spaces run on films only (model-readout settle 2 pilot)")
+        elif args.space.startswith(RESCUE_PREFIX):
             try:
                 rescue = parse_rescue(args.space)
             except ValueError as exc:
@@ -1361,7 +1554,9 @@ class Request:
             raise SystemExit(f"{args.space} needs a time course: tb-enc has none")
         if args.register == "tb-ret-ts" and args.space not in RET_SPACES:
             raise SystemExit(f"tb-ret-ts plays the word alone, so its spaces are audio: {sorted(RET_SPACES)}")
-        if rescue:  # two bands at read (b)'s solver, with per-group sums for the bootstrap
+        if common:  # read (b)'s solver, one kernel band per group, per-group sums for the read
+            self.spec = model_spec(args.solver, args.n_iter, group_sums=True, merge=common_merge(*common))
+        elif rescue:  # two bands at read (b)'s solver, with per-group sums for the bootstrap
             self.spec = model_spec(args.solver, args.n_iter, group_sums=True)
         elif joint:  # read (c): read (b)'s solver, one kernel band per extractor
             self.spec = model_spec(args.solver, args.n_iter, group_sums=getattr(args, "group_sums", False),
@@ -1376,7 +1571,9 @@ class Request:
             windows = fm.load_windows(paths.derivatives)
             films = args.films.split(",") if getattr(args, "films", None) else None
             self.rows = alignment_rows(windows, args.sub, films)
-            if rescue:
+            if common:
+                self.feats, self.label = film_common_features(paths, self.rows, *common)
+            elif rescue:
                 block, member = rescue
                 src = rescue_projection(paths.out, block, RESCUE_CORPUS["films"])
                 base = read_projection(src)
@@ -1664,7 +1861,8 @@ def main() -> None:
         p = sub.add_parser(name)
         p.add_argument("--register", choices=("films", "tb-enc", *TS_REGISTERS), default="films")
         p.add_argument("--space", required=True,
-                       help=f"one of {', '.join(sorted(KNOWN_SPACES))}, or {RESCUE_PREFIX}<block>[+<member>]")
+                       help=f"one of {', '.join(sorted(KNOWN_SPACES))}, {RESCUE_PREFIX}<block>[+<member>], "
+                            f"or {COMMON_PREFIX}<arm>.<group>[+<group>...] (commonality.py spaces lists them)")
         p.add_argument("--sub", required=True)
         p.add_argument("--films", help="comma-separated subset of the alignment pool (default: all of it)")
         p.add_argument("--solver", choices=("random_search", "hyper_gradient"), default="random_search")
