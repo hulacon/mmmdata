@@ -830,7 +830,9 @@ def test_compare_stats_are_paired_and_match_the_direct_r2(rescue):
     # one draw serves every arm: an arm against itself is exactly 0 in every resample
     same = got["contrasts"]["b-b2"]["gain"]
     assert same["value"] == 0 and same["lo"] == 0 and same["hi"] == 0 and same["p_two_sided"] == 1.0
-    with pytest.raises(RuntimeError, match="different CV groups"):
+    from braintwill.ledger import Refusal  # the reader is braintwill's combination_stats
+
+    with pytest.raises(Refusal, match="different held-out groups"):
         rescue.compare_stats({"a": a, "b": {**b, "labels": b["labels"][::-1]}}, rois, counts, [("a", "b")])
 
 

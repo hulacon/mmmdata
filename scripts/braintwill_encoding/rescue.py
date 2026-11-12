@@ -58,6 +58,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import harness as h  # noqa: E402  (puts functional_space and src/python on sys.path)
+from braintwill.encoding import combination_stats, draw_counts, restrict_columns  # noqa: E402, F401
 
 #: The decided rule (psytwill-space-next DECIDED 2026-10-16). A different cut is a different
 #: read, recorded as such; these are not tuning knobs.
@@ -165,15 +166,9 @@ def cmd_project(args) -> None:
 # the rule (pure: synthetic group sums test it)
 # ---------------------------------------------------------------------------
 
-def draw_counts(n_groups: int, n_boot: int, seed: int) -> np.ndarray:
-    """``(n_boot, n_groups)`` bootstrap counts over groups; one draw serves every fit."""
-    rng = np.random.default_rng(seed)
-    return rng.multinomial(n_groups, np.full(n_groups, 1.0 / n_groups), size=n_boot)
-
-
-def _restrict(groups: dict, cols: np.ndarray) -> dict:
-    return {"labels": groups["labels"], "n": groups["n"],
-            **{k: np.asarray(groups[k])[:, cols] for k in ("sy", "syy", "res")}}
+#: ``draw_counts`` (bootstrap counts over groups; one draw serves every fit) and the column
+#: restriction of per-group sums are braintwill's (``braintwill.encoding.resample``).
+_restrict = restrict_columns
 
 
 def roi_deltas(base: dict, member: dict, rois: dict[str, np.ndarray], counts: np.ndarray
@@ -372,49 +367,19 @@ def compare_stats(groups: dict[str, dict], rois: dict[str, np.ndarray], counts: 
 
     ``groups`` maps arm -> ``EncodingScore.groups`` of the same responses; every arm must hold
     the same CV groups in the same order, so one row of ``counts`` resamples all arms alike.
+    A thin reader over braintwill's ``combination_stats``: an arm is the combination {arm: 1},
+    a contrast {a: 1, b: -1}, formed per column before the ROI mean.
     """
-    from braintwill.encoding import resampled_r2
-
-    names = list(groups)
-    labels = list(groups[names[0]]["labels"])
-    for a in names[1:]:
-        if list(groups[a]["labels"]) != labels:
-            raise RuntimeError(f"arm {a} holds different CV groups from arm {names[0]}")
     if not rois:
         return {"arms": {}, "contrasts": {}}
-    cols = np.unique(np.concatenate(list(rois.values())))
-    at = {c: i for i, c in enumerate(cols)}
-    idx = {r: np.array([at[c] for c in v]) for r, v in rois.items()}
-    g = {a: _restrict(groups[a], cols) for a in names}
-    ones = np.ones(len(labels))
-    obs = {a: resampled_r2(g[a], ones) for a in names}
-    boot_arm = {a: {r: [] for r in rois} for a in names}
-    boot_con = {c: {r: [] for r in rois} for c in contrasts}
-    for s in range(0, counts.shape[0], DRAW_CHUNK):
-        c = counts[s:s + DRAW_CHUNK]
-        rs = {a: resampled_r2(g[a], c) for a in names}
-        for r, ix in idx.items():
-            m = {a: np.nanmean(rs[a][:, ix], axis=1) for a in names}
-            for a in names:
-                boot_arm[a][r].append(m[a])
-            for (a, b) in contrasts:
-                boot_con[(a, b)][r].append(m[a] - m[b])
-    lo, hi = (1 - ci) / 2, 1 - (1 - ci) / 2
-
-    def summary(value: float, bt: np.ndarray, contrast: bool) -> dict:
-        d = {"value": value, "lo": float(np.quantile(bt, lo)), "hi": float(np.quantile(bt, hi))}
-        if contrast:
-            tail = min(np.sum(bt <= 0), np.sum(bt >= 0))
-            d["p_two_sided"] = float(min(1.0, 2 * (1 + tail) / (bt.size + 1)))
-        return d
-
-    arms_out = {a: {r: {**summary(float(np.nanmean(obs[a][ix])), np.concatenate(boot_arm[a][r]), False),
-                        "n_cols": int(ix.size)} for r, ix in idx.items()} for a in names}
-    con_out = {f"{a}-{b}": {r: {**summary(float(np.nanmean(obs[a][ix]) - np.nanmean(obs[b][ix])),
-                                          np.concatenate(boot_con[(a, b)][r]), True),
-                                "n_cols": int(ix.size)} for r, ix in idx.items()}
-               for (a, b) in contrasts}
-    return {"arms": arms_out, "contrasts": con_out}
+    combos = {("arm", a): {a: 1} for a in groups}
+    combos.update({("contrast", f"{a}-{b}"): {a: 1, b: -1} for a, b in contrasts})
+    named = {f"{kind}:{name}": w for (kind, name), w in combos.items()}
+    got = combination_stats(groups, rois, counts, named, ci=ci, chunk=DRAW_CHUNK)
+    arm_keys, con_keys = ("value", "lo", "hi", "n_cols"), ("value", "lo", "hi", "p_two_sided", "n_cols")
+    return {"arms": {a: {r: {k: d[k] for k in arm_keys} for r, d in got[f"arm:{a}"].items()} for a in groups},
+            "contrasts": {f"{a}-{b}": {r: {k: d[k] for k in con_keys} for r, d in got[f"contrast:{a}-{b}"].items()}
+                          for a, b in contrasts}}
 
 
 def cmd_compare(args) -> None:

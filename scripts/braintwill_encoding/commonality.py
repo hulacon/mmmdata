@@ -13,7 +13,9 @@ driver fits nothing: it reads those cached scores and turns them into the 2^k - 
   does: ``C(S) = sum over T ⊆ S of (-1)^(|S| - |T| + 1) R²(all without T)``, with
   R²(no groups) = 0. For two groups, C({a, b}) = R²(a) + R²(b) - R²(a, b).
 
-The terms sum to R²(all) exactly. They are partitioned, not residualised: no group is
+The weights and the paired bootstrap are braintwill's (``braintwill.encoding.resample``:
+``commonality_weights``, ``combination_stats``); this driver resolves arms, spaces, masks
+and ROIs. The terms sum to R²(all) exactly. They are partitioned, not residualised: no group is
 regressed out of another. A negative shared term means the groups' held-out R² does not
 add up as a partition, which happens with correlated predictors and with regularised,
 cross-validated fits. It is reported as computed and is not evidence of suppression.
@@ -46,7 +48,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
-import itertools
 import json
 import sys
 from pathlib import Path
@@ -59,103 +60,26 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import harness as h  # noqa: E402  (puts functional_space and src/python on sys.path)
-import rescue as rs  # noqa: E402  ROI columns, bootstrap counts, cached-score reader
+import rescue as rs  # noqa: E402  ROI columns, cached-score reader
+from braintwill.encoding import combination_stats, commonality_weights, draw_counts  # noqa: E402
 
 #: Interval level of the percentile bootstrap intervals.
 CI = 0.95
-#: Separator in a term's name: ``opaque&named`` is the variance opaque and named share and
-#: no other group explains.
-TERM_SEP = "&"
-
-
-# ---------------------------------------------------------------------------
-# the partition (pure: synthetic R² and group sums test it)
-# ---------------------------------------------------------------------------
-
-def subset_key(groups) -> str:
-    return "+".join(groups)
-
-
-def term_weights(groups: list[str]) -> dict[str, dict[str, int]]:
-    """Each commonality term as signed weights on subset fits: term -> {subset_key: coefficient}.
-
-    ``groups`` in arm order. Subset keys name the groups a fit holds (``harness`` order), and
-    the empty fit (R² = 0) never appears.
-    """
-    groups = list(groups)
-    if len(groups) < 2 or len(set(groups)) != len(groups):
-        raise ValueError(f"need at least two distinct groups, got {groups}")
-    out = {}
-    for k in range(1, len(groups) + 1):
-        for S in itertools.combinations(groups, k):
-            w: dict[str, int] = {}
-            for j in range(0, k + 1):
-                for T in itertools.combinations(S, j):
-                    fit = tuple(g for g in groups if g not in T)
-                    if not fit:
-                        continue
-                    key = subset_key(fit)
-                    w[key] = w.get(key, 0) + (-1) ** (k - j + 1)
-            out[TERM_SEP.join(S)] = {key: c for key, c in w.items() if c}
-    return out
-
-
-def terms_from_r2(r2: dict[str, np.ndarray], weights: dict[str, dict[str, int]]) -> dict[str, np.ndarray]:
-    """Apply :func:`term_weights` to R² values (scalars or arrays) keyed by subset."""
-    return {t: sum(c * np.asarray(r2[s], np.float64) for s, c in w.items()) for t, w in weights.items()}
 
 
 def term_stats(groups_by_subset: dict[str, dict], rois: dict[str, np.ndarray], counts: np.ndarray,
                weights: dict[str, dict[str, int]], ci: float = CI) -> dict:
-    """Per term and per ROI (column indices): the ROI-mean term and a percentile bootstrap interval.
+    """Every commonality term per ROI, plus ``total`` (the fit holding every group).
 
-    ``groups_by_subset`` maps subset key -> ``EncodingScore.groups`` of the same responses; all
-    must hold the same CV groups in the same order, so one row of ``counts`` resamples every
-    subset fit alike. ``total`` (R² of the fit holding every group) is reported beside the terms.
+    ``weights`` from braintwill's ``commonality_weights`` (fit names ``a+b`` match the arm's
+    subset spaces); the read is braintwill's ``combination_stats``: per column, then the ROI
+    mean, one paired bootstrap over the CV groups for every term.
     """
-    from braintwill.encoding import resampled_r2
-
-    keys = list(groups_by_subset)
-    need = sorted({s for w in weights.values() for s in w})
-    missing = [s for s in need if s not in groups_by_subset]
-    if missing:
-        raise ValueError(f"subset fits missing: {missing}")
-    labels = list(groups_by_subset[keys[0]]["labels"])
-    for k in keys[1:]:
-        if list(groups_by_subset[k]["labels"]) != labels:
-            raise RuntimeError(f"subset {k} holds different CV groups from subset {keys[0]}")
     if not rois:
         return {}
-    full = max(need, key=lambda s: len(s.split("+")))
-    cols = np.unique(np.concatenate(list(rois.values())))
-    at = {c: i for i, c in enumerate(cols)}
-    idx = {r: np.array([at[c] for c in v]) for r, v in rois.items()}
-    g = {k: rs._restrict(groups_by_subset[k], cols) for k in need}
-    names = [*weights, "total"]
-    ones = np.ones(len(labels))
-
-    def per_column(r2):
-        t = terms_from_r2(r2, weights)
-        t["total"] = np.asarray(r2[full], np.float64)
-        return t
-
-    obs = per_column({k: resampled_r2(g[k], ones) for k in need})
-    boot = {t: {r: [] for r in rois} for t in names}
-    for s in range(0, counts.shape[0], rs.DRAW_CHUNK):
-        c = counts[s:s + rs.DRAW_CHUNK]
-        t = per_column({k: resampled_r2(g[k], c) for k in need})
-        for name in names:
-            for r, ix in idx.items():
-                boot[name][r].append(np.nanmean(t[name][:, ix], axis=1))
-    lo, hi = (1 - ci) / 2, 1 - (1 - ci) / 2
-    out = {}
-    for name in names:
-        out[name] = {}
-        for r, ix in idx.items():
-            bt = np.concatenate(boot[name][r])
-            out[name][r] = {"value": float(np.nanmean(obs[name][ix])), "lo": float(np.quantile(bt, lo)),
-                            "hi": float(np.quantile(bt, hi)), "n_cols": int(ix.size)}
-    return out
+    full = max({s for w in weights.values() for s in w}, key=lambda s: len(s.split("+")))
+    return combination_stats(groups_by_subset, rois, counts, {**weights, "total": {full: 1}},
+                             ci=ci, chunk=rs.DRAW_CHUNK)
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +105,7 @@ def cmd_read(args) -> None:
         spaces = h.common_spaces(args.arm)
     except ValueError as exc:
         raise SystemExit(str(exc))
-    weights = term_weights(groups)
+    weights = commonality_weights(groups)
     paths = h.Paths()
     cache = ScoreCache(paths.out)
     table = pd.read_csv(go.grayordinates_path(paths.cleaned), sep="\t")
@@ -213,7 +137,7 @@ def cmd_read(args) -> None:
             got[subset] = s.groups
         rois = rs.roi_columns(labels, mask, valid, rs.RULE["min_cols"])
         rois[rs.ALL_ROI] = np.flatnonzero(np.asarray(mask, bool) & np.asarray(valid, bool))
-        counts = rs.draw_counts(len(got[spaces[0].split(".", 1)[1]]["labels"]), rs.RULE["n_boot"], rs.RULE["seed"])
+        counts = draw_counts(len(got[spaces[0].split(".", 1)[1]]["labels"]), rs.RULE["n_boot"], rs.RULE["seed"])
         per[sub] = term_stats(got, rois, counts, weights)
         print(f"sub-{sub}: {len(rois)} ROIs, {len(weights)} terms from {len(spaces)} fits", flush=True)
     rows = [{"term": t, "sub": sub, "roi": roi, **x}

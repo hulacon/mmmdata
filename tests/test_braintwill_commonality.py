@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import itertools
 from pathlib import Path
 
 import numpy as np
@@ -33,71 +32,7 @@ def cm():
     return _load("braintwill_encoding_commonality", "commonality.py")
 
 
-# --- the partition --------------------------------------------------------------------------
-
-def test_two_group_terms_are_the_textbook_formulas(cm):
-    w = cm.term_weights(["a", "b"])
-    assert w == {"a": {"a+b": 1, "b": -1}, "b": {"a+b": 1, "a": -1}, "a&b": {"a": 1, "b": 1, "a+b": -1}}
-
-
-def test_three_group_unique_terms_drop_one_group_from_the_full_fit(cm):
-    w = cm.term_weights(["o", "n", "t"])
-    assert w["o"] == {"o+n+t": 1, "n+t": -1}
-    assert w["o&n&t"] == {"o": 1, "n": 1, "t": 1, "o+n": -1, "o+t": -1, "n+t": -1, "o+n+t": 1}
-    assert len(w) == 7
-
-
-@pytest.mark.parametrize("k", [2, 3, 4])
-def test_terms_sum_to_the_full_fit(cm, k):
-    groups = [f"g{i}" for i in range(k)]
-    rng = np.random.default_rng(k)
-    r2 = {cm.subset_key(c): rng.uniform(0, 0.3, size=5)
-          for j in range(1, k + 1) for c in itertools.combinations(groups, j)}
-    terms = cm.terms_from_r2(r2, cm.term_weights(groups))
-    np.testing.assert_allclose(sum(terms.values()), r2[cm.subset_key(groups)], atol=1e-12)
-
-
-def test_term_weights_refuse_one_group(cm):
-    with pytest.raises(ValueError, match="at least two"):
-        cm.term_weights(["a"])
-
-
-def _heldout_r2(X, Y, groups, n_folds=5):
-    """Grouped-CV least-squares R² per column (the test's stand-in for a harness fit)."""
-    u = np.unique(groups)
-    pred = np.zeros_like(Y)
-    for f in range(n_folds):
-        test = np.isin(groups, u[f::n_folds])
-        A = np.c_[X[~test], np.ones((~test).sum())]
-        B, *_ = np.linalg.lstsq(A, Y[~test], rcond=None)
-        pred[test] = np.c_[X[test], np.ones(test.sum())] @ B
-    ss = ((Y - Y.mean(0)) ** 2).sum(0)
-    return 1 - ((Y - pred) ** 2).sum(0) / ss
-
-
-def test_a_timing_signal_both_groups_carry_is_shared_only_until_timing_is_its_own_group(cm):
-    rng = np.random.default_rng(0)
-    n_films, per = 20, 100
-    groups = np.repeat(np.arange(n_films), per)
-    n = groups.size
-    t = np.sin(np.arange(n) / 7.0)[:, None]  # a timing envelope
-    o, m = rng.standard_normal((n, 2)), rng.standard_normal((n, 2))
-    feats = {"opaque": np.c_[t, o], "named": np.c_[t, m], "timing": t}
-    W = rng.standard_normal((5, 30))
-    Y = np.c_[2 * t, o, m] @ W + 0.5 * rng.standard_normal((n, 30))  # timing weighted to be plain
-
-    def partition(gs):
-        r2 = {cm.subset_key(c): _heldout_r2(np.hstack([feats[g] for g in c]), Y, groups).mean()
-              for j in range(1, len(gs) + 1) for c in itertools.combinations(gs, j)}
-        return cm.terms_from_r2(r2, cm.term_weights(gs))
-
-    two = partition(["opaque", "named"])
-    three = partition(["opaque", "named", "timing"])
-    assert two["opaque&named"] > 0.1  # without a timing group, timing reads as opaque ∩ named
-    assert abs(three["opaque&named"]) < 0.01  # with one, nothing is left there
-    assert three["opaque&named&timing"] == pytest.approx(two["opaque&named"], abs=0.01)
-    assert three["opaque"] == pytest.approx(two["opaque"], abs=0.01)
-
+# --- the reader (the algebra and the bootstrap are braintwill's; tested there) ---------------
 
 def _sums(y, p, n_groups):
     yg, pg = np.split(y, n_groups), np.split(p, n_groups)
@@ -106,38 +41,23 @@ def _sums(y, p, n_groups):
             "res": np.array([((a - b) ** 2).sum(0) for a, b in zip(yg, pg)])}
 
 
-def test_term_stats_read_the_terms_from_group_sums_with_paired_intervals(cm, harness):
-    from braintwill.encoding import resampled_r2
+def test_term_stats_reads_every_term_and_the_total(cm):
+    from braintwill.encoding import combine, commonality_weights, draw_counts, resampled_r2
 
     rng = np.random.default_rng(1)
-    n_groups, per, n_cols = 25, 40, 8
-    y = rng.standard_normal((n_groups * per, n_cols))
-    preds = {"a": 0.5 * y, "b": 0.4 * y + 0.1 * rng.standard_normal(y.shape),
-             "a+b": 0.6 * y + 0.05 * rng.standard_normal(y.shape)}
-    got = {k: _sums(y, p, n_groups) for k, p in preds.items()}
-    w = cm.term_weights(["a", "b"])
+    n_groups, per = 25, 40
+    y = rng.standard_normal((n_groups * per, 8))
+    got = {k: _sums(y, c * y + 0.1 * rng.standard_normal(y.shape), n_groups)
+           for k, c in {"a": 0.5, "b": 0.4, "a+b": 0.6}.items()}
+    w = commonality_weights(["a", "b"])
     rois = {"left": np.arange(4), "right": np.arange(4, 8)}
-    counts = np.random.default_rng(0).multinomial(n_groups, np.full(n_groups, 1 / n_groups), size=300)
-    out = cm.term_stats(got, rois, counts, w)
-    direct = cm.terms_from_r2({k: resampled_r2(v, np.ones(n_groups)) for k, v in got.items()}, w)
-    for term in w:
-        for roi, ix in rois.items():
-            d = out[term][roi]
-            assert d["value"] == pytest.approx(direct[term][ix].mean(), abs=1e-10)
-            assert d["lo"] <= d["value"] <= d["hi"] and d["n_cols"] == 4
-    total = out["total"]["left"]["value"]
-    assert total == pytest.approx(sum(out[t]["left"]["value"] for t in w), abs=1e-10)
-
-
-def test_term_stats_refuse_a_missing_fit_and_mismatched_groups(cm):
-    y = np.random.default_rng(2).standard_normal((40, 3))
-    s = _sums(y, 0.5 * y, 4)
-    w = cm.term_weights(["a", "b"])
-    with pytest.raises(ValueError, match="subset fits missing"):
-        cm.term_stats({"a": s, "b": s}, {"r": np.arange(3)}, np.ones((2, 4)), w)
-    other = {**s, "labels": list(reversed(s["labels"]))}
-    with pytest.raises(RuntimeError, match="different CV groups"):
-        cm.term_stats({"a": s, "b": other, "a+b": s}, {"r": np.arange(3)}, np.ones((2, 4)), w)
+    out = cm.term_stats(got, rois, draw_counts(n_groups, 200, 0), w)
+    assert set(out) == {"a", "b", "a&b", "total"}
+    direct = combine({k: resampled_r2(v, np.ones(n_groups)) for k, v in got.items()}, w)
+    for t in w:
+        assert out[t]["left"]["value"] == pytest.approx(direct[t][:4].mean(), abs=1e-12)
+    assert out["total"]["right"]["value"] == pytest.approx(sum(out[t]["right"]["value"] for t in w), abs=1e-12)
+    assert cm.term_stats(got, {}, draw_counts(n_groups, 5, 0), w) == {}
 
 
 # --- arms in the harness ----------------------------------------------------------------------
