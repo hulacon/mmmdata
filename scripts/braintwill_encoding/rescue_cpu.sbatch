@@ -25,7 +25,11 @@ set -euo pipefail
 REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
 PY="/gpfs/projects/hulacon/shared/envs/functional-space/bin/python"
 [ $# -ge 1 ] || { echo "usage: sbatch rescue_cpu.sbatch project|read <flags>" >&2; exit 2; }
+# OMP_NUM_THREADS alone does not cap this env's OpenBLAS (pthreads build), even under srun -c:
+# a toy one-band fit ran 8.0 s with it alone, 0.78 s with OPENBLAS_NUM_THREADS too.
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 export PYTHONNOUSERSITE=1
 
 echo "Job ${SLURM_JOB_ID} $* on ${SLURMD_NODENAME}; start $(date)"

@@ -158,3 +158,148 @@ def test_arms_differing_only_in_the_opaque_source_share_the_subsets_without_it(h
         assert a == b
     a, b = (harness.common_merge(arm, ("opaque", "named")) for arm in ("dev-vgg19", "dev-other"))
     assert a != b
+
+
+# --- stacked arms (the stacking engine) -------------------------------------------------------
+
+def test_parse_stack_names_a_subset_or_one_source_of_a_group(harness):
+    assert harness.parse_stack("stack-dev-vgg19.opaque+timing") == ("dev-vgg19", ("opaque", "timing"), None)
+    assert harness.parse_stack("stack-dev-vgg19.timing/onsets") == ("dev-vgg19", ("timing",), "onsets")
+    assert harness.stack_sources("dev-vgg19", ("timing",), "onsets") == ["model:onsets"]
+    assert harness.stack_sources("dev-vgg19", ("opaque", "named"), None) == \
+        ["cache:vgg19.conv4_3", "model:faces", "model:depth"]
+
+
+@pytest.mark.parametrize("space, msg", [
+    ("stack-dev-vgg19.timing+opaque", "arm order"),
+    ("stack-dev-vgg19.timing/faces", "no source band"),
+    ("stack-dev-vgg19.brain/faces", "no group"),
+    ("stack-nope.opaque", "unknown commonality arm"),
+])
+def test_parse_stack_refuses_malformed_names(harness, space, msg):
+    with pytest.raises(ValueError, match=msg):
+        harness.parse_stack(space)
+
+
+def test_an_arm_stacks_every_subset_and_each_source_of_a_several_source_group(harness):
+    spaces = harness.stack_spaces("dev-vgg19")
+    subsets = [s.replace("common-", "stack-", 1) for s in harness.common_spaces("dev-vgg19")]
+    assert spaces[:7] == subsets
+    solo = spaces[7:]
+    assert len(solo) == 2 + 4 and len(set(spaces)) == len(spaces)
+    assert not any(s.startswith("stack-dev-vgg19.opaque/") for s in solo)  # one source: its subset is its solo
+    assert harness.stack_spaces("dev-vgg19", solo=False) == subsets
+    # every space's sources are distinct lists, so no two spaces are one unit by construction
+    srcs = [tuple(harness.stack_sources(*harness.parse_stack(s))) for s in spaces]
+    assert len(set(srcs)) == len(srcs)
+
+
+def test_stack_spec_keys_the_route_and_uses_read_b_first_level(harness):
+    from braintwill.encoding import cache_key
+
+    a, b = harness.stack_spec("reuse"), harness.stack_spec("nested")
+    assert a.ridge == harness.model_spec().ridge and a.group_sums
+    reg = {"name": "films"}
+    assert cache_key("f" * 64, reg, a, "sub-01")["spec_hash"] != cache_key("f" * 64, reg, b, "sub-01")["spec_hash"]
+    with pytest.raises(ValueError, match="--oof"):
+        harness.stack_spec("cheap")
+
+
+def test_masked_register_keys_the_mask_content(harness):
+    m = np.zeros(50, bool)
+    m[:20] = True
+    a = harness.masked_register({"name": "films"}, m)
+    assert a == harness.masked_register({"name": "films"}, m.copy())
+    m2 = m.copy()
+    m2[30] = True
+    assert a["scored_columns"]["sha256"] != harness.masked_register({"name": "films"}, m2)["scored_columns"]["sha256"]
+    assert a["scored_columns"]["n"] == 20 and a["name"] == "films"
+
+
+def test_stack_mask_missing_names_the_verb_that_writes_it(harness, tmp_path):
+    with pytest.raises(SystemExit, match="reliability.py films --sub 01"):
+        harness.stack_mask(tmp_path, "01")
+
+
+def test_score_refuses_a_stacked_space_before_loading_anything(harness):
+    import argparse
+
+    with pytest.raises(SystemExit, match="harness.py stack"):
+        harness.cmd_score(argparse.Namespace(space="stack-dev-vgg19.opaque", register="films", sub="01"))
+
+
+def test_combine_sources_stacks_bands_in_the_order_named(harness):
+    from braintwill.encoding import FrameFeatures
+
+    t = np.arange(4) * 0.5
+    per = {s: {"film": FrameFeatures("film", t, np.full((4, w), i, np.float64), 0.5, {s: slice(0, w)})}
+           for i, (s, w) in enumerate([("a", 2), ("b", 3)])}
+    one = harness.combine_sources(per, ["b"])
+    assert one is per["b"]
+    two = harness.combine_sources(per, ["b", "a"])["film"]
+    assert two.bands == {"b": slice(0, 3), "a": slice(3, 5)}
+    np.testing.assert_array_equal(two.x[:, :3], 1.0)
+
+
+# --- fit_stack: synthetic fits (numpy backend) ------------------------------------------------
+
+def _toy_stack_spec():
+    from braintwill.encoding import RidgeSpec, StackSpec
+
+    ridge = RidgeSpec(alphas=tuple(np.logspace(-2, 6, 9)), inner_folds=3, solver="random_search", n_iter=5,
+                      random_state=0, dtype="float64")
+    return StackSpec(ridge=ridge, outer_folds=3, oof="reuse", qp_jitter=1e-10, group_sums=True)
+
+
+def _toy_design(seed=0, n_groups=9, rows=50):
+    rng = np.random.default_rng(seed)
+    n = n_groups * rows
+    x = rng.standard_normal((n, 9)).astype(np.float32)
+    bands = {"a": slice(0, 3), "b": slice(3, 6), "c": slice(6, 9)}
+    y = 1.5 * rng.standard_normal((n, 12))
+    y[:, :6] += x[:, :3] @ rng.standard_normal((3, 6))
+    y[:, 6:] += x[:, 3:6] @ rng.standard_normal((3, 6))
+    groups = np.repeat([f"film-{i}" for i in range(n_groups)], rows)
+    return x, ((y - y.mean(0)) / y.std(0)).astype(np.float32), groups, bands
+
+
+def test_fit_stack_scores_mask_columns_only_and_alike_with_or_without_the_rest(harness):
+    pytest.importorskip("himalaya")
+    x, y, groups, bands = _toy_design()
+    spec = _toy_stack_spec()
+    mask = np.zeros(y.shape[1], bool)
+    mask[[0, 2, 5, 7, 11]] = True
+    unions = {"a+b": ["a", "b"], "a": ["a"]}
+    masked = harness.fit_stack(x, y, groups, bands, mask, unions, spec, "numpy")
+    full = harness.fit_stack(x, y, groups, bands, np.ones_like(mask), unions, spec, "numpy")
+    for u in unions:
+        np.testing.assert_array_equal(masked[u].valid, mask)
+        assert np.isnan(masked[u].r2[~mask]).all()
+        # each column is fitted and weighted on its own: restricting columns moves no score
+        np.testing.assert_allclose(masked[u].r2[mask], full[u].r2[mask], rtol=1e-6, atol=1e-7)
+    assert masked["a"].bands == {"a": 3} and masked["a+b"].bands == {"a": 3, "b": 3}
+
+
+def test_a_union_scores_the_same_whatever_else_the_job_fits(harness):
+    """So a union cached from one arm's job is the score another arm's job would write."""
+    pytest.importorskip("himalaya")
+    x, y, groups, bands = _toy_design(seed=3)
+    spec = _toy_stack_spec()
+    mask = np.ones(y.shape[1], bool)
+    alone = harness.fit_stack(x, y, groups, bands, mask, {"a+b": ["a", "b"]}, spec, "numpy")["a+b"]
+    among = harness.fit_stack(x, y, groups, bands, mask, {"a+b": ["a", "b"], "c": ["c"], "a+b+c": ["a", "b", "c"]},
+                              spec, "numpy")["a+b"]
+    np.testing.assert_allclose(among.r2, alone.r2, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(among.band_weights, alone.band_weights, rtol=1e-6, atol=1e-7)
+    for k in ("sy", "syy", "res"):
+        np.testing.assert_allclose(among.groups[k], alone.groups[k], rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize("unions, mask_n, msg", [
+    ({"a+z": ["a", "z"]}, 12, "bands the design lacks"),
+    ({"a": ["a"]}, 11, "mask has"),
+])
+def test_fit_stack_refuses_unknown_bands_and_a_misshapen_mask(harness, unions, mask_n, msg):
+    x, y, groups, bands = _toy_design()
+    with pytest.raises(ValueError, match=msg):
+        harness.fit_stack(x, y, groups, bands, np.ones(mask_n, bool), unions, _toy_stack_spec(), "numpy")

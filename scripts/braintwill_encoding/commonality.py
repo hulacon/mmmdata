@@ -20,12 +20,21 @@ regressed out of another. A negative shared term means the groups' held-out R² 
 add up as a partition, which happens with correlated predictors and with regularised,
 cross-validated fits. It is reported as computed and is not evidence of suppression.
 
+Two engines fit the subsets (``--engine``). ``joint`` (the default): the ``common-`` spaces,
+each subset its own banded-ridge fit, one kernel band per group, equal kernel trace per source
+within a group. ``stack``: the ``stack-`` spaces, every source its own ridge and each subset a
+convex per-column combination of its sources (braintwill ``encoding.stack``, Lin et al. 2024),
+fitted by one ``harness.py stack`` job per subject; its out-of-fold route ``--oof`` has no
+default. Stacked subsets score only the reliability mask's columns, which are the columns this
+reader reads. The terms and the bootstrap are the same for both engines.
+
 Timing and nuisance features belong in their own group. Otherwise variance a timing signal
 explains through both the opaque and the named group is booked as "shared opaque ∩ named".
 
 Verbs:
 
-  spaces  the arm's 2^k - 1 harness spaces, one per line, for a submission loop
+  spaces  the arm's 2^k - 1 harness spaces, one per line, for a submission loop (``--engine
+          stack``: its stacked spaces, solo sources included, for ``harness.py plan``)
   read    per subject and ROI (HCP-MMP1 sections, ``families.familyD``, inside the
           register's reliability mask, as ``rescue.py``): every term's ROI mean with a
           percentile bootstrap interval over the CV groups (one draw of counts per subject,
@@ -37,6 +46,8 @@ Usage:
     for s in $(python commonality.py spaces --arm <arm>); do
         sbatch --export=ALL,VERB=score,ARGS="--space $s --sub ##" harness.sbatch; done
     python commonality.py read --arm <arm> --register films --out <dir> [--subs ##,##]
+    sbatch --export=ALL,VERB=stack,ARGS="--arm <arm> --sub ## --oof reuse" harness.sbatch
+    python commonality.py read --arm <arm> --engine stack --oof reuse --register films --out <dir>
 
 A subset fit is cached by its feature content and its spec, which carries the merge (group
 names and their bands). So arms that differ only in the opaque group's source, with the same
@@ -65,6 +76,8 @@ from braintwill.encoding import combination_stats, commonality_weights, draw_cou
 
 #: Interval level of the percentile bootstrap intervals.
 CI = 0.95
+#: How the subset fits were made (module docstring).
+ENGINES = ("joint", "stack")
 
 
 def term_stats(groups_by_subset: dict[str, dict], rois: dict[str, np.ndarray], counts: np.ndarray,
@@ -86,9 +99,21 @@ def term_stats(groups_by_subset: dict[str, dict], rois: dict[str, np.ndarray], c
 # verbs
 # ---------------------------------------------------------------------------
 
+def engine_spaces(arm: str, engine: str, solo: bool = False) -> list[str]:
+    """The subset spaces an engine reads (``stack`` adds its solo sources with ``solo``)."""
+    if engine == "stack":
+        return h.stack_spaces(arm, solo=solo)
+    return h.common_spaces(arm)
+
+
+def _output_stem(arm: str, register: str, engine: str, oof: str | None) -> str:
+    tag = "" if engine == "joint" else f"_stack-{oof}"
+    return f"commonality_{arm}_{register}{tag}"
+
+
 def cmd_spaces(args) -> None:
     try:
-        print("\n".join(h.common_spaces(args.arm)))
+        print("\n".join(engine_spaces(args.arm, args.engine, solo=True)))
     except ValueError as exc:
         raise SystemExit(str(exc))
 
@@ -100,9 +125,11 @@ def cmd_read(args) -> None:
 
     import cha
 
+    if args.engine == "stack" and args.oof is None:
+        raise SystemExit(f"--engine stack needs --oof, one of {h.STACK_OOF} (no default: model-readout prereg R2)")
     try:
         groups = list(h.check_arm(args.arm))
-        spaces = h.common_spaces(args.arm)
+        spaces = engine_spaces(args.arm, args.engine)
     except ValueError as exc:
         raise SystemExit(str(exc))
     weights = commonality_weights(groups)
@@ -112,7 +139,7 @@ def cmd_read(args) -> None:
     labels = np.asarray(fam.family_labels(table, cha.Paths().atlases)[rs.RULE["family"]])
     subs = args.subs.split(",") if args.subs else list(h.fm.SUBJECTS)
     rel = paths.out / "reliability" / f"register-{args.register}"
-    per, keys, checks = {}, {}, {}
+    per, keys, checks, stacking = {}, {}, {}, {}
     for sub in subs:
         mask_path = rel / f"sub-{sub}.npz"
         if not mask_path.exists():
@@ -121,8 +148,10 @@ def cmd_read(args) -> None:
             mask = z["mask"]
         got, valid = {}, None
         keys[f"sub-{sub}"], checks[f"sub-{sub}"] = {}, {}
+        if args.engine == "stack":
+            stacking[f"sub-{sub}"] = {}
         for space in spaces:
-            k, s = rs._cached(paths, cache, args.register, space, sub)
+            k, s = rs._cached(paths, cache, args.register, space, sub, oof=args.oof)
             subset = space.split(".", 1)[1]
             keys[f"sub-{sub}"][subset] = {"space": space, "features": k["feature_hash"], "spec": k["spec_hash"]}
             if valid is None:
@@ -135,6 +164,9 @@ def cmd_read(args) -> None:
             if err > 1e-4:
                 raise RuntimeError(f"sub-{sub} {space}: per-group sums miss the stored R² by {err:.2g}")
             got[subset] = s.groups
+            if args.engine == "stack":
+                stacking[f"sub-{sub}"][subset] = {"weight_median": s.full_fit["weight_median"],
+                                                  "qp_max_gap": s.summary["qp_max_gap"]}
         rois = rs.roi_columns(labels, mask, valid, rs.RULE["min_cols"])
         rois[rs.ALL_ROI] = np.flatnonzero(np.asarray(mask, bool) & np.asarray(valid, bool))
         counts = draw_counts(len(got[spaces[0].split(".", 1)[1]]["labels"]), rs.RULE["n_boot"], rs.RULE["seed"])
@@ -145,7 +177,8 @@ def cmd_read(args) -> None:
     df = pd.DataFrame(rows)
     med = (df.groupby(["term", "roi"])["value"].agg(["median", "count"]).reset_index()
            .rename(columns={"median": "median_over_subjects", "count": "n_subjects"}))
-    out = {"arm": args.arm, "groups": {g: list(v) for g, v in h.COMMON_ARMS[args.arm].items()},
+    out = {"arm": args.arm, "engine": args.engine, "oof": args.oof,
+           "groups": {g: list(v) for g, v in h.COMMON_ARMS[args.arm].items()},
            "development_arm": args.arm.startswith("dev"),
            "register": args.register, "subjects": subs, "terms": weights,
            "read": {"family": rs.RULE["family"], "min_cols": rs.RULE["min_cols"], "n_boot": rs.RULE["n_boot"],
@@ -154,14 +187,15 @@ def cmd_read(args) -> None:
                     "whole_mask_roi": rs.ALL_ROI, "verdict": "none: descriptive",
                     "negative_terms": "reported as computed; not evidence of suppression"},
            "per_subject": per, "keys": keys, "group_sums_check_max_abs": checks,
+           **({"stacking": stacking} if args.engine == "stack" else {}),
            "provenance": h.provenance("commonality", {}),
            "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")}
     dest = Path(args.out)
     dest.mkdir(parents=True, exist_ok=True)
-    stem = dest / f"commonality_{args.arm}_{args.register}"
+    stem = dest / _output_stem(args.arm, args.register, args.engine, args.oof)
     stem.with_suffix(".json").write_text(json.dumps(out, indent=2) + "\n")
     df.to_csv(stem.with_suffix(".csv"), index=False)
-    med.to_csv(dest / f"commonality_{args.arm}_{args.register}_median.csv", index=False)
+    med.to_csv(dest / f"{stem.name}_median.csv", index=False)
     print(f"wrote {stem}.json, {stem}.csv, {stem}_median.csv")
 
 
@@ -170,8 +204,11 @@ def main() -> None:
     sub = ap.add_subparsers(dest="verb", required=True)
     p = sub.add_parser("spaces")
     p.add_argument("--arm", required=True)
+    p.add_argument("--engine", choices=ENGINES, default="joint")
     r = sub.add_parser("read")
     r.add_argument("--arm", required=True)
+    r.add_argument("--engine", choices=ENGINES, default="joint")
+    r.add_argument("--oof", choices=h.STACK_OOF, help="--engine stack: the stacking route (required)")
     r.add_argument("--register", choices=("films",), default="films")
     r.add_argument("--out", required=True)
     r.add_argument("--subs", help="comma-separated subjects (default: the films pool's)")

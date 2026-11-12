@@ -34,7 +34,11 @@ DIR="${REPO_ROOT}/scripts/braintwill_encoding"
 PY="/gpfs/projects/hulacon/shared/envs/functional-space/bin/python"
 : "${REGISTER:?set REGISTER (films|tb-enc)}" "${SPACES:?set SPACES (colon-separated: sbatch --export splits on commas)}" \
   "${SLURM_ARRAY_TASK_ID:?submit as an array}"
+# OMP_NUM_THREADS alone does not cap this env's OpenBLAS (pthreads build), even under srun -c:
+# a toy one-band fit ran 8.0 s with it alone, 0.78 s with OPENBLAS_NUM_THREADS too.
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 export PYTHONNOUSERSITE=1
 
 read -r SPACE SUB < <(cd "${DIR}" && "${PY}" - "${SLURM_ARRAY_TASK_ID}" "${SPACES}" <<'PYEOF'

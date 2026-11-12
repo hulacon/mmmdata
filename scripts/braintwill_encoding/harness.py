@@ -83,6 +83,20 @@ each non-empty subset of a declared arm's groups (``COMMON_ARMS``: an opaque mod
 members, timing/nuisance features), films only, one kernel band per group, per-group sums
 kept. ``commonality.py`` reads the 2^k - 1 cached scores into unique and shared terms.
 
+Stacked spaces (``stack-<arm>.<g>[+<g>...]`` and ``stack-<arm>.<g>/<band>``, the same arms
+through braintwill's stacking engine, ``encoding.stack``, Lin et al. 2024): every source of
+the arm is one member with its own one-band ridge (read (b)'s), and a space is a union of
+members combined per column by convex weights. A group subset is the union of its groups'
+sources; ``<g>/<band>`` is one source of a several-source group alone (its solo score, for
+the dilution ratio). One ``stack`` job per subject fits every member once and scores every
+uncached union from those fits, and each union is cached as its own unit, keyed by its own
+members' content: a union's score depends on nothing else, so arms share the units they have
+in common. The out-of-fold route (``--oof reuse|nested``) is part of the key and has no
+default. Stacked fits score **only the films reliability mask's columns** (the columns
+``commonality.py read`` reads): every column is fitted and weighted on its own, so the
+restriction changes memory, not a column's score, and the mask's content is in the key, so
+a cached score never covers fewer columns than the mask a read asks for.
+
 Feature sets: for films, the per-stimulus caches ``functional_space/encoding.py cache``
 writes (``<derivatives>/functional_space/features/<space>/``), only the register's films;
 for tb-enc, the shared1000 image tables under ``<derivatives>/stimuli_features/``. Either
@@ -95,6 +109,7 @@ Verbs:
 
   plan         build one subject's register and report sizes, key and cache state
   score        nested-CV scores for one subject (cached)
+  stack        one arm's stacked spaces for one subject, in one job (every uncached union)
   equivalence  refit one functional-space stimulus-route job's encoders through braintwill on
                that job's films and compare the fit diagnostics with the job's sidecar; also
                checks the design and responses equal ``encoding.film_design``'s exactly
@@ -107,6 +122,8 @@ Usage:
     python harness.py score --register films --space model-clip --sub ##
     python harness.py score --register tb-ret-ts --space model-fasttext --sub ##
     python harness.py score --register films --space rescue-V+clip --sub ##
+    python harness.py stack --arm <arm> --sub ## --oof reuse
+    python harness.py plan --space stack-<arm>.<group> --sub ## --oof reuse
     python harness.py equivalence --space ebind --scenario primary --pct 0 --draw 0 --target ##
 """
 
@@ -154,8 +171,8 @@ import encoding as fs_enc  # noqa: E402  functional_space/encoding.py: feature c
 import films as fm  # noqa: E402
 import grayordinates as go  # noqa: E402
 from braintwill.encoding import (BandedRidge, EncodingSpec, FrameFeatures, RidgeSpec,  # noqa: E402
-                                 ScoreCache, cache_key, feature_set_hash, fir_design, item_design,
-                                 score)
+                                 ScoreCache, StackSpec, cache_key, feature_set_hash, fir_design,
+                                 item_design, score, stack_score)
 
 TREE = "encoding_harness"
 #: Outer folds of the nested CV (DECIDED 2026-10-12, encoding-harness settle 1).
@@ -1144,10 +1161,14 @@ def check_arm(arm: str) -> dict[str, tuple[str, ...]]:
 
 def parse_common(space: str) -> tuple[str, tuple[str, ...]]:
     """``common-<arm>.<g>+<g>`` -> (arm, groups); the groups a non-empty subset in arm order."""
-    body = space[len(COMMON_PREFIX):]
+    return _arm_subset(space, COMMON_PREFIX)
+
+
+def _arm_subset(space: str, prefix: str) -> tuple[str, tuple[str, ...]]:
+    body = space[len(prefix):]
     arm, dot, rest = body.partition(".")
     if not dot or not rest:
-        raise ValueError(f"{space!r}: expected {COMMON_PREFIX}<arm>.<group>[+<group>...]")
+        raise ValueError(f"{space!r}: expected {prefix}<arm>.<group>[+<group>...]")
     declared = list(check_arm(arm))
     groups = tuple(rest.split("+"))
     unknown = [g for g in groups if g not in declared]
@@ -1207,26 +1228,39 @@ def film_cache_features(features_root: Path, space: str, band: str, rows: pd.Dat
     return out
 
 
+def film_sources(paths: "Paths", rows: pd.DataFrame, srcs: list[str]
+                 ) -> tuple[dict[str, dict[str, FrameFeatures]], dict[str, list]]:
+    """Each arm source's band per window film (a centred modulator, as model spaces), keyed by
+    source, and the indicator gates prune_indicators kept for each model source."""
+    kinds = [common_source(s)[0] for s in srcs]
+    onsets = film_word_onsets(paths.stimfeat) if "word-on" in kinds else None
+    grid = film_grid(paths.stimfeat, rows) if ("word-on" in kinds or "cache" in kinds) else None
+    per, gates = {}, {}
+    for s in srcs:
+        kind, name, band = common_source(s)
+        if kind == "word-on":
+            per[s] = film_word_on(onsets, rows, grid)
+        elif kind == "model":
+            feats, names = load_film_model(paths.stimfeat, rows, f"{MODEL_PREFIX}{name}")
+            per[s], gates[name] = prune_indicators(feats, name, names)
+        else:
+            per[s] = film_cache_features(paths.features, name, band, rows, grid)
+    return per, gates
+
+
+def combine_sources(per: dict[str, dict[str, FrameFeatures]], srcs: list[str]) -> dict[str, FrameFeatures]:
+    """The named sources' bands side by side, in ``srcs`` order (one source: its own features)."""
+    parts = [per[s] for s in srcs]
+    return stack_bands(parts) if len(parts) > 1 else parts[0]
+
+
 def film_common_features(paths: "Paths", rows: pd.DataFrame, arm: str, groups: tuple[str, ...]
                          ) -> tuple[dict[str, FrameFeatures], dict]:
     """A commonality subset's design bands (sources of each group, in arm order) and its label."""
     decl = check_arm(arm)
     srcs = [s for g in groups for s in decl[g]]
-    kinds = [common_source(s)[0] for s in srcs]
-    onsets = film_word_onsets(paths.stimfeat) if "word-on" in kinds else None
-    grid = film_grid(paths.stimfeat, rows) if ("word-on" in kinds or "cache" in kinds) else None
-    parts, gates = [], {}
-    for s in srcs:
-        kind, name, band = common_source(s)
-        if kind == "word-on":
-            parts.append(film_word_on(onsets, rows, grid))
-        elif kind == "model":
-            feats, names = load_film_model(paths.stimfeat, rows, f"{MODEL_PREFIX}{name}")
-            feats, gates[name] = prune_indicators(feats, name, names)
-            parts.append(feats)
-        else:
-            parts.append(film_cache_features(paths.features, name, band, rows, grid))
-    feats = stack_bands(parts) if len(parts) > 1 else parts[0]
+    per, gates = film_sources(paths, rows, srcs)
+    feats = combine_sources(per, srcs)
     label = {"space": f"{COMMON_PREFIX}{arm}.{'+'.join(groups)}", "arm": arm,
              "arm_groups": {g: list(v) for g, v in decl.items()}, "groups": list(groups),
              "kernel_bands": {g: list(v) for g, v in common_merge(arm, groups).items()},
@@ -1236,6 +1270,123 @@ def film_common_features(paths: "Paths", rows: pd.DataFrame, arm: str, groups: t
              "gates": gates, "source": str(paths.stimfeat / "psytwill"), "cache": str(paths.features),
              "development_arm": arm.startswith("dev")}
     return feats, label
+
+
+# ---------------------------------------------------------------------------
+# stacked arms (model-readout settle 2b, the stacking engine; module docstring)
+# ---------------------------------------------------------------------------
+
+STACK_PREFIX = "stack-"
+#: Out-of-fold routes of the second level (braintwill ``StackSpec.oof``). No default: which
+#: route a read uses is a design call (model-readout prereg R2), so every stacked request
+#: names one, and it is part of the key.
+STACK_OOF = ("reuse", "nested")
+#: Ridge on each column's unit-scaled QP diagonal (braintwill ``simplex_qp``), so members with
+#: the same errors still give a factorable problem. The solve is certified on the unjittered
+#: problem (``qp_max_gap`` in every summary), so the jitter is not trusted, only used.
+STACK_QP_JITTER = 1e-10
+#: The films columns a stacked fit scores: the register's reliability mask (``reliability.py
+#: films``), the columns ``commonality.py read`` reads.
+STACK_MASK = Path("reliability") / "register-films"
+
+
+def parse_stack(space: str) -> tuple[str, tuple[str, ...], str | None]:
+    """``stack-<arm>.<g>+<g>`` -> (arm, groups, None): the union of those groups' sources.
+    ``stack-<arm>.<g>/<band>`` -> (arm, (g,), band): that one source of group g alone."""
+    body = space[len(STACK_PREFIX):]
+    arm, dot, rest = body.partition(".")
+    if "/" not in rest:
+        return (*_arm_subset(space, STACK_PREFIX), None)
+    group, _, band = rest.partition("/")
+    decl = check_arm(arm)
+    if group not in decl:
+        raise ValueError(f"{space!r}: arm {arm!r} has no group {group!r}; its groups: {list(decl)}")
+    bands = [source_band(s) for s in decl[group]]
+    if band not in bands:
+        raise ValueError(f"{space!r}: group {group!r} has no source band {band!r}; its bands: {bands}")
+    return arm, (group,), band
+
+
+def stack_spaces(arm: str, solo: bool = True) -> list[str]:
+    """The arm's stacked spaces: every group subset (as ``common_spaces``), then, with ``solo``,
+    each source of a group that has several (a one-source group's solo score is its subset's)."""
+    decl = check_arm(arm)
+    out = [STACK_PREFIX + s[len(COMMON_PREFIX):] for s in common_spaces(arm)]
+    if solo:
+        out += [f"{STACK_PREFIX}{arm}.{g}/{source_band(s)}" for g, srcs in decl.items() if len(srcs) > 1
+                for s in srcs]
+    return out
+
+
+def stack_sources(arm: str, groups: tuple[str, ...], band: str | None) -> list[str]:
+    """A stacked space's sources (its members), in arm order."""
+    decl = check_arm(arm)
+    if band is not None:
+        return [s for s in decl[groups[0]] if source_band(s) == band]
+    return [s for g in groups for s in decl[g]]
+
+
+def stack_spec(oof: str) -> StackSpec:
+    """Every member's first level is read (b)'s one-band fit (``model_spec``'s ridge, so a
+    one-member union is that source's read-(b) score, under its own key); per-group sums kept
+    for ``commonality.py read``."""
+    if oof not in STACK_OOF:
+        raise ValueError(f"--oof must be one of {STACK_OOF}; got {oof!r}")
+    return StackSpec(ridge=model_spec().ridge, outer_folds=OUTER_FOLDS, oof=oof,
+                     qp_jitter=STACK_QP_JITTER, group_sums=True)
+
+
+def stack_mask(out: Path, sub: str) -> tuple[np.ndarray, Path]:
+    """The subject's films reliability mask (columns a stacked fit scores) and its path."""
+    path = out / STACK_MASK / f"sub-{sub}.npz"
+    if not path.exists():
+        raise SystemExit(f"{path} is missing: stacked fits score the films reliability mask's columns only; "
+                         f"run reliability.py films --sub {sub}")
+    with np.load(path) as z:
+        return np.asarray(z["mask"], bool), path
+
+
+def masked_register(register: dict, mask: np.ndarray) -> dict:
+    """``register`` scoring only ``mask``'s columns. The mask's content joins the key, so a
+    regenerated mask never reads a score fitted on other columns."""
+    digest = hashlib.sha256(str(mask.size).encode() + np.packbits(mask).tobytes()).hexdigest()
+    return {**register, "scored_columns": {"rule": "films reliability mask (reliability.py films)",
+                                           "n": int(mask.sum()), "sha256": digest}}
+
+
+def stack_label(paths: "Paths", space: str, srcs: list[str], gates: dict, mask_path: Path) -> dict:
+    arm, groups, band = parse_stack(space)
+    decl = check_arm(arm)
+    return {"space": space, "arm": arm, "arm_groups": {g: list(v) for g, v in decl.items()},
+            "groups": list(groups), "solo_band": band, "sources": list(srcs),
+            "members": [source_band(s) for s in srcs],
+            "engine": "stacking (braintwill.encoding.stack; Lin, Naselaris, Kay & Wehbe 2024)",
+            "weighting": "each member (source) its own one-band ridge; per column, convex weights over "
+                         "the union's members from their out-of-fold training errors",
+            "modulators": "every source minus its mean over the film window's bins, 0 outside",
+            "gates": {k: v for k, v in gates.items() if k in {common_source(s)[1] for s in srcs}},
+            "scored_columns": str(mask_path), "source": str(paths.stimfeat / "psytwill"),
+            "cache": str(paths.features), "development_arm": arm.startswith("dev")}
+
+
+def fit_stack(x: np.ndarray, y: np.ndarray, groups: np.ndarray, bands: dict[str, slice], mask: np.ndarray,
+              unions: dict[str, list[str]], spec: StackSpec, backend: str) -> dict:
+    """``stack_score`` over the design's bands as members, scoring ``mask``'s columns only.
+
+    ``unions`` maps a union's name to its members' band names; only bands some union names
+    are fitted. Columns outside ``mask`` are set non-finite, so they come back invalid.
+    """
+    mask = np.asarray(mask, bool)
+    if mask.shape != (y.shape[1],):
+        raise ValueError(f"mask has {mask.shape} entries; responses have {y.shape[1]} columns")
+    unknown = sorted({b for u in unions.values() for b in u} - set(bands))
+    if unknown:
+        raise ValueError(f"unions name bands the design lacks: {unknown}; design bands: {list(bands)}")
+    y = np.array(y, dtype=np.float32, copy=True)
+    y[:, ~mask] = np.nan
+    used = [b for b in bands if any(b in u for u in unions.values())]
+    members = {b: x[:, bands[b]] for b in used}
+    return stack_score(members, y, groups, unions, spec, backend)
 
 
 def table_stream(table: str) -> str:
@@ -1525,8 +1676,20 @@ class Request:
         self.paths = paths
         model_space = args.space in MODEL_SPACES
         joint = args.space in JOINT_SPACES
-        rescue = common = None
-        if args.space.startswith(COMMON_PREFIX):
+        rescue = common = stack = None
+        if args.space.startswith(STACK_PREFIX):
+            try:
+                stack = parse_stack(args.space)
+            except ValueError as exc:
+                raise SystemExit(str(exc))
+            if args.register != "films":
+                raise SystemExit(f"{STACK_PREFIX} spaces run on films only (model-readout settle 2 pilot)")
+            if getattr(args, "oof", None) not in STACK_OOF:
+                raise SystemExit(f"{STACK_PREFIX} spaces need --oof, one of {STACK_OOF}: the second level's "
+                                 "route is part of the key and has no default (model-readout prereg R2)")
+            if getattr(args, "films", None):
+                raise SystemExit(f"{STACK_PREFIX} spaces score the whole alignment pool; --films is not offered")
+        elif args.space.startswith(COMMON_PREFIX):
             try:
                 common = parse_common(args.space)
             except ValueError as exc:
@@ -1554,7 +1717,9 @@ class Request:
             raise SystemExit(f"{args.space} needs a time course: tb-enc has none")
         if args.register == "tb-ret-ts" and args.space not in RET_SPACES:
             raise SystemExit(f"tb-ret-ts plays the word alone, so its spaces are audio: {sorted(RET_SPACES)}")
-        if common:  # read (b)'s solver, one kernel band per group, per-group sums for the read
+        if stack:  # one member per source, read (b)'s one-band first level
+            self.spec = stack_spec(args.oof)
+        elif common:  # read (b)'s solver, one kernel band per group, per-group sums for the read
             self.spec = model_spec(args.solver, args.n_iter, group_sums=True, merge=common_merge(*common))
         elif rescue:  # two bands at read (b)'s solver, with per-group sums for the bootstrap
             self.spec = model_spec(args.solver, args.n_iter, group_sums=True)
@@ -1571,7 +1736,13 @@ class Request:
             windows = fm.load_windows(paths.derivatives)
             films = args.films.split(",") if getattr(args, "films", None) else None
             self.rows = alignment_rows(windows, args.sub, films)
-            if common:
+            if stack:
+                mask, mask_path = stack_mask(paths.out, args.sub)
+                srcs = stack_sources(*stack)
+                per, gates = film_sources(paths, self.rows, srcs)
+                self.feats = combine_sources(per, srcs)
+                self.label = stack_label(paths, args.space, srcs, gates, mask_path)
+            elif common:
                 self.feats, self.label = film_common_features(paths, self.rows, *common)
             elif rescue:
                 block, member = rescue
@@ -1638,6 +1809,8 @@ class Request:
                 self.feats = {f.stimulus_id: f for f in feats}
                 self.label = _label(paths, args.space)
             self.register = film_register(windows, paths.cleaned, list(self.rows["stimulus_id"]))
+            if stack:
+                self.register = masked_register(self.register, mask)
         elif args.register in TS_REGISTERS:
             if getattr(args, "films", None):
                 raise SystemExit("--films applies to the films register only")
@@ -1760,6 +1933,9 @@ def cmd_plan(args) -> None:
 
 
 def cmd_score(args) -> None:
+    if args.space.startswith(STACK_PREFIX):
+        raise SystemExit(f"{STACK_PREFIX} spaces are fitted together, one job per subject: "
+                         "harness.py stack --arm <arm> --sub ## --oof <route>")
     paths = Paths()
     req = Request(args, paths)
     cache = ScoreCache(paths.out)
@@ -1775,6 +1951,64 @@ def cmd_score(args) -> None:
     _ensure_root(paths.out)
     dest = cache.put(req.key, result, provenance(args.backend, seconds), req.label)
     print(f"wrote {dest}\n{json.dumps(result.summary)}\nfull fit {json.dumps(result.full_fit)}")
+
+
+def stack_units(paths: Paths, rows: pd.DataFrame, register: dict, spec: StackSpec, sub: str,
+                spaces: list[str], mask_path: Path) -> tuple[dict, dict]:
+    """Every stacked space's sources, key and label (``Request`` builds the same key for one
+    space), with each source's features loaded once."""
+    srcs_of = {s: stack_sources(*parse_stack(s)) for s in spaces}
+    order = list(dict.fromkeys(src for srcs in srcs_of.values() for src in srcs))
+    per, gates = film_sources(paths, rows, order)
+    units = {}
+    for s, srcs in srcs_of.items():
+        feats = combine_sources(per, srcs)
+        units[s] = {"sources": srcs, "label": stack_label(paths, s, srcs, gates, mask_path),
+                    "key": cache_key(feature_set_hash(feats.values()), register, spec, f"sub-{sub}")}
+    return units, per
+
+
+def cmd_stack(args) -> None:
+    try:
+        spaces = stack_spaces(args.arm)
+        spec = stack_spec(args.oof)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    paths = Paths()
+    cache = ScoreCache(paths.out)
+    t0 = time.time()
+    windows = fm.load_windows(paths.derivatives)
+    rows = alignment_rows(windows, args.sub)
+    mask, mask_path = stack_mask(paths.out, args.sub)
+    register = masked_register(film_register(windows, paths.cleaned, list(rows["stimulus_id"])), mask)
+    units, per = stack_units(paths, rows, register, spec, args.sub, spaces, mask_path)
+    todo, seen = {}, {}
+    for s, u in units.items():
+        ident = (u["key"]["spec_hash"], u["key"]["feature_hash"])
+        if ident in seen:  # the same members as an earlier space: one unit
+            print(f"{s}: same unit as {seen[ident]}")
+            continue
+        seen[ident] = s
+        if cache.get(u["key"]) is not None:
+            print(f"{s}: cached {cache.path(u['key'])}")
+            continue
+        todo[s] = u
+    if not todo:
+        print(f"every {args.arm} stacked unit is cached for sub-{args.sub}")
+        return
+    need = [src for src in per if any(src in u["sources"] for u in todo.values())]
+    x, y, groups, bands = film_design(rows, combine_sources(per, need), paths.cleaned)
+    t_load = time.time() - t0
+    unions = {s: [source_band(src) for src in u["sources"]] for s, u in todo.items()}
+    print(f"sub-{args.sub}: {len(todo)} unions over {len(need)} members, {int(mask.sum())} of "
+          f"{mask.size} columns, design {x.shape}", flush=True)
+    result = fit_stack(x, y, groups, bands, mask, unions, spec, args.backend)
+    seconds = {"load": round(t_load, 1), "stack": round(time.time() - t0 - t_load, 1),
+               "unions_in_job": len(todo), "members_in_job": len(need)}
+    _ensure_root(paths.out)
+    for s, u in todo.items():
+        dest = cache.put(u["key"], result[s], provenance(args.backend, seconds), u["label"])
+        print(f"{s}: wrote {dest}\n  {json.dumps(result[s].summary)}")
 
 
 # ---------------------------------------------------------------------------
@@ -1871,6 +2105,12 @@ def main() -> None:
         p.add_argument("--group-sums", action="store_true",
                        help="model and onoff spaces: keep per-group sums (a separate spec hash), e.g. to "
                             "check how much of the held-out loss one group carries")
+        p.add_argument("--oof", choices=STACK_OOF, help=f"{STACK_PREFIX} spaces: the stacking route (required)")
+    k = sub.add_parser("stack")
+    k.add_argument("--arm", required=True)
+    k.add_argument("--sub", required=True)
+    k.add_argument("--oof", choices=STACK_OOF, required=True)
+    k.add_argument("--backend", default="torch_cuda")
     e = sub.add_parser("equivalence")
     e.add_argument("--space", choices=list(fs_enc.FEATURE_SPACES), required=True)
     e.add_argument("--scenario", default="primary")
@@ -1879,7 +2119,8 @@ def main() -> None:
     e.add_argument("--target", required=True)
     e.add_argument("--backend", default="torch_cuda")
     args = ap.parse_args()
-    {"plan": cmd_plan, "score": cmd_score, "equivalence": cmd_equivalence}[args.verb](args)
+    {"plan": cmd_plan, "score": cmd_score, "stack": cmd_stack,
+     "equivalence": cmd_equivalence}[args.verb](args)
 
 
 if __name__ == "__main__":

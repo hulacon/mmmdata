@@ -21,6 +21,7 @@
 # Driver: scripts/braintwill_encoding/harness.py.
 #
 #   sbatch --export=ALL,VERB=score,ARGS="--space ebind --sub ##" harness.sbatch
+#   sbatch --export=ALL,VERB=stack,ARGS="--arm <arm> --sub ## --oof reuse" harness.sbatch
 #   sbatch --export=ALL,VERB=equivalence,ARGS="--space ebind --pct 0 --draw 0 --target ##" harness.sbatch
 #
 # Outputs: <derivatives>/encoding_harness/ (scores under register-*/, equivalence/*.json).
@@ -30,8 +31,12 @@ set -euo pipefail
 
 REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
 PY="/gpfs/projects/hulacon/shared/envs/functional-space/bin/python"
-: "${VERB:?set VERB (plan|score|equivalence)}" "${ARGS:?set ARGS}"
+: "${VERB:?set VERB (plan|score|stack|equivalence)}" "${ARGS:?set ARGS}"
+# OMP_NUM_THREADS alone does not cap this env's OpenBLAS (pthreads build), even under srun -c:
+# a toy one-band fit ran 8.0 s with it alone, 0.78 s with OPENBLAS_NUM_THREADS too.
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 export PYTHONNOUSERSITE=1
 
 echo "Job ${SLURM_JOB_ID} ${VERB} ${ARGS} on ${SLURMD_NODENAME}; start $(date)"

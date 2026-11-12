@@ -246,13 +246,19 @@ def roi_columns(labels: np.ndarray, mask: np.ndarray, valid: np.ndarray, min_col
 # read
 # ---------------------------------------------------------------------------
 
-def _cached(paths, cache, register: str, space: str, sub: str, group_sums: bool = False):
+def _cached(paths, cache, register: str, space: str, sub: str, group_sums: bool = False,
+            oof: str | None = None):
     """A cached score with per-group sums. ``group_sums`` selects the group-sums spec for a model
-    space (rescue spaces always keep them)."""
+    space (rescue spaces always keep them); ``oof`` is a stacked space's route."""
     req = h.Request(argparse.Namespace(register=register, space=space, sub=sub, films=None,
-                                       solver="random_search", n_iter=None, group_sums=group_sums), paths)
+                                       solver="random_search", n_iter=None, group_sums=group_sums,
+                                       oof=oof), paths)
     got = cache.get(req.key)
     if got is None:
+        if space.startswith(h.STACK_PREFIX):
+            arm = h.parse_stack(space)[0]
+            raise SystemExit(f"{space} sub-{sub} ({oof}) is not scored: {cache.path(req.key)}; "
+                             f"run harness.py stack --arm {arm} --sub {sub} --oof {oof}")
         raise SystemExit(f"{space} sub-{sub} on {register} is not scored: {cache.path(req.key)}; "
                          f"run harness.py score --register {register} --space {space} --sub {sub}")
     if got.groups is None:
