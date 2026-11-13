@@ -741,3 +741,51 @@ def test_film_wordless_chunks_read_n_words_zero(harness, tmp_path):
     pd.DataFrame({"chunk_idx": [3, 4, 5], "n_words": [2, 0, 1], "stimulus_id": "film-a",
                   "minilm_000": [0.1, 0.2, 0.3]}).to_csv(dest, index=False)
     assert harness.film_wordless_chunks(tmp_path).values.tolist() == [["film-a", 4]]
+
+
+# --- direction spaces (settle 3): one block component at a time, primal route ---------------
+
+def test_parse_direction_names_a_block_and_a_component(harness):
+    assert harness.parse_direction("dir-L.c007") == ("L", 7)
+    assert harness.parse_direction("dir-V.dev010.c335") == ("V.dev010", 335)
+    assert harness.direction_space("A.x", 3) == "dir-A.x.c003"
+    for bad in ("dir-L", "dir-L.7", "dir-L.c7", "dir-X.c001", "dir-L.Bad.c001", "dir-.c001", "model-x"):
+        with pytest.raises(ValueError):
+            harness.parse_direction(bad)
+
+
+def test_direction_spec_is_read_b_ridge_by_the_primal_route_without_group_sums(harness):
+    spec = harness.direction_spec()
+    read_b = harness.model_spec().ridge
+    assert spec.ridge.primal and not read_b.primal
+    assert {**spec.ridge.to_dict(), "primal": None} == {**read_b.to_dict(), "primal": None}
+    assert not spec.group_sums and spec.outer_folds == harness.OUTER_FOLDS
+
+
+def test_direction_columns_slice_the_block_design_to_the_one_column_design(harness):
+    from braintwill.encoding import FrameFeatures, fir_design
+
+    rng = np.random.default_rng(3)
+    n, k, tr = 60, 4, 1.5
+    f = FrameFeatures("film-a", np.arange(n) * 0.5, rng.standard_normal((n, 2 + k)), 0.5,
+                      {"other": slice(0, 2), "block-L": slice(2, 2 + k)})
+    starts = np.arange(10, 18) * tr
+    x, bands = fir_design(f, starts, tr, harness.fs_enc.DELAYS_TR)
+    nd = len(harness.fs_enc.DELAYS_TR)
+    for c in range(k):
+        one = harness.direction_features({"film-a": f}, "block-L", c, f"dir-L.c{c:03d}")["film-a"]
+        x1, _ = fir_design(one, starts, tr, harness.fs_enc.DELAYS_TR)
+        np.testing.assert_array_equal(x[:, harness.direction_columns(bands["block-L"], k, c, nd)], x1)
+        assert one.bands == {f"dir-L.c{c:03d}": slice(0, 1)}
+    with pytest.raises(ValueError, match="not 3 x 5 delays"):
+        harness.direction_columns(bands["block-L"], 3, 0, nd)
+    with pytest.raises(ValueError, match="component 4 outside"):
+        harness.direction_features({"film-a": f}, "block-L", 4, "dir-L.c004")
+
+
+def test_component_range_defaults_to_every_component_and_refuses_past_k(harness):
+    assert harness.component_range(None, 5) == range(5)
+    assert harness.component_range("2:5", 5) == range(2, 5)
+    for bad in ("3:3", "0:6", "a:2", "2"):
+        with pytest.raises(ValueError):
+            harness.component_range(bad, 5)

@@ -97,6 +97,15 @@ default. Stacked fits score **only the films reliability mask's columns** (the c
 restriction changes memory, not a column's score, and the mask's content is in the key, so
 a cached score never covers fewer columns than the mask a read asks for.
 
+Direction spaces (``dir-<B>.c<NNN>``, model-readout settle 3): component NNN of a psytwill
+block's films projection (a ``block:<B>`` source's one column, placed and centred as that
+source is), fitted alone as one band at read (b)'s spec by the **primal** route (braintwill
+``RidgeSpec.primal``: the same estimator as the kernel fit, ``O(n p²)`` for its five FIR
+columns). Films only; the films reliability mask's columns only, as stacked fits; no per-group
+sums (settle 3 reads per-column R², and its null permutes labels without a refit). One
+``directions`` job per subject and block builds the block's design and responses once and
+caches each direction as its own unit, keyed by its own column's content.
+
 Feature sets: for films, the per-stimulus caches ``functional_space/encoding.py cache``
 writes (``<derivatives>/functional_space/features/<space>/``), only the register's films;
 for tb-enc, the shared1000 image tables under ``<derivatives>/stimuli_features/``. Either
@@ -110,6 +119,7 @@ Verbs:
   plan         build one subject's register and report sizes, key and cache state
   score        nested-CV scores for one subject (cached)
   stack        one arm's stacked spaces for one subject, in one job (every uncached union)
+  directions   one block's direction spaces for one subject, in one job (every uncached one)
   equivalence  refit one functional-space stimulus-route job's encoders through braintwill on
                that job's films and compare the fit diagnostics with the job's sidecar; also
                checks the design and responses equal ``encoding.film_design``'s exactly
@@ -124,6 +134,7 @@ Usage:
     python harness.py score --register films --space rescue-V+clip --sub ##
     python harness.py stack --arm <arm> --sub ## --oof reuse
     python harness.py plan --space stack-<arm>.<group> --sub ## --oof reuse
+    python harness.py directions --block L --sub ## [--components 0:64] --backend numpy
     python harness.py equivalence --space ebind --scenario primary --pct 0 --draw 0 --target ##
 """
 
@@ -1912,6 +1923,9 @@ class Request:
         from core.config import load_config
 
         self.paths = paths
+        if args.space.startswith(DIR_PREFIX):
+            raise SystemExit(f"{DIR_PREFIX} spaces are fitted together, one job per subject and block: "
+                             "harness.py directions --block <B> --sub ##")
         model_space = args.space in MODEL_SPACES
         joint = args.space in JOINT_SPACES
         rescue = common = stack = None
@@ -2270,6 +2284,133 @@ def cmd_stack(args) -> None:
 
 
 # ---------------------------------------------------------------------------
+# direction spaces (model-readout settle 3; module docstring)
+# ---------------------------------------------------------------------------
+
+DIR_PREFIX = "dir-"
+DIR_COMPONENT = re.compile(r"c(\d{3,4})")
+
+
+def parse_direction(space: str) -> tuple[str, int]:
+    """``dir-<B>.c<NNN>`` -> (B, NNN); B a projectable block or ``<letter>.<tag>``. Loud otherwise."""
+    if not space.startswith(DIR_PREFIX):
+        raise ValueError(f"{space!r} is not a direction space")
+    block, dot, comp = space[len(DIR_PREFIX):].rpartition(".")
+    m = DIR_COMPONENT.fullmatch(comp)
+    if not dot or not m:
+        raise ValueError(f"{space!r}: expected {DIR_PREFIX}<block>.c<NNN>")
+    try:
+        block_stream(block)
+    except ValueError as exc:
+        raise ValueError(f"{space}: {exc}") from None
+    return block, int(m.group(1))
+
+
+def direction_space(block: str, c: int) -> str:
+    return f"{DIR_PREFIX}{block}.c{c:03d}"
+
+
+def direction_spec() -> EncodingSpec:
+    """Read (b)'s one-band ridge by the primal route; no per-group sums (module docstring)."""
+    from dataclasses import replace
+
+    return EncodingSpec(ridge=replace(model_spec().ridge, primal=True), outer_folds=OUTER_FOLDS)
+
+
+def direction_features(block_feats: dict[str, FrameFeatures], band: str, c: int, space: str
+                       ) -> dict[str, FrameFeatures]:
+    """Column ``c`` of a block source's band, alone, under band ``space``."""
+    out = {}
+    for sid, f in block_feats.items():
+        sl = f.bands[band]
+        if not 0 <= c < sl.stop - sl.start:
+            raise ValueError(f"{space}: component {c} outside the block's {sl.stop - sl.start}")
+        out[sid] = FrameFeatures(sid, f.times, f.x[:, sl.start + c:sl.start + c + 1].copy(), f.frame_s,
+                                 {space: slice(0, 1)})
+    return out
+
+
+def direction_columns(sl: slice, k: int, c: int, n_delays: int) -> np.ndarray:
+    """Component ``c``'s columns in a ``k``-wide band's FIR design (``fir_design``: a band's
+    columns run delay by delay, all ``k`` features at each)."""
+    if sl.stop - sl.start != k * n_delays:
+        raise ValueError(f"band spans {sl.stop - sl.start} columns, not {k} x {n_delays} delays")
+    return sl.start + np.arange(n_delays) * k + c
+
+
+def component_range(text: str | None, k: int) -> range:
+    """``A:B`` -> components A … B-1 of a k-wide block (default: all of them)."""
+    if text is None:
+        return range(k)
+    a, sep, b = text.partition(":")
+    if not sep or not a.isdigit() or not b.isdigit() or not int(a) < int(b) <= k:
+        raise ValueError(f"--components {text!r}: expected A:B with 0 <= A < B <= {k}")
+    return range(int(a), int(b))
+
+
+def direction_label(paths: "Paths", block: str, c: int, mask_path: Path) -> dict:
+    proj = rescue_projection(paths.out, block, RESCUE_CORPUS["films"])
+    return {"space": direction_space(block, c), "block": block, "component": c, "source": f"block:{block}",
+            "projection": str(proj), "projection_sidecar": json.loads(proj.with_suffix(".json").read_text()),
+            "engine": "one band, primal ridge (himalaya RidgeCV; braintwill RidgeSpec.primal), read (b)'s spec",
+            "modulators": ("the block source's placement (film_block_words for chunk-keyed blocks, "
+                           "film_block_frames otherwise)"),
+            "scored_columns": str(mask_path), "development": "." in block and block.partition(".")[2].startswith("dev")}
+
+
+def cmd_directions(args) -> None:
+    try:
+        block_stream(args.block)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    paths = Paths()
+    cache = ScoreCache(paths.out)
+    spec = direction_spec()
+    t0 = time.time()
+    windows = fm.load_windows(paths.derivatives)
+    rows = alignment_rows(windows, args.sub)
+    mask, mask_path = stack_mask(paths.out, args.sub)
+    register = masked_register(film_register(windows, paths.cleaned, list(rows["stimulus_id"])), mask)
+    src = f"block:{args.block}"
+    band = source_band(src)
+    feats = film_sources(paths, rows, [src])[0][src]
+    first = next(iter(feats.values())).bands[band]
+    k = first.stop - first.start
+    try:
+        comps = component_range(args.components, k)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    todo = {}
+    for c in comps:
+        space = direction_space(args.block, c)
+        key = cache_key(feature_set_hash(direction_features(feats, band, c, space).values()), register, spec,
+                        f"sub-{args.sub}")
+        if cache.get(key) is not None:
+            print(f"{space}: cached {cache.path(key)}")
+            continue
+        todo[space] = (c, key)
+    if not todo:
+        print(f"every {args.block} direction asked for is cached for sub-{args.sub}")
+        return
+    x, y, groups, bands = film_design(rows, feats, paths.cleaned)
+    y = np.array(y, dtype=np.float32, copy=True)
+    y[:, ~mask] = np.nan  # fitted columns: the mask's (as fit_stack)
+    n_delays = len(fs_enc.DELAYS_TR)
+    t_load = time.time() - t0
+    print(f"sub-{args.sub}: {len(todo)} of {len(comps)} directions of {args.block} (k {k}) to fit, "
+          f"{int(mask.sum())} of {mask.size} columns, design {x.shape}", flush=True)
+    _ensure_root(paths.out)
+    for space, (c, key) in todo.items():
+        t1 = time.time()
+        result = score(x[:, direction_columns(bands[band], k, c, n_delays)], y, groups,
+                       {space: slice(0, n_delays)}, spec, backend=args.backend)
+        seconds = {"load": round(t_load, 1), "score": round(time.time() - t1, 1)}
+        dest = cache.put(key, result, provenance(args.backend, seconds), direction_label(paths, args.block, c,
+                                                                                         mask_path))
+        print(f"{space}: wrote {dest} ({seconds['score']} s)", flush=True)
+
+
+# ---------------------------------------------------------------------------
 # equivalence with functional-space's encoders (settle 2)
 # ---------------------------------------------------------------------------
 
@@ -2370,6 +2511,11 @@ def main() -> None:
     k.add_argument("--oof", choices=STACK_OOF, required=True)
     k.add_argument("--draws", help="A:B: also stack draws A..B-1 of the arm's control set (arm@dNNN)")
     k.add_argument("--backend", default="torch_cuda")
+    d = sub.add_parser("directions")
+    d.add_argument("--block", required=True, help="a projectable block (V, A, L) or <letter>.<tag>")
+    d.add_argument("--sub", required=True)
+    d.add_argument("--components", help="A:B: components A..B-1 only (default: every component)")
+    d.add_argument("--backend", default="numpy", help="the primal route is cheap on CPU")
     e = sub.add_parser("equivalence")
     e.add_argument("--space", choices=list(fs_enc.FEATURE_SPACES), required=True)
     e.add_argument("--scenario", default="primary")
@@ -2378,7 +2524,7 @@ def main() -> None:
     e.add_argument("--target", required=True)
     e.add_argument("--backend", default="torch_cuda")
     args = ap.parse_args()
-    {"plan": cmd_plan, "score": cmd_score, "stack": cmd_stack,
+    {"plan": cmd_plan, "score": cmd_score, "stack": cmd_stack, "directions": cmd_directions,
      "equivalence": cmd_equivalence}[args.verb](args)
 
 
