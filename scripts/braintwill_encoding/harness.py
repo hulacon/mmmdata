@@ -170,7 +170,8 @@ _import_braintwill()
 import encoding as fs_enc  # noqa: E402  functional_space/encoding.py: feature cache, settings
 import films as fm  # noqa: E402
 from film_events import (CUT_CORPUS, CUT_RULE, CUT_SPACE, CUT_TABLE, FILM_ASR_WORDS,  # noqa: E402,F401
-                         FILM_TOKENS, _chars, event_bins, film_word_onsets, load_cuts)
+                         FILM_CHUNKS, FILM_TOKENS, _chars, event_bins, film_word_chunks,
+                         film_word_onsets, film_wordless_chunks, load_cuts)
 import grayordinates as go  # noqa: E402
 from braintwill.encoding import (BandedRidge, EncodingSpec, FrameFeatures, RidgeSpec,  # noqa: E402
                                  ScoreCache, StackSpec, cache_key, feature_set_hash, fir_design,
@@ -950,16 +951,30 @@ RESCUE_CORPUS = {"films": "movies", "tb-enc": "shared1000"}
 #: A named projection of a block: ``<B>.<tag>``, so several fits of one block's stream (e.g.
 #: label-selected arms) are scored side by side. The tag names the projection file only.
 RESCUE_TAG = re.compile(r"[a-z0-9][a-z0-9_-]*")
+#: Blocks ``rescue.py project`` can project onto the films, and the films store table each
+#: one's members come from. Rescue spaces stay V and A; every block here is a ``block:<B>``
+#: arm source (model-readout R12). L's fit rows are transcript chunks
+#: (key ``stimulus_id,chunk_idx``), so its projection is chunk-keyed and is placed on the word
+#: grid (``film_block_words``); V's and A's are frame-keyed (``film_block_frames``).
+BLOCK_FILM_TABLE = {**RESCUE_FILM_TABLE, "L": "movies_transcript_chunks"}
+#: Blocks whose projection rows are transcript chunks, not frames.
+CHUNK_BLOCKS = ("L",)
 
 
-def rescue_stream(block: str) -> str:
-    """A rescue block name's stream letter: ``V`` -> ``V``, ``A.interp`` -> ``A``. Loud on a bad name."""
+def rescue_stream(block: str, streams=RESCUE_FILM_TABLE) -> str:
+    """A rescue block name's stream letter: ``V`` -> ``V``, ``A.interp`` -> ``A``. Loud on a bad
+    name. ``streams`` names the blocks allowed (``block_stream``: every projectable block)."""
     stream, dot, tag = block.partition(".")
-    if stream not in RESCUE_FILM_TABLE:
-        raise ValueError(f"block {block!r}: {stream!r} is not one of {sorted(RESCUE_FILM_TABLE)}")
+    if stream not in streams:
+        raise ValueError(f"block {block!r}: {stream!r} is not one of {sorted(streams)}")
     if dot and not RESCUE_TAG.fullmatch(tag):
         raise ValueError(f"block {block!r}: tag {tag!r} must match {RESCUE_TAG.pattern}")
     return stream
+
+
+def block_stream(block: str) -> str:
+    """``rescue_stream`` over every block a films projection exists for (``BLOCK_FILM_TABLE``)."""
+    return rescue_stream(block, BLOCK_FILM_TABLE)
 
 
 def parse_rescue(space: str) -> tuple[str, str | None]:
@@ -994,8 +1009,10 @@ def read_projection(path: Path) -> pd.DataFrame:
     if not side.exists():
         raise SystemExit(f"{side} is missing: a projection without its sidecar has no provenance")
     w = pd.read_parquet(path)
-    if "time" in w.columns:  # `psytwill space project` writes time as a string
+    if "time" in w.columns:  # `psytwill space project` writes its keys as strings
         w = w.assign(time=w["time"].astype(np.float64))
+    if "chunk_idx" in w.columns:
+        w = w.assign(chunk_idx=w["chunk_idx"].astype(np.int64))
     return w
 
 
@@ -1101,13 +1118,18 @@ COMMON_GROUP_NAME = re.compile(r"[a-z][a-z0-9_]*")
 #: - ``word-on`` the films' word-on band (``film_word_on``);
 #: - ``cuts`` the films' shot-cut band (``film_cuts``);
 #: - ``ctrl:<pool>.<set>`` a control set as one member, and ``ctrl:<pool>.<set>.d<NNN>`` draw NNN
-#:   of its matched-subspace control (``control_draws.py`` writes both; ``film_ctrl_features``).
+#:   of its matched-subspace control (``control_draws.py`` writes both; ``film_ctrl_features``);
+#: - ``block:<B>`` a psytwill block's scores on the films, ``rescue.py project --corpus movies``'s
+#:   table for block ``<B>`` (a letter of ``BLOCK_FILM_TABLE`` or ``<letter>.<tag>``), every
+#:   component. V and A are frame-keyed (``film_block_frames``); L is chunk-keyed and placed on
+#:   the word grid (``film_block_words``).
 #:
 #: An arm named ``<arm>@d<NNN>`` is ``<arm>`` with its one ``ctrl:<pool>.<set>`` source replaced
 #: by draw NNN, so each draw's unions are spaces of their own (``harness.py stack --draws``).
 #:
-#: Model and cache sources are centred modulators over the film window's bins, 0 outside them,
-#: as model spaces are. ``word-on`` and ``cuts`` are event indicators (1 in the window's bins
+#: Model, cache and V/A block sources are centred modulators over the film window's bins, 0
+#: outside them, as model spaces are; an L block source is one over the window's word-on bins,
+#: as films text spaces are. ``word-on`` and ``cuts`` are event indicators (1 in the window's bins
 #: holding an event, 0 elsewhere).
 #:
 #: ``dev`` arms exist to build and check designs before the real groups are fixed. Their group
@@ -1162,6 +1184,12 @@ def common_source(src: str) -> tuple[str, str, str | None]:
             raise ValueError(f"source {src!r}: expected ctrl:<pool>.<set> or ctrl:<pool>.<set>.d<NNN>")
         return "ctrl", f"ctrl-{m.group(1)}.{m.group(2)}", (f"d{m.group(3)}" if m.group(3) else None)
     kind, sep, rest = src.partition(":")
+    if kind == "block" and sep:
+        try:
+            block_stream(rest)
+        except ValueError as exc:
+            raise ValueError(f"source {src!r}: {exc}") from None
+        return "block", f"block-{rest}", None
     if kind == "model" and sep:
         model, dot, feature = rest.partition(".")
         if dot and not feature:
@@ -1176,7 +1204,7 @@ def common_source(src: str) -> tuple[str, str, str | None]:
                              f"space ({', '.join(s for s, v in fs_enc.FEATURE_SPACES.items() if 'bands' in v)})")
         return "cache", space, band
     raise ValueError(f"source {src!r}: expected model:<m>[.<feature>], cache:<space>.<band>, "
-                     f"word-on, {CUT_SPACE} or ctrl:<pool>.<set>[.d<NNN>]")
+                     f"block:<B>, word-on, {CUT_SPACE} or ctrl:<pool>.<set>[.d<NNN>]")
 
 
 def source_band(src: str) -> str:
@@ -1333,13 +1361,109 @@ def film_ctrl_features(controls: Path, pool: str, name: str, draw: int | None, r
     return out
 
 
+def _block_columns(base: pd.DataFrame, keys: tuple[str, ...], band: str) -> list[str]:
+    comps = [c for c in base.columns if c not in keys]
+    if not comps:
+        raise RuntimeError(f"{band}: the projection has no component columns")
+    if base.duplicated(list(keys)).any():
+        raise RuntimeError(f"{band}: the projection repeats a {'/'.join(keys)} row")
+    return comps
+
+
+def film_block_frames(base: pd.DataFrame, rows: pd.DataFrame, grid: dict[str, int], band: str
+                      ) -> dict[str, FrameFeatures]:
+    """A frame-keyed block's scores (V, A) per window film, placed and centred as a cache band
+    (``window_cache_frames``): every window bin must hold a row. A row the block could not
+    place stays undefined (``modulators``)."""
+    comps = _block_columns(base, ("stimulus_id", "time"), band)
+    out = {}
+    for r in rows.itertuples(index=False):
+        b = base[base["stimulus_id"] == r.stimulus_id]
+        if b.empty:
+            raise RuntimeError(f"{band}: no projection rows for film {r.stimulus_id}")
+        out[r.stimulus_id] = window_cache_frames(band, r, grid[r.stimulus_id], b["time"].to_numpy(float),
+                                                 b[comps].to_numpy(np.float64))
+    return out
+
+
+def film_block_words(base: pd.DataFrame, tokens: pd.DataFrame, rows: pd.DataFrame,
+                     grid: dict[str, int], band: str, wordless: pd.DataFrame | None = None
+                     ) -> dict[str, FrameFeatures]:
+    """A chunk-keyed block's scores (L) per window film on the word grid (model-readout R12).
+
+    Each film token takes its chunk's scores, so a chunk-level value is placed at its words'
+    onsets and never across the silence inside a chunk's span. A bin's value is the mean of
+    its tokens' defined scores (``word_grid``'s rule, tokens counted as words), and the band
+    is centred over the window's word-on bins, 0 elsewhere (``text_modulators``). A chunk the
+    block could not place stays undefined. ``tokens`` is ``film_word_chunks``'s table.
+
+    A film with words must have a projection row for every chunk its tokens name. A projection
+    chunk with no token is dropped only when ``wordless`` (``film_wordless_chunks``) declares
+    it: it has no onset to be placed at, and word-on does not mark it either. Any other chunk
+    without a token, or a declared-wordless chunk that holds one, is an error. A film with no
+    words is all 0 (off).
+    """
+    wl = (set() if wordless is None
+          else set(zip(wordless["stimulus_id"], wordless["chunk_idx"].astype(int))))
+    comps = _block_columns(base, ("stimulus_id", "chunk_idx"), band)
+    out = {}
+    for r in rows.itertuples(index=False):
+        n, sid = grid[r.stimulus_id], r.stimulus_id
+        tk = tokens[tokens["stimulus_id"] == sid]
+        b = base[base["stimulus_id"] == sid].set_index("chunk_idx")[comps]
+        held = sorted(c for c in set(tk["chunk_idx"]) if (sid, c) in wl)
+        if held:
+            raise RuntimeError(f"{band} {sid}: chunks {held[:5]} are declared wordless but hold words")
+        b = b[[(sid, c) not in wl for c in b.index]]
+        if tk.empty:
+            if len(b):
+                raise RuntimeError(f"{band} {sid}: {len(b)} projection rows for a film with no words")
+            x = np.zeros((n, len(comps)))
+        else:
+            missing = sorted(set(tk["chunk_idx"]) - set(b.index))
+            if missing:
+                raise RuntimeError(f"{band} {sid}: chunks {missing[:5]} hold words but have no projection row")
+            extra = sorted(set(b.index) - set(tk["chunk_idx"]))
+            if extra:
+                raise RuntimeError(f"{band} {sid}: projection chunks {extra[:5]} hold no word")
+            bins = np.floor(tk["onset"].to_numpy(float) / fs_enc.FRAME_S + 1e-9).astype(int)
+            if bins.min() < 0 or bins.max() >= n:
+                raise RuntimeError(f"{band} {sid}: word onsets outside the {n} bins")
+            v = b.loc[tk["chunk_idx"].to_numpy()].to_numpy(np.float64)
+            mean = pd.DataFrame(v).groupby(bins).mean()  # skips undefined values per column
+            w = np.full((n, len(comps)), np.nan)
+            w[mean.index.to_numpy()] = mean.to_numpy()
+            on = np.zeros(n, bool)
+            on[bins] = True
+            on &= _window_on(r, n)
+            x = text_modulators(w, on)
+        out[sid] = FrameFeatures(sid, np.arange(n) * fs_enc.FRAME_S, x, fs_enc.FRAME_S,
+                                 {band: slice(0, x.shape[1])})
+    return out
+
+
+def film_block_features(paths: "Paths", block: str, rows: pd.DataFrame, grid: dict[str, int],
+                        tokens: pd.DataFrame | None, wordless: pd.DataFrame | None = None
+                        ) -> dict[str, FrameFeatures]:
+    """A ``block:<B>`` source per window film from ``rescue.py project``'s films table."""
+    base = read_projection(rescue_projection(paths.out, block, RESCUE_CORPUS["films"]))
+    band = source_band(f"block:{block}")
+    if block_stream(block) in CHUNK_BLOCKS:
+        return film_block_words(base, tokens, rows, grid, band, wordless)
+    return film_block_frames(base, rows, grid, band)
+
+
 def film_sources(paths: "Paths", rows: pd.DataFrame, srcs: list[str]
                  ) -> tuple[dict[str, dict[str, FrameFeatures]], dict[str, list]]:
     """Each arm source's band per window film (a centred modulator, as model spaces), keyed by
     source, and the indicator gates prune_indicators kept for each model source."""
     kinds = [common_source(s)[0] for s in srcs]
     onsets = film_word_onsets(paths.stimfeat) if "word-on" in kinds else None
-    grid = film_grid(paths.stimfeat, rows) if {"word-on", "cuts", "cache", "ctrl"} & set(kinds) else None
+    words = any(k == "block" and block_stream(common_source(s)[1][len("block-"):]) in CHUNK_BLOCKS
+                for k, s in zip(kinds, srcs))
+    tokens = film_word_chunks(paths.stimfeat) if words else None
+    wordless = film_wordless_chunks(paths.stimfeat) if words else None
+    grid = film_grid(paths.stimfeat, rows) if {"word-on", "cuts", "cache", "ctrl", "block"} & set(kinds) else None
     per, gates = {}, {}
     for s in srcs:
         kind, name, band = common_source(s)
@@ -1351,6 +1475,8 @@ def film_sources(paths: "Paths", rows: pd.DataFrame, srcs: list[str]
             pool, _, set_name = name[len("ctrl-"):].partition(".")
             per[s] = film_ctrl_features(paths.controls, pool, set_name, None if band is None else int(band[1:]),
                                         rows, grid)
+        elif kind == "block":
+            per[s] = film_block_features(paths, name[len("block-"):], rows, grid, tokens, wordless)
         elif kind == "model":
             b = source_band(s)
             feats, names = load_film_source(paths.stimfeat, rows, name, band)

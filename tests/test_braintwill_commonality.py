@@ -594,3 +594,150 @@ def test_film_ctrl_features_read_the_set_columns_and_project_a_draw(harness, tmp
         harness.film_ctrl_features(tmp_path, "p", "s", 3, rows, {"film-a": n})
     with pytest.raises(FileNotFoundError, match="control_draws.py build --pool q"):
         harness.film_ctrl_features(tmp_path, "q", "s", None, rows, {"film-a": n})
+
+
+# --- block sources: a psytwill block's projected scores (model-readout R12) ----------------
+
+@pytest.mark.parametrize("src, name", [("block:L", "block-L"), ("block:V", "block-V"),
+                                       ("block:A.interp", "block-A.interp"), ("block:L.dev-010", "block-L.dev-010")])
+def test_block_source_names_its_band_for_every_projectable_block(harness, src, name):
+    assert harness.common_source(src) == ("block", name, None)
+    assert harness.source_band(src) == name
+
+
+@pytest.mark.parametrize("src", ["block:X", "block:", "block:L.", "block:L.Dev"])
+def test_block_source_refuses_an_unknown_block_or_a_bad_tag(harness, src):
+    with pytest.raises(ValueError, match="source 'block:"):
+        harness.common_source(src)
+
+
+def test_rescue_spaces_stay_v_and_a_while_l_is_projectable(harness):
+    assert harness.block_stream("L.dev") == "L" and harness.block_stream("V") == "V"
+    with pytest.raises(ValueError):
+        harness.rescue_stream("L")
+    with pytest.raises(ValueError):
+        harness.parse_rescue("rescue-L")
+
+
+def _l_window(harness, n=40):
+    rows = _film_row(start=7, n=2, tr=1.5)
+    on = harness._window_on(next(rows.itertuples(index=False)), n)
+    return rows, on, np.flatnonzero(on)
+
+
+def test_film_block_words_place_each_chunk_at_its_words_onsets_and_centre_over_word_on(harness):
+    n = 40
+    rows, win, idx = _l_window(harness, n)
+    b0, b1 = int(idx[1]), int(idx[4])  # two window bins; chunk 0 spans the silence between them
+    t = harness.fs_enc.FRAME_S
+    tokens = pd.DataFrame({"stimulus_id": "film-a", "word_idx": [0, 1, 2, 3, 4],
+                           "onset": [b0 * t, b0 * t + 0.1, b1 * t, b1 * t + 0.2, (n - 1) * t],
+                           "chunk_idx": [0, 0, 0, 1, 2]})
+    base = pd.DataFrame({"stimulus_id": "film-a", "chunk_idx": [0, 1, 2],
+                         "c0": [1.0, 5.0, 9.0], "c1": [2.0, np.nan, 7.0]})
+    f = harness.film_block_words(base, tokens, rows, {"film-a": n}, "block-L")["film-a"]
+    assert f.bands == {"block-L": slice(0, 2)} and f.x.shape == (n, 2)
+    # bin b0: two chunk-0 words -> 1; bin b1: one chunk-0 word + one chunk-1 word -> (1 + 5) / 2
+    # c1 at b1 skips chunk 1's undefined value -> 2; the bin past the window is off
+    raw = {b0: (1.0, 2.0), b1: (3.0, 2.0)}
+    mean = np.mean([v for v in raw.values()], axis=0)
+    for b, v in raw.items():
+        np.testing.assert_allclose(f.x[b], np.subtract(v, mean))
+    others = np.setdiff1d(np.arange(n), [b0, b1])
+    assert not f.x[others].any()
+    # the silence inside chunk 0's span (bins between b0 and b1) is off, not filled
+    assert not f.x[b0 + 1:b1].any()
+
+
+def test_film_block_words_keep_an_unplaced_chunk_undefined_and_a_silent_film_off(harness):
+    n = 40
+    rows, win, idx = _l_window(harness, n)
+    t = harness.fs_enc.FRAME_S
+    tokens = pd.DataFrame({"stimulus_id": "film-a", "word_idx": [0, 1], "onset": [idx[0] * t, idx[2] * t],
+                           "chunk_idx": [0, 1]})
+    base = pd.DataFrame({"stimulus_id": "film-a", "chunk_idx": [0, 1], "c0": [1.0, np.nan]})
+    x = harness.film_block_words(base, tokens, rows, {"film-a": n}, "block-L")["film-a"].x
+    assert x[idx[0], 0] == 0.0 and np.isnan(x[idx[2], 0])
+    silent = harness.film_block_words(base.iloc[:0], tokens.iloc[:0], rows, {"film-a": n}, "block-L")
+    assert not silent["film-a"].x.any() and silent["film-a"].x.shape == (n, 1)
+
+
+def test_film_block_words_refuse_chunks_that_disagree_with_the_tokens(harness):
+    n = 40
+    rows, win, idx = _l_window(harness, n)
+    t = harness.fs_enc.FRAME_S
+    tokens = pd.DataFrame({"stimulus_id": "film-a", "word_idx": [0, 1], "onset": [idx[0] * t, idx[1] * t],
+                           "chunk_idx": [0, 1]})
+    base = pd.DataFrame({"stimulus_id": "film-a", "chunk_idx": [0, 1], "c0": [1.0, 2.0]})
+    grid = {"film-a": n}
+    with pytest.raises(RuntimeError, match="hold words but have no projection row"):
+        harness.film_block_words(base.iloc[:1], tokens, rows, grid, "block-L")
+    with pytest.raises(RuntimeError, match="hold no word"):
+        harness.film_block_words(base, tokens.iloc[:1], rows, grid, "block-L")
+    with pytest.raises(RuntimeError, match="for a film with no words"):
+        harness.film_block_words(base, tokens.iloc[:0], rows, grid, "block-L")
+    with pytest.raises(RuntimeError, match="repeats a stimulus_id/chunk_idx row"):
+        harness.film_block_words(pd.concat([base, base]), tokens, rows, grid, "block-L")
+    with pytest.raises(RuntimeError, match="outside the 40 bins"):
+        harness.film_block_words(base, tokens.assign(onset=[idx[0] * t, n * t]), rows, grid, "block-L")
+
+
+def test_film_block_frames_place_a_frame_keyed_block_as_a_cache_band(harness):
+    n = 40
+    rows, win, idx = _l_window(harness, n)
+    t = np.arange(n) * harness.fs_enc.FRAME_S
+    x = np.random.default_rng(0).standard_normal((n, 3))
+    base = pd.DataFrame({"stimulus_id": "film-a", "time": t, "c0": x[:, 0], "c1": x[:, 1], "c2": x[:, 2]})
+    r = next(rows.itertuples(index=False))
+    got = harness.film_block_frames(base, rows, {"film-a": n}, "block-V")["film-a"]
+    want = harness.window_cache_frames("block-V", r, n, t, x)
+    np.testing.assert_array_equal(got.x, want.x)
+    assert got.bands == {"block-V": slice(0, 3)}
+    with pytest.raises(RuntimeError, match="no projection rows for film film-a"):
+        harness.film_block_frames(base.assign(stimulus_id="film-b"), rows, {"film-a": n}, "block-V")
+
+
+def test_film_block_features_read_the_projection_and_name_the_verb_when_missing(harness, tmp_path):
+    paths = type("P", (), {"out": tmp_path})()
+    with pytest.raises(SystemExit, match="run rescue.py project"):
+        harness.film_block_features(paths, "L", _film_row(), {"film-a": 40}, None)
+
+
+def test_film_word_chunks_give_every_timed_token_its_chunk(harness, tmp_path):
+    movies = tmp_path / harness.FILM_TOKENS.parent
+    (movies / "film-a").mkdir(parents=True)
+    pd.DataFrame({"stimulus_id": "film-a", "word_idx": [10, 11, 12], "word": ["i", "'m", "ok"],
+                  "chunk_idx": [0, 0, 3]}).to_csv(tmp_path / harness.FILM_TOKENS, index=False)
+    pd.DataFrame({"stimulus_id": "film-a", "chunk_idx": [0, 1], "word_idx": [0, 1], "word": ["I'm", "OK."],
+                  "onset": [1.0, 5.0], "offset": [1.3, 5.2]}).to_csv(movies / "film-a" / harness.FILM_ASR_WORDS,
+                                                                     index=False)
+    got = harness.film_word_chunks(tmp_path)
+    assert got[["word_idx", "onset", "chunk_idx"]].values.tolist() == [[10, 1.0, 0], [11, 1.0, 0], [12, 5.0, 3]]
+
+
+def test_film_block_words_drop_only_chunks_word2psy_declares_wordless(harness):
+    n = 40
+    rows, win, idx = _l_window(harness, n)
+    t = harness.fs_enc.FRAME_S
+    tokens = pd.DataFrame({"stimulus_id": "film-a", "word_idx": [0], "onset": [idx[0] * t], "chunk_idx": [0]})
+    base = pd.DataFrame({"stimulus_id": "film-a", "chunk_idx": [0, 7], "c0": [1.0, 2.0]})
+    grid = {"film-a": n}
+    wordless = pd.DataFrame({"stimulus_id": ["film-a"], "chunk_idx": [7]})
+    got = harness.film_block_words(base, tokens, rows, grid, "block-L", wordless)["film-a"]
+    want = harness.film_block_words(base.iloc[:1], tokens, rows, grid, "block-L")["film-a"]
+    np.testing.assert_array_equal(got.x, want.x)
+    with pytest.raises(RuntimeError, match="hold no word"):  # undeclared: still an error
+        harness.film_block_words(base, tokens, rows, grid, "block-L", wordless.assign(chunk_idx=[8]))
+    with pytest.raises(RuntimeError, match="declared wordless but hold words"):
+        harness.film_block_words(base, tokens, rows, grid, "block-L", wordless.assign(chunk_idx=[0]))
+    # a silent film whose only chunks are declared wordless is off, not an error
+    silent = harness.film_block_words(base.iloc[1:], tokens.iloc[:0], rows, grid, "block-L", wordless)
+    assert not silent["film-a"].x.any()
+
+
+def test_film_wordless_chunks_read_n_words_zero(harness, tmp_path):
+    dest = tmp_path / harness.FILM_CHUNKS
+    dest.parent.mkdir(parents=True)
+    pd.DataFrame({"chunk_idx": [3, 4, 5], "n_words": [2, 0, 1], "stimulus_id": "film-a",
+                  "minilm_000": [0.1, 0.2, 0.3]}).to_csv(dest, index=False)
+    assert harness.film_wordless_chunks(tmp_path).values.tolist() == [["film-a", 4]]

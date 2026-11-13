@@ -705,6 +705,26 @@ def test_parse_rescue_takes_a_named_projection_of_a_block(harness, tmp_path):
     assert got.name == "movies_A.interp.parquet" and got.with_suffix(".json").name == "movies_A.interp.json"
 
 
+def test_rescue_projection_inputs_key_l_by_chunk_and_frames_by_time(rescue, tmp_path):
+    src, key = rescue.projection_inputs(tmp_path, "L.dev", "movies")
+    assert src == tmp_path / "psytwill" / "movies_transcript_chunks_features.parquet"
+    assert key == ["--key", "stimulus_id,chunk_idx"]
+    src, key = rescue.projection_inputs(tmp_path, "A", "movies")
+    assert src.name == "movies_audio_frames_features.parquet" and key[:2] == ["--key", "stimulus_id,time"]
+    for block in ("L", "A"):
+        with pytest.raises(SystemExit, match="not scored on tb-enc"):
+            rescue.projection_inputs(tmp_path, block, "shared1000")
+    with pytest.raises(SystemExit, match="is not one of"):
+        rescue.projection_inputs(tmp_path, "X", "movies")
+
+
+def test_read_projection_casts_string_keys(harness, tmp_path):
+    path = tmp_path / "movies_L.parquet"
+    pd.DataFrame({"stimulus_id": ["f"], "chunk_idx": ["3"], "c0": [1.0]}).to_parquet(path)
+    path.with_suffix(".json").write_text("{}")
+    assert harness.read_projection(path)["chunk_idx"].tolist() == [3]
+
+
 def test_rescue_projection_k_defaults_to_the_fit_and_only_drops_components(rescue):
     m = {"k": 49}
     assert rescue.projection_k(m, None) == 49

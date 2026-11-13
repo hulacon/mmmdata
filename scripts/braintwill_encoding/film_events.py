@@ -17,6 +17,10 @@ import pandas as pd
 #: films store table (keyed by ``stimulus_id`` and the corpus-wide ``word_idx``; the five
 #: models' token lists are identical). They carry no timing; see ``film_word_onsets``.
 FILM_TOKENS = Path("movies") / "transcript_fasttext_words.csv"
+#: Film transcript chunks as word2psy wrote them (one row per corpus-wide ``chunk_idx``, with
+#: ``n_words``; every ``transcript_<model>_chunks.csv`` lists the same chunks). Read for
+#: ``n_words`` only: a chunk with none holds no token (``film_wordless_chunks``).
+FILM_CHUNKS = Path("movies") / "transcript_readability_chunks.csv"
 #: A film's ASR words with their onsets, per film under ``movies/``.
 FILM_ASR_WORDS = "transcribe_transcript_words.csv"
 #: The films' shot cuts: space-timescale's cut schema v1, under ``fit_corpora_dir``. A cut bin
@@ -59,6 +63,32 @@ def film_word_onsets(stimfeat: Path) -> pd.DataFrame:
                                  "onset": asr["onset"].to_numpy(float)[owner],
                                  "offset": asr["offset"].to_numpy(float)[owner]}))
     return pd.concat(out, ignore_index=True)
+
+
+def film_word_chunks(stimfeat: Path) -> pd.DataFrame:
+    """Every film token's timing (``film_word_onsets``) and the transcript chunk holding it.
+
+    ``chunk_idx`` is the token table's, the key a chunk-keyed store table's rows carry, so a
+    chunk-level value can be placed at its words' onsets. A token with no chunk is an error.
+    """
+    on = film_word_onsets(stimfeat)
+    ch = pd.read_csv(Path(stimfeat) / FILM_TOKENS, usecols=["stimulus_id", "word_idx", "chunk_idx"])
+    if ch["chunk_idx"].isna().any():
+        raise RuntimeError(f"{FILM_TOKENS}: {int(ch['chunk_idx'].isna().sum())} tokens have no chunk_idx")
+    out = on.merge(ch.astype({"chunk_idx": int}), on=["stimulus_id", "word_idx"], how="left",
+                   validate="one_to_one")
+    if out["chunk_idx"].isna().any():
+        raise RuntimeError(f"{FILM_TOKENS}: {int(out['chunk_idx'].isna().sum())} timed tokens match no row")
+    return out
+
+
+def film_wordless_chunks(stimfeat: Path) -> pd.DataFrame:
+    """The film chunks word2psy declares wordless (``n_words`` 0): ASR segments with no token,
+    so nothing places them on the word grid. Keyed ``stimulus_id``, ``chunk_idx``."""
+    d = pd.read_csv(Path(stimfeat) / FILM_CHUNKS, usecols=["stimulus_id", "chunk_idx", "n_words"])
+    if d["n_words"].isna().any():
+        raise RuntimeError(f"{FILM_CHUNKS}: {int(d['n_words'].isna().sum())} chunks have no n_words")
+    return d.loc[d["n_words"] == 0, ["stimulus_id", "chunk_idx"]].astype({"chunk_idx": int}).reset_index(drop=True)
 
 
 def load_cuts(fit_corpora: Path) -> pd.DataFrame:

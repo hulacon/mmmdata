@@ -11,13 +11,15 @@ applies the rule to the cached scores. It fits nothing itself.
 Verbs:
 
   project  the reduced block's fit (a ``psytwill space fit`` manifest) projected onto one
-           corpus: ``movies`` (the films' frames, 0.5 s grid) or ``shared1000`` (images, V
+           corpus: ``movies`` (the films' frames, 0.5 s grid; block L: the films' transcript
+           chunks, which the harness places on the word grid) or ``shared1000`` (images, V
            only) -> ``<derivatives>/encoding_harness/rescue/projection/<corpus>_<B>.parquet``
            plus a ``.json`` sidecar pinning the manifest and weights by sha256. ``--k``
            projects through fewer components than the fit's k: a row is placed only where
            its present members span k directions, so a block with gated (often absent)
            members needs k at or below its always-present members' whitened rank to place
-           every frame
+           every frame. Rescue spaces read V and A; any projected block is a ``block:<B>``
+           commonality-arm source (``harness.film_block_features``)
   read     one register's rule over every subject for a block and its members -> JSON + CSV
   compare  descriptive, no rule: named arms (any harness spaces with per-group sums) side by
            side per ROI, with paired bootstrap intervals for each arm and each named contrast
@@ -78,17 +80,19 @@ def sha256(path: Path) -> str:
     return d.hexdigest()
 
 
-def _stream(block: str) -> str:
-    try:
-        return h.rescue_stream(block)
-    except ValueError as exc:
-        raise SystemExit(str(exc))
-
-
 def _block(block: str) -> str:
     """argparse type: a block letter or a named projection ``<letter>.<tag>``."""
     try:
         h.rescue_stream(block)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+    return block
+
+
+def _projectable(block: str) -> str:
+    """argparse type for ``project``: ``_block`` over every block a films projection exists for."""
+    try:
+        h.block_stream(block)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc))
     return block
@@ -100,11 +104,15 @@ def _block(block: str) -> str:
 
 def projection_inputs(stimfeat: Path, block: str, corpus: str) -> tuple[Path, list[str]]:
     """The store table a block's members are read from on ``corpus``, and the key flags."""
-    stream = h.rescue_stream(block)
+    try:
+        stream = h.block_stream(block)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
     if corpus == "movies":
-        table = h.RESCUE_FILM_TABLE[stream]
-        return (Path(stimfeat) / "psytwill" / f"{table}_features.parquet",
-                ["--key", "stimulus_id,time", "--window", str(WINDOW_S)])
+        src = Path(stimfeat) / "psytwill" / f"{h.BLOCK_FILM_TABLE[stream]}_features.parquet"
+        if stream in h.CHUNK_BLOCKS:  # the fit's own key: one row per transcript chunk
+            return src, ["--key", "stimulus_id,chunk_idx"]
+        return src, ["--key", "stimulus_id,time", "--window", str(WINDOW_S)]
     if corpus == "shared1000":
         if stream not in h.RESCUE_TB_BLOCKS:
             raise SystemExit(f"block {block} is not scored on tb-enc (image-keyed only)")
@@ -129,8 +137,10 @@ def cmd_project(args) -> None:
     psytwill = Path(load_config()["paths"]["stimfeat_env"]) / "bin" / "psytwill"
     manifest = Path(args.manifest).resolve()
     m = json.loads(manifest.read_text())
-    if m.get("block") != _stream(args.block):
-        raise SystemExit(f"{manifest} is block {m.get('block')!r}, not {_stream(args.block)}")
+    if m.get("block") != h.block_stream(args.block):
+        raise SystemExit(f"{manifest} is block {m.get('block')!r}, not {h.block_stream(args.block)}")
+    if m.get("key") and h.block_stream(args.block) in h.CHUNK_BLOCKS and m["key"] != "stimulus_id,chunk_idx":
+        raise SystemExit(f"{manifest} is keyed {m['key']!r}; a chunk-keyed block's films rows are stimulus_id,chunk_idx")
     k = projection_k(m, args.k)
     weights = manifest.with_name(m["weights"])
     if not weights.exists():
@@ -460,8 +470,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="verb", required=True)
     p = sub.add_parser("project")
-    p.add_argument("--block", required=True, type=_block,
-                   help="a block letter, or a named projection <letter>.<tag> (e.g. A.interp)")
+    p.add_argument("--block", required=True, type=_projectable,
+                   help="a block letter (V, A, L), or a named projection <letter>.<tag> (e.g. A.interp)")
     p.add_argument("--corpus", required=True, choices=sorted(h.RESCUE_CORPUS.values()))
     p.add_argument("--manifest", required=True, help="the reduced block's `psytwill space fit` manifest")
     p.add_argument("--chunk-size", type=int, default=10, help="stimulus_ids per projection chunk")
