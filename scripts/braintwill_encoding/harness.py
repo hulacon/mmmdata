@@ -169,6 +169,8 @@ _import_braintwill()
 
 import encoding as fs_enc  # noqa: E402  functional_space/encoding.py: feature cache, settings
 import films as fm  # noqa: E402
+from film_events import (CUT_CORPUS, CUT_RULE, CUT_SPACE, CUT_TABLE, FILM_ASR_WORDS,  # noqa: E402,F401
+                         FILM_TOKENS, _chars, event_bins, film_word_onsets, load_cuts)
 import grayordinates as go  # noqa: E402
 from braintwill.encoding import (BandedRidge, EncodingSpec, FrameFeatures, RidgeSpec,  # noqa: E402
                                  ScoreCache, StackSpec, cache_key, feature_set_hash, fir_design,
@@ -207,6 +209,7 @@ class Paths:
         self.stimfeat = p.derivatives / "stimuli_features"
         self.fit_corpora = p.fit_corpora
         self.out = p.derivatives / TREE
+        self.controls = self.out / "controls"
 
 
 # ---------------------------------------------------------------------------
@@ -557,12 +560,6 @@ MODEL_TABLES = {
 }
 MODEL_SPACES = {f"{MODEL_PREFIX}{m}": (t, m) for t, ms in MODEL_TABLES.items() for m in ms}
 TB_TS_SPACES.update({name: {m: (t, m)} for name, (t, m) in MODEL_SPACES.items()})
-#: Film word tokens: word2psy's tokens of the films' transcript, the rows of every text model's
-#: films store table (keyed by ``stimulus_id`` and the corpus-wide ``word_idx``; the five
-#: models' token lists are identical). They carry no timing; see ``film_word_onsets``.
-FILM_TOKENS = Path("movies") / "transcript_fasttext_words.csv"
-#: A film's ASR words with their onsets, per film under ``movies/``.
-FILM_ASR_WORDS = "transcribe_transcript_words.csv"
 #: The model whose films table gives each film's grid length (a text table has no grid).
 FILM_GRID_MODEL = ("movies_frames", "llstat")
 #: Read (a): the ``onoff`` band alone. On tb-enc-ts it is visual-on and audio-on; on films it is
@@ -829,40 +826,6 @@ def stack_bands(parts: list[dict[str, FrameFeatures]]) -> dict[str, FrameFeature
     return out
 
 
-def _chars(word) -> str:
-    return re.sub(r"[^a-z0-9]", "", str(word).lower())
-
-
-def film_word_onsets(stimfeat: Path) -> pd.DataFrame:
-    """Every film token's ``onset`` and ``offset`` (keyed ``stimulus_id``, ``word_idx``).
-
-    The tokens are word2psy's re-tokenisation of the ASR transcript (``i'm`` → ``i`` ``'m``)
-    and carry no timing, so each takes the timing of the ASR word holding its first character.
-    Per film, the tokens' and the ASR words' character streams (lowercase letters and digits)
-    must be identical: the alignment is exact or it is an error.
-    """
-    movies = Path(stimfeat) / FILM_TOKENS.parent
-    tokens = pd.read_csv(Path(stimfeat) / FILM_TOKENS, usecols=["stimulus_id", "word_idx", "word"])
-    out = []
-    for sid, g in tokens.groupby("stimulus_id", sort=True):
-        src = movies / sid / FILM_ASR_WORDS
-        asr = pd.read_csv(src).sort_values(["chunk_idx", "word_idx"])
-        if (np.diff(asr["onset"].to_numpy(float)) < 0).any():
-            raise RuntimeError(f"{src}: word onsets go backwards in chunk/word order")
-        g = g.sort_values("word_idx")
-        t = [_chars(w) for w in g["word"]]
-        if not all(t):
-            raise RuntimeError(f"{sid}: a transcript token has no letters or digits")
-        a = [_chars(w) for w in asr["word"]]
-        if "".join(t) != "".join(a):
-            raise RuntimeError(f"{sid}: transcript tokens and the ASR words of {src} spell different text")
-        owner = np.repeat(np.arange(len(a)), [len(s) for s in a])[np.cumsum([0] + [len(s) for s in t[:-1]])]
-        out.append(pd.DataFrame({"stimulus_id": sid, "word_idx": g["word_idx"].to_numpy(),
-                                 "onset": asr["onset"].to_numpy(float)[owner],
-                                 "offset": asr["offset"].to_numpy(float)[owner]}))
-    return pd.concat(out, ignore_index=True)
-
-
 def film_grid(stimfeat: Path, rows: pd.DataFrame) -> dict[str, int]:
     """Each window film's grid length in bins, from ``FILM_GRID_MODEL``'s films table (the grid
     every films model space of the film is on; ``stack_bands`` refuses any other)."""
@@ -891,30 +854,13 @@ def film_word_on(onsets: pd.DataFrame, rows: pd.DataFrame, grid: dict[str, int]
     out = {}
     for r in rows.itertuples(index=False):
         n = grid[r.stimulus_id]
-        on = np.zeros(n, bool)
-        b = np.floor(onsets.loc[onsets["stimulus_id"] == r.stimulus_id, "onset"].to_numpy(float)
-                     / fs_enc.FRAME_S + 1e-9).astype(int)
-        if b.size and (b.min() < 0 or b.max() >= n):
-            raise RuntimeError(f"{r.stimulus_id}: word onsets outside the film's {n} bins")
-        on[b] = True
+        on = event_bins(onsets.loc[onsets["stimulus_id"] == r.stimulus_id, "onset"].to_numpy(float),
+                        n, fs_enc.FRAME_S, f"{r.stimulus_id} word onsets")
         on &= _window_on(r, n)
         out[r.stimulus_id] = FrameFeatures(r.stimulus_id, np.arange(n) * fs_enc.FRAME_S,
                                            on[:, None].astype(np.float64), fs_enc.FRAME_S,
                                            {ONOFF_SPACE: slice(0, 1)})
     return out
-
-
-def load_cuts(fit_corpora: Path) -> pd.DataFrame:
-    """The films' accepted shot cuts (``CUT_TABLE``, ``CUT_RULE``): ``stimulus_id``, ``bin``."""
-    src = Path(fit_corpora) / CUT_TABLE
-    if not src.exists():
-        raise FileNotFoundError(f"cut table {src} is missing (space-timescale cut schema v1; "
-                                f"fit_corpora_dir in mmmdata config)")
-    d = pd.read_parquet(src, columns=["corpus", "id", "bin", CUT_RULE])
-    d = d[(d["corpus"] == CUT_CORPUS) & d[CUT_RULE].astype(bool)]
-    if d.empty:
-        raise RuntimeError(f"{src}: no {CUT_CORPUS!r} rows with {CUT_RULE}")
-    return d.rename(columns={"id": "stimulus_id"})[["stimulus_id", "bin"]].reset_index(drop=True)
 
 
 def film_cuts(cuts: pd.DataFrame, rows: pd.DataFrame, grid: dict[str, int]) -> dict[str, FrameFeatures]:
@@ -1153,7 +1099,12 @@ COMMON_GROUP_NAME = re.compile(r"[a-z][a-z0-9_]*")
 #: - ``cache:<space>.<band>`` one band of a functional-space feature cache
 #:   (``encoding.FEATURE_SPACES``, e.g. ``vgg19.conv4_3``);
 #: - ``word-on`` the films' word-on band (``film_word_on``);
-#: - ``cuts`` the films' shot-cut band (``film_cuts``).
+#: - ``cuts`` the films' shot-cut band (``film_cuts``);
+#: - ``ctrl:<pool>.<set>`` a control set as one member, and ``ctrl:<pool>.<set>.d<NNN>`` draw NNN
+#:   of its matched-subspace control (``control_draws.py`` writes both; ``film_ctrl_features``).
+#:
+#: An arm named ``<arm>@d<NNN>`` is ``<arm>`` with its one ``ctrl:<pool>.<set>`` source replaced
+#: by draw NNN, so each draw's unions are spaces of their own (``harness.py stack --draws``).
 #:
 #: Model and cache sources are centred modulators over the film window's bins, 0 outside them,
 #: as model spaces are. ``word-on`` and ``cuts`` are event indicators (1 in the window's bins
@@ -1165,13 +1116,9 @@ COMMON_GROUP_NAME = re.compile(r"[a-z][a-z0-9_]*")
 #: counterpart; ``MODEL_TABLES``): model -> its films store table.
 FILM_ONLY_MODELS = {"motion": "movies_frames", "conversation": "movies_audio_frames",
                     "speech_rate": "movies_audio_frames"}
-#: The films' shot cuts: space-timescale's cut schema v1, under ``fit_corpora_dir``. A cut bin
-#: is a classifier-accepted cut, the schema's high-precision rule, not its high-recall masking
-#: rule (the union): as a regressor a false cut is noise in the column (model-readout).
-CUT_TABLE = Path("space-timescale") / "cuts" / "cut_schema_v1.parquet"
-CUT_CORPUS = "mmmdata"
-CUT_RULE = "classifier_accept"
-CUT_SPACE = "cuts"
+CTRL_SOURCE = re.compile(r"ctrl:([a-z0-9][a-z0-9_-]*)\.([a-z0-9][a-z0-9_-]*)(?:\.d(\d{3}))?")
+#: ``<arm>@d<NNN>``: the arm with its control set replaced by draw NNN.
+DRAW_ARM = re.compile(r"(.+)@d(\d{3})")
 
 COMMON_ARMS: dict[str, dict[str, tuple[str, ...]]] = {
     # model-readout pilot shape (opaque / named / timing), membership provisional until
@@ -1180,6 +1127,12 @@ COMMON_ARMS: dict[str, dict[str, tuple[str, ...]]] = {
         "opaque": ("cache:vgg19.conv4_3",),
         "named": ("model:faces", "model:depth"),
         "timing": ("word-on", "model:onsets", "model:loudness", "model:llstat"),
+    },
+    # model-readout 2(b)'s decisive shape: the nameable set as one member (control_draws.py's
+    # dev pool on release 0.1.0); `stack --draws` reads its matched-subspace control.
+    "dev-vgg19-ctrl": {
+        "opaque": ("cache:vgg19.conv4_3",),
+        "nameable": ("ctrl:dev-v010.nameable",),
     },
 }
 
@@ -1203,6 +1156,11 @@ def common_source(src: str) -> tuple[str, str, str | None]:
         return "word-on", ONOFF_SPACE, None
     if src == CUT_SPACE:
         return "cuts", CUT_SPACE, None
+    if src.startswith("ctrl:"):
+        m = CTRL_SOURCE.fullmatch(src)
+        if not m:
+            raise ValueError(f"source {src!r}: expected ctrl:<pool>.<set> or ctrl:<pool>.<set>.d<NNN>")
+        return "ctrl", f"ctrl-{m.group(1)}.{m.group(2)}", (f"d{m.group(3)}" if m.group(3) else None)
     kind, sep, rest = src.partition(":")
     if kind == "model" and sep:
         model, dot, feature = rest.partition(".")
@@ -1218,7 +1176,7 @@ def common_source(src: str) -> tuple[str, str, str | None]:
                              f"space ({', '.join(s for s, v in fs_enc.FEATURE_SPACES.items() if 'bands' in v)})")
         return "cache", space, band
     raise ValueError(f"source {src!r}: expected model:<m>[.<feature>], cache:<space>.<band>, "
-                     f"word-on or {CUT_SPACE}")
+                     f"word-on, {CUT_SPACE} or ctrl:<pool>.<set>[.d<NNN>]")
 
 
 def source_band(src: str) -> str:
@@ -1228,7 +1186,19 @@ def source_band(src: str) -> str:
 
 
 def check_arm(arm: str) -> dict[str, tuple[str, ...]]:
-    """An arm's declaration, checked: groups named, at least two, sources valid, bands unique."""
+    """An arm's declaration, checked: groups named, at least two, sources valid, bands unique.
+    ``<arm>@d<NNN>`` is the arm with its one control set replaced by draw NNN."""
+    m = DRAW_ARM.fullmatch(arm)
+    if m:
+        base, draw = m.group(1), m.group(2)
+        decl = check_arm(base)
+        sets = [(g, s) for g, srcs in decl.items() for s in srcs
+                if common_source(s)[0] == "ctrl" and common_source(s)[2] is None]
+        if len(sets) != 1:
+            raise ValueError(f"arm {arm!r}: a draw needs exactly one ctrl:<pool>.<set> source in {base!r}, "
+                             f"found {len(sets)}")
+        g0, s0 = sets[0]
+        return {g: tuple(f"{s}.d{draw}" if (g, s) == (g0, s0) else s for s in srcs) for g, srcs in decl.items()}
     if arm not in COMMON_ARMS:
         raise ValueError(f"unknown commonality arm {arm!r}: one of {sorted(COMMON_ARMS)}")
     if not COMMON_ARM_NAME.fullmatch(arm):
@@ -1298,24 +1268,54 @@ def film_cache_features(features_root: Path, space: str, band: str, rows: pd.Dat
         f = fs_enc.load_features(fs_enc.cache_path(features_root, space, r.stimulus_id))
         if band not in f.bands:
             raise KeyError(f"{name}: cache for {r.stimulus_id} has bands {sorted(f.bands)}")
-        sl = f.bands[band]
-        t = np.asarray(f.times, float)
-        stamp = infer_stamp(t)
-        bins = np.rint((t - (fs_enc.FRAME_S / 2 if stamp == "center" else 0.0)) / fs_enc.FRAME_S).astype(int)
-        if np.unique(bins).size != bins.size:
-            raise RuntimeError(f"{name} {r.stimulus_id}: two cache frames in one grid bin")
-        n = grid[r.stimulus_id]
-        on = _window_on(r, n)
-        inside = bins < n
-        lost = sorted(set(np.flatnonzero(on)) - set(bins[inside]))
-        if lost:
-            raise RuntimeError(f"{name} {r.stimulus_id}: {len(lost)} window bins have no cache frame")
-        cols = [f"{name}_{i:04d}" for i in range(sl.stop - sl.start)]
-        w = pd.DataFrame(np.asarray(f.x[inside, sl], np.float64), index=bins[inside], columns=cols).reindex(range(n))
-        x, _ = gated_modulators(w.where(pd.Series(on, index=w.index), np.nan), on, set(),
-                                f"{r.stimulus_id} {name}")
-        out[r.stimulus_id] = FrameFeatures(r.stimulus_id, np.arange(n) * fs_enc.FRAME_S, x, fs_enc.FRAME_S,
-                                           {name: slice(0, x.shape[1])})
+        out[r.stimulus_id] = window_cache_frames(name, r, grid[r.stimulus_id], f.times, f.x[:, f.bands[band]])
+    return out
+
+
+def window_cache_frames(name: str, r, n: int, times: np.ndarray, x: np.ndarray) -> FrameFeatures:
+    """One film's cache frames ``x`` (at ``times``) placed on its ``n``-bin model grid, centred
+    over the window's bins and 0 outside them (``gated_modulators``, nothing gated). Every window
+    bin must hold a frame; frames past the grid are outside every window and dropped."""
+    t = np.asarray(times, float)
+    stamp = infer_stamp(t)
+    bins = np.rint((t - (fs_enc.FRAME_S / 2 if stamp == "center" else 0.0)) / fs_enc.FRAME_S).astype(int)
+    if np.unique(bins).size != bins.size:
+        raise RuntimeError(f"{name} {r.stimulus_id}: two cache frames in one grid bin")
+    on = _window_on(r, n)
+    inside = bins < n
+    lost = sorted(set(np.flatnonzero(on)) - set(bins[inside]))
+    if lost:
+        raise RuntimeError(f"{name} {r.stimulus_id}: {len(lost)} window bins have no cache frame")
+    cols = [f"{name}_{i:04d}" for i in range(x.shape[1])]
+    w = pd.DataFrame(np.asarray(x[inside], np.float64), index=bins[inside], columns=cols).reindex(range(n))
+    xm, _ = gated_modulators(w.where(pd.Series(on, index=w.index), np.nan), on, set(), f"{r.stimulus_id} {name}")
+    return FrameFeatures(r.stimulus_id, np.arange(n) * fs_enc.FRAME_S, xm, fs_enc.FRAME_S, {name: slice(0, xm.shape[1])})
+
+
+def ctrl_set(controls: Path, pool: str, name: str) -> dict:
+    """A control set written by ``control_draws.py``: its pool columns and its n bases."""
+    path = Path(controls) / pool / f"{name}.npz"
+    if not path.exists():
+        raise FileNotFoundError(f"control set {path} is missing; run `control_draws.py build --pool {pool}` "
+                                "(stimfeat env)")
+    z = np.load(path)
+    return {"columns": z["columns"].astype(int), "bases": z["bases"], "k": int(z["k"]), "path": path}
+
+
+def film_ctrl_features(controls: Path, pool: str, name: str, draw: int | None, rows: pd.DataFrame,
+                       grid: dict[str, int]) -> dict[str, FrameFeatures]:
+    """A control source per window film: the set's pool columns (``draw`` None) or the pool's
+    columns through basis ``draw``, placed and centred as a cache band (``window_cache_frames``)."""
+    cs = ctrl_set(controls, pool, name)
+    n_draws = cs["bases"].shape[0]
+    if draw is not None and not 0 <= draw < n_draws:
+        raise ValueError(f"ctrl:{pool}.{name}: draw {draw} outside the {n_draws} written")
+    band = source_band(f"ctrl:{pool}.{name}" + ("" if draw is None else f".d{draw:03d}"))
+    out = {}
+    for r in rows.itertuples(index=False):
+        f = fs_enc.load_features(Path(controls) / pool / "pool" / f"{r.stimulus_id}.npz")
+        x = f.x[:, cs["columns"]] if draw is None else np.asarray(f.x, np.float64) @ cs["bases"][draw]
+        out[r.stimulus_id] = window_cache_frames(band, r, grid[r.stimulus_id], f.times, x)
     return out
 
 
@@ -1325,7 +1325,7 @@ def film_sources(paths: "Paths", rows: pd.DataFrame, srcs: list[str]
     source, and the indicator gates prune_indicators kept for each model source."""
     kinds = [common_source(s)[0] for s in srcs]
     onsets = film_word_onsets(paths.stimfeat) if "word-on" in kinds else None
-    grid = film_grid(paths.stimfeat, rows) if {"word-on", "cuts", "cache"} & set(kinds) else None
+    grid = film_grid(paths.stimfeat, rows) if {"word-on", "cuts", "cache", "ctrl"} & set(kinds) else None
     per, gates = {}, {}
     for s in srcs:
         kind, name, band = common_source(s)
@@ -1333,6 +1333,10 @@ def film_sources(paths: "Paths", rows: pd.DataFrame, srcs: list[str]
             per[s] = film_word_on(onsets, rows, grid)
         elif kind == "cuts":
             per[s] = film_cuts(load_cuts(paths.fit_corpora), rows, grid)
+        elif kind == "ctrl":
+            pool, _, set_name = name[len("ctrl-"):].partition(".")
+            per[s] = film_ctrl_features(paths.controls, pool, set_name, None if band is None else int(band[1:]),
+                                        rows, grid)
         elif kind == "model":
             b = source_band(s)
             feats, names = load_film_source(paths.stimfeat, rows, name, band)
@@ -2062,9 +2066,29 @@ def stack_units(paths: Paths, rows: pd.DataFrame, register: dict, spec: StackSpe
     return units, per
 
 
+def draw_range(text: str) -> range:
+    """``A:B`` -> draws A … B-1 (``--draws``)."""
+    a, sep, b = text.partition(":")
+    if not sep or not a.isdigit() or not b.isdigit() or not int(a) < int(b) <= 1000:
+        raise ValueError(f"--draws {text!r}: expected A:B with 0 <= A < B <= 1000")
+    return range(int(a), int(b))
+
+
+def stack_job_spaces(arm: str, draws: str | None = None) -> list[str]:
+    """A stack job's spaces: the arm's, then (``draws``) each draw arm's, once each in order.
+    A draw arm's spaces without its draw (the opaque block alone) are the base arm's units."""
+    spaces = stack_spaces(arm)
+    if draws is not None:
+        if DRAW_ARM.fullmatch(arm):
+            raise ValueError(f"--draws takes the base arm, not a draw arm ({arm!r})")
+        for i in draw_range(draws):
+            spaces += stack_spaces(f"{arm}@d{i:03d}")
+    return list(dict.fromkeys(spaces))
+
+
 def cmd_stack(args) -> None:
     try:
-        spaces = stack_spaces(args.arm)
+        spaces = stack_job_spaces(args.arm, args.draws)
         spec = stack_spec(args.oof)
     except ValueError as exc:
         raise SystemExit(str(exc))
@@ -2204,6 +2228,7 @@ def main() -> None:
     k.add_argument("--arm", required=True)
     k.add_argument("--sub", required=True)
     k.add_argument("--oof", choices=STACK_OOF, required=True)
+    k.add_argument("--draws", help="A:B: also stack draws A..B-1 of the arm's control set (arm@dNNN)")
     k.add_argument("--backend", default="torch_cuda")
     e = sub.add_parser("equivalence")
     e.add_argument("--space", choices=list(fs_enc.FEATURE_SPACES), required=True)

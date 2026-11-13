@@ -381,3 +381,73 @@ def test_fit_stack_refuses_unknown_bands_and_a_misshapen_mask(harness, unions, m
     x, y, groups, bands = _toy_design()
     with pytest.raises(ValueError, match=msg):
         harness.fit_stack(x, y, groups, bands, np.ones(mask_n, bool), unions, _toy_stack_spec(), "numpy")
+
+
+# --- matched-subspace control sources (control_draws.py writes them; ctrl:<pool>.<set>[.dNNN]) ---
+
+def _ctrl_pool(root: Path, sid: str, n_frames: int, d: int = 5, k: int = 2, n_draws: int = 3, seed: int = 0):
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal((n_frames, d)).astype(np.float32)
+    pool = root / "p" / "pool"
+    pool.mkdir(parents=True, exist_ok=True)
+    np.savez(pool / f"{sid}.npz", stimulus_id=sid, times=np.arange(n_frames) * 0.5, x=x,
+             band_names=np.array(["a", "b"]), band_bounds=np.array([[0, 2], [2, d]]))
+    bases = np.stack([np.linalg.qr(rng.standard_normal((d, k)))[0] for _ in range(n_draws)]).astype(np.float32)
+    np.savez(root / "p" / "s.npz", members=np.array(["a"]), columns=np.array([0, 1]), k=k, share=0.4,
+             bases=bases, shares=np.full(n_draws, 0.4), gamma_bracket=np.array([0.0, 1.0]))
+    return x, bases
+
+
+@pytest.mark.parametrize("src, parsed, band", [
+    ("ctrl:dev-pool.nameable", ("ctrl", "ctrl-dev-pool.nameable", None), "ctrl-dev-pool.nameable"),
+    ("ctrl:dev-pool.no-e.d007", ("ctrl", "ctrl-dev-pool.no-e", "d007"), "ctrl-dev-pool.no-e.d007"),
+])
+def test_ctrl_sources_parse_a_set_and_a_draw(harness, src, parsed, band):
+    assert harness.common_source(src) == parsed and harness.source_band(src) == band
+
+
+@pytest.mark.parametrize("src", ["ctrl:pool", "ctrl:pool.set.d7", "ctrl:pool.set.x001", "ctrl:Pool.set"])
+def test_ctrl_sources_refuse_malformed_names(harness, src):
+    with pytest.raises(ValueError, match="ctrl:<pool>.<set>"):
+        harness.common_source(src)
+
+
+def test_a_draw_arm_swaps_the_one_control_set_for_its_draw(harness, monkeypatch):
+    monkeypatch.setitem(harness.COMMON_ARMS, "t-ctrl", {"opaque": ("cache:vgg19.conv4_3",),
+                                                        "named": ("ctrl:p.s",)})
+    assert harness.check_arm("t-ctrl@d012") == {"opaque": ("cache:vgg19.conv4_3",), "named": ("ctrl:p.s.d012",)}
+    monkeypatch.setitem(harness.COMMON_ARMS, "t-none", {"a": ("model:faces",), "b": ("word-on",)})
+    with pytest.raises(ValueError, match="exactly one ctrl"):
+        harness.check_arm("t-none@d000")
+
+
+def test_a_draw_job_stacks_each_draw_once_and_shares_the_opaque_unions(harness, monkeypatch):
+    monkeypatch.setitem(harness.COMMON_ARMS, "t-ctrl", {"opaque": ("cache:vgg19.conv4_3",),
+                                                        "named": ("ctrl:p.s",)})
+    spaces = harness.stack_job_spaces("t-ctrl", "3:5")
+    assert spaces[:3] == ["stack-t-ctrl.opaque", "stack-t-ctrl.named", "stack-t-ctrl.opaque+named"]
+    assert "stack-t-ctrl@d004.opaque+named" in spaces and len(spaces) == 9
+    srcs = {s: harness.stack_sources(*harness.parse_stack(s)) for s in spaces}
+    assert srcs["stack-t-ctrl@d003.opaque"] == srcs["stack-t-ctrl.opaque"]
+    assert srcs["stack-t-ctrl@d003.named"] == ["ctrl:p.s.d003"]
+    for bad in ("4:4", "x:3", "3"):
+        with pytest.raises(ValueError, match="--draws"):
+            harness.stack_job_spaces("t-ctrl", bad)
+
+
+def test_film_ctrl_features_read_the_set_columns_and_project_a_draw(harness, tmp_path):
+    n = 30
+    x, bases = _ctrl_pool(tmp_path, "film-a", n_frames=n)
+    rows = _film_row()
+    on = harness.window_bins(np.array([7, 8]) * 1.5, 1.5, n)
+    s = harness.film_ctrl_features(tmp_path, "p", "s", None, rows, {"film-a": n})["film-a"]
+    assert s.bands == {"ctrl-p.s": slice(0, 2)}
+    np.testing.assert_allclose(s.x[on], x[on][:, :2] - x[on][:, :2].mean(0), rtol=1e-6)
+    d = harness.film_ctrl_features(tmp_path, "p", "s", 2, rows, {"film-a": n})["film-a"]
+    proj = x.astype(np.float64) @ bases[2]
+    assert d.bands == {"ctrl-p.s.d002": slice(0, 2)} and not d.x[~on].any()
+    np.testing.assert_allclose(d.x[on], proj[on] - proj[on].mean(0), rtol=1e-5)
+    with pytest.raises(ValueError, match="draw 3 outside the 3 written"):
+        harness.film_ctrl_features(tmp_path, "p", "s", 3, rows, {"film-a": n})
+    with pytest.raises(FileNotFoundError, match="control_draws.py build --pool q"):
+        harness.film_ctrl_features(tmp_path, "q", "s", None, rows, {"film-a": n})
