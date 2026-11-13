@@ -2358,24 +2358,38 @@ def direction_label(paths: "Paths", block: str, c: int, mask_path: Path) -> dict
             "scored_columns": str(mask_path), "development": "." in block and block.partition(".")[2].startswith("dev")}
 
 
-def cmd_directions(args) -> None:
+def direction_setup(paths: "Paths", block: str, sub: str) -> dict:
+    """What every direction of ``block`` shares for ``sub``: the pool's rows, the reliability
+    mask, the masked register, the block source's features (band ``block-<B>``) and its k."""
     try:
-        block_stream(args.block)
+        block_stream(block)
     except ValueError as exc:
         raise SystemExit(str(exc))
+    windows = fm.load_windows(paths.derivatives)
+    rows = alignment_rows(windows, sub)
+    mask, mask_path = stack_mask(paths.out, sub)
+    register = masked_register(film_register(windows, paths.cleaned, list(rows["stimulus_id"])), mask)
+    src = f"block:{block}"
+    band = source_band(src)
+    feats = film_sources(paths, rows, [src])[0][src]
+    first = next(iter(feats.values())).bands[band]
+    return {"rows": rows, "mask": mask, "mask_path": mask_path, "register": register, "feats": feats,
+            "band": band, "k": first.stop - first.start}
+
+
+def direction_key(setup: dict, block: str, c: int, sub: str) -> dict:
+    """The cache key of direction ``c`` of ``block`` for ``sub`` (``directions`` writes it)."""
+    feats = direction_features(setup["feats"], setup["band"], c, direction_space(block, c))
+    return cache_key(feature_set_hash(feats.values()), setup["register"], direction_spec(), f"sub-{sub}")
+
+
+def cmd_directions(args) -> None:
     paths = Paths()
     cache = ScoreCache(paths.out)
     spec = direction_spec()
     t0 = time.time()
-    windows = fm.load_windows(paths.derivatives)
-    rows = alignment_rows(windows, args.sub)
-    mask, mask_path = stack_mask(paths.out, args.sub)
-    register = masked_register(film_register(windows, paths.cleaned, list(rows["stimulus_id"])), mask)
-    src = f"block:{args.block}"
-    band = source_band(src)
-    feats = film_sources(paths, rows, [src])[0][src]
-    first = next(iter(feats.values())).bands[band]
-    k = first.stop - first.start
+    setup = direction_setup(paths, args.block, args.sub)
+    rows, mask, mask_path, feats, band, k = (setup[n] for n in ("rows", "mask", "mask_path", "feats", "band", "k"))
     try:
         comps = component_range(args.components, k)
     except ValueError as exc:
@@ -2383,8 +2397,7 @@ def cmd_directions(args) -> None:
     todo = {}
     for c in comps:
         space = direction_space(args.block, c)
-        key = cache_key(feature_set_hash(direction_features(feats, band, c, space).values()), register, spec,
-                        f"sub-{args.sub}")
+        key = direction_key(setup, args.block, c, args.sub)
         if cache.get(key) is not None:
             print(f"{space}: cached {cache.path(key)}")
             continue

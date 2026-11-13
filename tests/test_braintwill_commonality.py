@@ -789,3 +789,44 @@ def test_component_range_defaults_to_every_component_and_refuses_past_k(harness)
     for bad in ("3:3", "0:6", "a:2", "2"):
         with pytest.raises(ValueError):
             harness.component_range(bad, 5)
+
+
+# --- the settle-3 reader (universality.py; the statistics are braintwill's) -----------------
+
+@pytest.fixture(scope="module")
+def uv():
+    return _load("braintwill_encoding_universality", "universality.py")
+
+
+def test_load_table_checks_the_direction_table_contract(uv, tmp_path):
+    good = pd.DataFrame({"component": [2, 0, 1], "eigenvalue": [1.0, 3.0, 2.0], "u": [0.2, 0.5, 0.9]})
+    path = tmp_path / "t.csv"
+    good.to_csv(path, index=False)
+    t = uv.load_table(path, "L")
+    assert t["component"].tolist() == [0, 1, 2] and "rho" not in t.columns
+    for bad, msg in [(good.drop(columns="u"), "missing columns"),
+                     (pd.concat([good, good.iloc[:1]]), "appears twice"),
+                     (good.assign(u=[0.1, np.nan, 0.3]), "u is not finite"),
+                     (good.assign(rho=[0.1, np.nan, 0.3]), "rho is given but not finite"),
+                     (good.assign(component=[-1, 0, 1]), "negative component")]:
+        bad.to_csv(path, index=False)
+        with pytest.raises(SystemExit, match=msg):
+            uv.load_table(path, "L")
+    with pytest.raises(SystemExit, match="is missing"):
+        uv.load_table(tmp_path / "none.csv", "L")
+
+
+def test_parse_blocks_takes_projectable_blocks_once_each(uv):
+    assert uv.parse_blocks("V=a.csv,L.dev=b.parquet") == {"V": Path("a.csv"), "L.dev": Path("b.parquet")}
+    for bad in ("V", "V=", "X=a.csv", "V=a.csv,V=b.csv"):
+        with pytest.raises(SystemExit):
+            uv.parse_blocks(bad)
+
+
+def test_roi_means_and_holm_over_blocks(uv):
+    r2 = np.arange(12.0).reshape(2, 6)
+    rois = {"a": np.array([0, 1]), "b": np.array([3, 4, 5])}
+    np.testing.assert_allclose(uv.roi_means(r2, rois), [[0.5, 4.0], [6.5, 10.0]])
+    adj = uv.holm_over_blocks({"V": np.array([0.01, 0.2]), "A": np.array([0.04, 0.03]), "L": np.array([0.5, 0.01])})
+    np.testing.assert_allclose([adj["V"][0], adj["A"][0], adj["L"][0]], [0.03, 0.08, 0.5])
+    np.testing.assert_allclose([adj["L"][1], adj["A"][1], adj["V"][1]], [0.03, 0.06, 0.2])
