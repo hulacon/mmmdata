@@ -60,25 +60,6 @@ def test_term_stats_reads_every_term_and_the_total(cm):
     assert cm.term_stats(got, {}, draw_counts(n_groups, 5, 0), w) == {}
 
 
-def test_term_values_match_term_stats_values(cm):
-    from braintwill.encoding import commonality_weights, draw_counts
-
-    rng = np.random.default_rng(2)
-    n_groups, per = 20, 30
-    y = rng.standard_normal((n_groups * per, 6))
-    got = {k: _sums(y, c * y + 0.2 * rng.standard_normal(y.shape), n_groups)
-           for k, c in {"a": 0.5, "b": 0.3, "a+b": 0.6}.items()}
-    w = commonality_weights(["a", "b"])
-    rois = {"x": np.array([0, 2, 4]), "y": np.arange(6)}
-    stats = cm.term_stats(got, rois, draw_counts(n_groups, 20, 0), w)
-    vals = cm.term_values(got, rois, w)
-    assert set(vals) == set(w)
-    for term in w:
-        for roi in rois:
-            assert vals[term][roi] == pytest.approx(stats[term][roi]["value"], abs=1e-12)
-    assert cm.term_values(got, {}, w) == {}
-
-
 def test_draw_rank_places_a_value_among_draws(cm):
     d = np.arange(100, dtype=float)  # 0 … 99
     top = cm.draw_rank(150.0, d)
@@ -125,7 +106,7 @@ def test_draw_groups_names_the_control_set_group(cm, harness, monkeypatch):
 def test_read_draws_reuses_the_base_units_and_reads_each_draw(cm, monkeypatch):
     import argparse
 
-    from braintwill.encoding import commonality_weights
+    from braintwill.encoding import combination_stats, commonality_weights, draw_counts
 
     rng = np.random.default_rng(3)
     n_groups, per = 10, 20
@@ -149,12 +130,20 @@ def test_read_draws_reuses_the_base_units_and_reads_each_draw(cm, monkeypatch):
     args = argparse.Namespace(arm="dev-vgg19-ctrl", engine="stack", register="films", oof="reuse")
     rois = {"all": np.arange(4)}
     w = commonality_weights(["opaque", "nameable"])
-    out = cm.read_draws(None, None, args, "##", range(0, 3), "nameable", "opaque", got, valid, keys, rois, w)
+    counts = draw_counts(n_groups, 50, 0)
+    out = cm.read_draws(None, None, args, "##", range(0, 3), "nameable", "opaque", got, valid, keys, rois, w, counts)
     assert asked == [[f"stack-dev-vgg19-ctrl@d{i:03d}.nameable", f"stack-dev-vgg19-ctrl@d{i:03d}.opaque+nameable"]
                      for i in range(3)]  # the opaque unit is never reloaded
     assert set(out["read"]) == {"nameable", "opaque&nameable", "total"}  # total from the arm, not the weights
     assert out["read"]["opaque&nameable"]["all"]["n_draws"] == 3
     assert out["qp_max_gap_max"] == pytest.approx(3e-12)
+    ex = out["excess"]["all"]
+    assert set(ex) == {"mean", "q95"} and ex["mean"]["se"] > 0
+    real = combination_stats(got, rois, counts, w, ci=0.95)["opaque&nameable"]["all"]["value"]
+    vals = out["values"]["opaque&nameable"]["all"]
+    assert len(vals) == 3 and ex["mean"]["value"] == pytest.approx(real - np.mean(vals), abs=1e-12)
+    assert out["_boot"]["all"]["q95"].shape == (50,)
+    assert set(out["values"]) == {"nameable", "opaque&nameable", "total"}
 
     def stale_load(*a, **k):
         g, v, kk, c, st = fake_load(*a, **k)
@@ -162,7 +151,37 @@ def test_read_draws_reuses_the_base_units_and_reads_each_draw(cm, monkeypatch):
 
     monkeypatch.setattr(cm, "load_subsets", stale_load)
     with pytest.raises(RuntimeError, match="base arm's features"):
-        cm.read_draws(None, None, args, "##", range(0, 1), "nameable", "opaque", got, valid, keys, rois, w)
+        cm.read_draws(None, None, args, "##", range(0, 1), "nameable", "opaque", got, valid, keys, rois, w, counts)
+
+
+def test_excess_stats_are_paired_over_the_same_bootstrap_draws(cm):
+    rng = np.random.default_rng(5)
+    noise = rng.standard_normal(400)  # shared brain noise: the real set and every draw move with it
+    real_boot = 0.05 + 0.01 * noise
+    draws = np.linspace(0.0, 0.02, 20)
+    draws_boot = draws[:, None] + 0.01 * noise[None, :]
+    ex = cm.excess_stats(0.05, real_boot, draws, draws_boot)
+    assert ex["mean"]["value"] == pytest.approx(0.05 - draws.mean())
+    assert ex["q95"]["value"] == pytest.approx(0.05 - np.quantile(draws, 0.95))
+    assert ex["mean"]["se"] < 1e-12  # the shared noise cancels in a paired excess
+    with pytest.raises(ValueError, match="does not match"):
+        cm.excess_stats(0.05, real_boot, draws, draws_boot[:, :10])
+
+
+def test_pooled_read_pools_rois_over_subjects_and_leaves_the_mask_out(cm):
+    rng = np.random.default_rng(6)
+    excess = {}
+    for sub in ("03", "04", "05"):
+        excess[sub] = {}
+        for j in range(8):
+            v = (0.02 if j == 0 else 0.0) + 0.001 * rng.standard_normal()
+            excess[sub][f"roi-{j}"] = {k: {"value": v - (0.005 if k == "q95" else 0.0), "se": 0.002}
+                                       for k in ("mean", "q95")}
+        excess[sub][cm.rs.ALL_ROI] = {k: {"value": 1.0, "se": 0.001} for k in ("mean", "q95")}
+    out = cm.pooled_read(excess)
+    assert set(out["excess_q95"]["units"]) == {f"roi-{j}" for j in range(8)}
+    assert out["excess_q95"]["n_cells"] == 24 and out["selected"] == ["roi-0"]
+    assert out["excess_mean"]["ci"] == cm.POOL_CI
 
 
 # --- arms in the harness ----------------------------------------------------------------------

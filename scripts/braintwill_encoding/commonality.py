@@ -44,6 +44,12 @@ Verbs:
           ``<arm>@dNNN``, and per subject, ROI and draw-dependent term the real value's place
           among the draws' (percentile, the draws' 95th percentile, a draw p) -> a ``draws``
           JSON entry + ``*_draws.csv``. The named share C(o∩n) / R²(o) is reported beside it.
+          Every draw is bootstrapped on the real read's counts, so C(o∩n)'s excess over the
+          draws' mean and over their 95th percentile are paired (SE, interval;
+          ``*_excess.csv``, arrays in ``*_boot.npz``). Those cells are then pooled over ROIs x
+          subjects (braintwill ``pooled_effects``: ROIs partially pooled, subjects fixed) ->
+          a ``pooled`` JSON entry + ``*_pooled.csv``, with the ROIs the screen selects. Every
+          draw's value per term and ROI is kept (``*_draw_values.csv``).
 
 Usage:
     python commonality.py spaces --arm <arm>
@@ -102,24 +108,6 @@ def term_stats(groups_by_subset: dict[str, dict], rois: dict[str, np.ndarray], c
                              ci=ci, chunk=rs.DRAW_CHUNK)
 
 
-def term_values(groups_by_subset: dict[str, dict], rois: dict[str, np.ndarray],
-                weights: dict[str, dict[str, int]]) -> dict[str, dict[str, float]]:
-    """Every term's observed ROI mean, as ``term_stats``' ``value`` (no bootstrap): the read of a
-    control draw."""
-    from braintwill.encoding import combine, resampled_r2, restrict_columns
-
-    if not rois:
-        return {}
-    cols = np.unique(np.concatenate([np.asarray(v, int) for v in rois.values()]))
-    at = {c: i for i, c in enumerate(cols)}
-    need = sorted({s for w in weights.values() for s in w})
-    first = groups_by_subset[need[0]]
-    ones = np.ones(len(first["labels"]))
-    vals = combine({s: resampled_r2(restrict_columns(groups_by_subset[s], cols), ones) for s in need}, weights)
-    return {t: {r: float(np.nanmean(v[[at[c] for c in np.asarray(ix, int)]])) for r, ix in rois.items()}
-            for t, v in vals.items()}
-
-
 def draw_groups(arm: str) -> tuple[str, str]:
     """(the group holding the arm's control set, the other group): a draw read needs two groups."""
     decl = h.check_arm(arm)
@@ -151,7 +139,7 @@ def draw_read(real: dict[str, dict[str, float]], draws: list[dict[str, dict[str,
     draw, so the share ranks as the shared term does; it is None where R²(o) <= 0)."""
     from braintwill.encoding.resample import TERM_SEP
 
-    shared = TERM_SEP.join(t for t in real if TERM_SEP in t)  # the two-group arm's one shared term
+    shared = f"{other}{TERM_SEP}{ctrl}" if f"{other}{TERM_SEP}{ctrl}" in real else f"{ctrl}{TERM_SEP}{other}"
     terms = [t for t in real if t == "total" or ctrl in t.split(TERM_SEP)]
     out = {}
     for t in terms:
@@ -165,6 +153,50 @@ def draw_read(real: dict[str, dict[str, float]], draws: list[dict[str, dict[str,
                           "share_draw_median": x["draw_median"] / r2_o if ok else None,
                           "share_draw_q95": x["draw_q95"] / r2_o if ok else None})
             out[t][roi] = x
+    return out
+
+
+#: Interval level of the pooled read over ROIs x subjects (a screen for the confirmation
+#: addendum, model-readout prereg R17), and its CSV/JSON label.
+POOL_CI = 0.90
+
+
+def excess_stats(real: float, real_boot: np.ndarray, draws: np.ndarray, draws_boot: np.ndarray,
+                 ci: float = CI) -> dict[str, dict]:
+    """The real value's excess over the control draws, paired: over their mean and over their
+    95th percentile (numpy linear), each with its bootstrap SE and percentile interval.
+
+    ``draws`` (n,) are the draws' observed values and ``draws_boot`` (n, B) their values on the
+    same B bootstrap draws as ``real_boot`` (B,), so each excess is formed draw by draw."""
+    draws_boot = np.asarray(draws_boot, np.float64)
+    real_boot = np.asarray(real_boot, np.float64)
+    if draws_boot.shape != (np.size(draws), real_boot.size):
+        raise ValueError(f"draws_boot {draws_boot.shape} does not match {np.size(draws)} draws x {real_boot.size}")
+    lo, hi = (1 - ci) / 2, 1 - (1 - ci) / 2
+    out = {}
+    for name, stat in (("mean", lambda a, ax: np.mean(a, axis=ax)), ("q95", lambda a, ax: np.quantile(a, 0.95, axis=ax))):
+        boot = real_boot - stat(draws_boot, 0)
+        out[name] = {"value": float(real - stat(np.asarray(draws, np.float64), 0)), "se": float(np.std(boot, ddof=1)),
+                     "lo": float(np.quantile(boot, lo)), "hi": float(np.quantile(boot, hi))}
+    return out
+
+
+def pooled_read(excess: dict[str, dict[str, dict]], ci: float = POOL_CI) -> dict:
+    """Partial pooling of the per-cell excess over ROIs x subjects (braintwill
+    ``pooled_effects``: ROIs pooled, subjects fixed), for each excess kind. The whole-mask ROI
+    overlaps every section, so it is not a cell. ``selected``: ROIs whose pooled excess over the
+    draws' 95th percentile has its ``ci`` interval above 0 (the screen, prereg R17)."""
+    from braintwill.encoding import pooled_effects
+
+    cells = [(sub, roi, x) for sub, by in excess.items() for roi, x in by.items() if roi != rs.ALL_ROI]
+    out = {}
+    for kind in ("mean", "q95"):
+        out[f"excess_{kind}"] = pooled_effects([x[kind]["value"] for _, _, x in cells],
+                                               [x[kind]["se"] for _, _, x in cells],
+                                               [roi for _, roi, _ in cells], [sub for sub, _, _ in cells], ci=ci)
+    out["selected"] = sorted(r for r, v in out["excess_q95"]["units"].items() if v["lo"] > 0)
+    out["rule"] = (f"selected: pooled excess of C(o∩n) over the draws' 95th percentile, {ci:.0%} interval "
+                   "above 0 (a screen for the confirmation addendum; no multiplicity correction: R17)")
     return out
 
 
@@ -218,17 +250,26 @@ def load_subsets(paths, cache, register: str, spaces: list[str], sub: str, oof: 
 
 
 def read_draws(paths, cache, args, sub: str, draws: range, ctrl: str, other: str, got: dict,
-               valid: np.ndarray, keys: dict, rois: dict, weights: dict) -> dict:
-    """Every draw arm's terms for one subject, ranked against the real arm's (``draw_read``).
+               valid: np.ndarray, keys: dict, rois: dict, weights: dict, counts: np.ndarray) -> dict:
+    """Every draw arm's terms for one subject, ranked against the real arm's (``draw_read``),
+    and the shared term's paired excess over the draws (``excess_stats``).
 
-    A draw arm's subsets without the control set hold the base arm's sources, so they are the
-    base arm's units (a key is its sources' content, the spec and the register) and are reused,
-    not reloaded. Each draw's own subsets must score the base arm's valid columns and carry
-    features other than the real set's."""
+    Every draw is bootstrapped on the real read's ``counts``, so the excess is paired. A draw
+    arm's subsets without the control set hold the base arm's sources, so they are the base
+    arm's units (a key is its sources' content, the spec and the register) and are reused, not
+    reloaded. Each draw's own subsets must score the base arm's valid columns and carry
+    features other than the real set's. ``_boot`` (popped before the JSON) holds the bootstrap
+    arrays the reader writes to ``*_boot.npz``."""
+    from braintwill.encoding import combination_draws
+    from braintwill.encoding.resample import TERM_SEP
+
     base = h.check_arm(args.arm)
-    weights = {**weights, "total": {"+".join(base): 1}}  # the union of every group, as term_stats reads it
-    real = term_values(got, rois, weights)
-    vals, qp = [], []
+    shared = TERM_SEP.join(base)
+    terms = {t: w for t, w in {**weights, "total": {"+".join(base): 1}}.items()  # total, as term_stats reads it
+             if t == "total" or ctrl in t.split(TERM_SEP)}
+    terms[other] = weights[other]  # the share's denominator needs C(other)
+    real, real_boot = combination_draws(got, rois, counts, terms, chunk=rs.DRAW_CHUNK)
+    vals, shared_boot, qp = [], {r: [] for r in rois}, []
     for i in draws:
         arm = f"{args.arm}@d{i:03d}"
         decl = h.check_arm(arm)
@@ -241,10 +282,21 @@ def read_draws(paths, cache, args, sub: str, draws: range, ctrl: str, other: str
         same = [x for x in k if k[x]["features"] == keys[x]["features"]]
         if same:
             raise RuntimeError(f"sub-{sub} {arm}: subsets {same} have the base arm's features, not the draw's")
-        vals.append(term_values({**got, **g}, rois, weights))
+        obs, boot = combination_draws({**got, **g}, rois, counts, terms, chunk=rs.DRAW_CHUNK)
+        vals.append(obs)
+        for r in rois:
+            shared_boot[r].append(boot[shared][r])
         qp += [x["qp_max_gap"] for x in st.values()]
-    return {"read": draw_read(real, vals, ctrl, other),
-            **({"qp_max_gap_max": float(max(qp))} if qp else {})}
+    excess, ex_boot = {}, {}
+    for r in rois:
+        db = np.stack(shared_boot[r])
+        dv = np.array([d[shared][r] for d in vals])
+        excess[r] = excess_stats(real[shared][r], real_boot[shared][r], dv, db)
+        ex_boot[r] = {"real": real_boot[shared][r], "mean": real_boot[shared][r] - db.mean(0),
+                      "q95": real_boot[shared][r] - np.quantile(db, 0.95, axis=0)}
+    return {"read": draw_read(real, vals, ctrl, other), "excess": excess,
+            "values": {t: {r: [d[t][r] for d in vals] for r in rois} for t in terms if t != other},
+            **({"qp_max_gap_max": float(max(qp))} if qp else {}), "_boot": ex_boot}
 
 
 def draws_entry(args, paths, draws: range, ctrl: str, other: str, drawn: dict) -> dict:
@@ -290,7 +342,7 @@ def cmd_read(args) -> None:
     labels = np.asarray(fam.family_labels(table, cha.Paths().atlases)[rs.RULE["family"]])
     subs = args.subs.split(",") if args.subs else list(h.fm.SUBJECTS)
     rel = paths.out / "reliability" / f"register-{args.register}"
-    per, keys, checks, stacking, drawn = {}, {}, {}, {}, {}
+    per, keys, checks, stacking, drawn, boots = {}, {}, {}, {}, {}, {}
     for sub in subs:
         mask_path = rel / f"sub-{sub}.npz"
         if not mask_path.exists():
@@ -308,7 +360,8 @@ def cmd_read(args) -> None:
         print(f"sub-{sub}: {len(rois)} ROIs, {len(weights)} terms from {len(spaces)} fits", flush=True)
         if draws is not None:
             drawn[sub] = read_draws(paths, cache, args, sub, draws, ctrl, other, got, valid,
-                                    keys[f"sub-{sub}"], rois, weights)
+                                    keys[f"sub-{sub}"], rois, weights, counts)
+            boots[sub] = drawn[sub].pop("_boot")
             print(f"sub-{sub}: {len(draws)} control draws read", flush=True)
     rows = [{"term": t, "sub": sub, "roi": roi, **x}
             for sub, d in per.items() for t, rs_ in d.items() for roi, x in rs_.items()]
@@ -326,7 +379,8 @@ def cmd_read(args) -> None:
                     "negative_terms": "reported as computed; not evidence of suppression"},
            "per_subject": per, "keys": keys, "group_sums_check_max_abs": checks,
            **({"stacking": stacking} if args.engine == "stack" else {}),
-           **({"draws": draws_entry(args, paths, draws, ctrl, other, drawn)} if draws is not None else {}),
+           **({"draws": draws_entry(args, paths, draws, ctrl, other, drawn),
+               "pooled": pooled_read({s: d["excess"] for s, d in drawn.items()})} if draws is not None else {}),
            "provenance": h.provenance("commonality", {}),
            "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")}
     dest = Path(args.out)
@@ -340,7 +394,21 @@ def cmd_read(args) -> None:
         dr = pd.DataFrame([{"term": t, "sub": sub, "roi": roi, **x}
                            for sub, d in drawn.items() for t, by in d["read"].items() for roi, x in by.items()])
         dr.to_csv(dest / f"{stem.name}_draws.csv", index=False)
-        print(f"wrote {stem}_draws.csv ({len(draws)} draws)")
+        pd.DataFrame([{"term": t, "sub": sub, "roi": roi, "draw": draws.start + j, "value": v}
+                      for sub, d in drawn.items() for t, by in d["values"].items() for roi, vs in by.items()
+                      for j, v in enumerate(vs)]).to_csv(dest / f"{stem.name}_draw_values.csv", index=False)
+        pd.DataFrame([{"sub": sub, "roi": roi, "excess_over": kind, **y}
+                      for sub, d in drawn.items() for roi, x in d["excess"].items() for kind, y in x.items()]
+                     ).to_csv(dest / f"{stem.name}_excess.csv", index=False)
+        pl = out["pooled"]
+        pd.DataFrame([{"excess_over": k[len("excess_"):], "roi": roi, **v, "selected": k == "excess_q95" and roi in pl["selected"]}
+                      for k in ("excess_mean", "excess_q95") for roi, v in pl[k]["units"].items()]
+                     ).to_csv(dest / f"{stem.name}_pooled.csv", index=False)
+        np.savez_compressed(dest / f"{stem.name}_boot.npz", **{f"sub-{sub}|{roi}|{kind}": a
+                                                              for sub, by in boots.items() for roi, x in by.items()
+                                                              for kind, a in x.items()})
+        print(f"wrote {stem}_draws.csv, _draw_values.csv, _excess.csv, _pooled.csv, _boot.npz ({len(draws)} draws; "
+              f"{len(pl['selected'])} ROIs selected)")
 
 
 def main() -> None:
