@@ -152,6 +152,7 @@ def test_read_draws_reuses_the_base_units_and_reads_each_draw(cm, monkeypatch):
     out = cm.read_draws(None, None, args, "##", range(0, 3), "nameable", "opaque", got, valid, keys, rois, w)
     assert asked == [[f"stack-dev-vgg19-ctrl@d{i:03d}.nameable", f"stack-dev-vgg19-ctrl@d{i:03d}.opaque+nameable"]
                      for i in range(3)]  # the opaque unit is never reloaded
+    assert set(out["read"]) == {"nameable", "opaque&nameable", "total"}  # total from the arm, not the weights
     assert out["read"]["opaque&nameable"]["all"]["n_draws"] == 3
     assert out["qp_max_gap_max"] == pytest.approx(3e-12)
 

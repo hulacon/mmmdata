@@ -225,8 +225,9 @@ def read_draws(paths, cache, args, sub: str, draws: range, ctrl: str, other: str
     base arm's units (a key is its sources' content, the spec and the register) and are reused,
     not reloaded. Each draw's own subsets must score the base arm's valid columns and carry
     features other than the real set's."""
-    real = term_values(got, rois, weights)
     base = h.check_arm(args.arm)
+    weights = {**weights, "total": {"+".join(base): 1}}  # the union of every group, as term_stats reads it
+    real = term_values(got, rois, weights)
     vals, qp = [], []
     for i in draws:
         arm = f"{args.arm}@d{i:03d}"
