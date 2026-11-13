@@ -60,6 +60,110 @@ def test_term_stats_reads_every_term_and_the_total(cm):
     assert cm.term_stats(got, {}, draw_counts(n_groups, 5, 0), w) == {}
 
 
+def test_term_values_match_term_stats_values(cm):
+    from braintwill.encoding import commonality_weights, draw_counts
+
+    rng = np.random.default_rng(2)
+    n_groups, per = 20, 30
+    y = rng.standard_normal((n_groups * per, 6))
+    got = {k: _sums(y, c * y + 0.2 * rng.standard_normal(y.shape), n_groups)
+           for k, c in {"a": 0.5, "b": 0.3, "a+b": 0.6}.items()}
+    w = commonality_weights(["a", "b"])
+    rois = {"x": np.array([0, 2, 4]), "y": np.arange(6)}
+    stats = cm.term_stats(got, rois, draw_counts(n_groups, 20, 0), w)
+    vals = cm.term_values(got, rois, w)
+    assert set(vals) == set(w)
+    for term in w:
+        for roi in rois:
+            assert vals[term][roi] == pytest.approx(stats[term][roi]["value"], abs=1e-12)
+    assert cm.term_values(got, {}, w) == {}
+
+
+def test_draw_rank_places_a_value_among_draws(cm):
+    d = np.arange(100, dtype=float)  # 0 … 99
+    top = cm.draw_rank(150.0, d)
+    assert top["percentile"] == 100.0 and top["exceeds_q95"] and top["p_draws"] == pytest.approx(1 / 101)
+    assert top["draw_q95"] == pytest.approx(np.quantile(d, 0.95)) and top["n_draws"] == 100
+    mid = cm.draw_rank(50.0, d)  # 50 below, one tie
+    assert mid["percentile"] == pytest.approx(50.5) and not mid["exceeds_q95"]
+    assert mid["p_draws"] == pytest.approx((1 + 50) / 101)
+    # at the 95th percentile is not above it
+    assert not cm.draw_rank(float(np.quantile(d, 0.95)), d)["exceeds_q95"]
+    with pytest.raises(ValueError, match="finite"):
+        cm.draw_rank(1.0, np.array([0.0, np.nan]))
+    with pytest.raises(ValueError, match="draw"):
+        cm.draw_rank(1.0, np.array([]))
+
+
+def test_draw_read_ranks_draw_dependent_terms_and_reports_the_share(cm):
+    real = {"opaque": {"r": 0.06, "z": -0.01}, "nameable": {"r": 0.01, "z": 0.0},
+            "opaque&nameable": {"r": 0.04, "z": 0.005}, "total": {"r": 0.11, "z": -0.005}}
+    draws = [{"opaque": {"r": 0.1 - s, "z": -0.005 - s}, "nameable": {"r": 0.0, "z": 0.0},
+              "opaque&nameable": {"r": s, "z": s}, "total": {"r": 0.1, "z": -0.005}}
+             for s in np.linspace(0.0, 0.02, 21)]
+    out = cm.draw_read(real, draws, ctrl="nameable", other="opaque")
+    assert set(out) == {"nameable", "opaque&nameable", "total"}  # C(opaque) moves only with the draw's split
+    sh = out["opaque&nameable"]["r"]
+    assert sh["percentile"] == 100.0 and sh["exceeds_q95"]
+    assert sh["r2_other"] == pytest.approx(0.10) and sh["share"] == pytest.approx(0.4)
+    assert sh["share_draw_median"] == pytest.approx(0.01 / 0.10)
+    z = out["opaque&nameable"]["z"]  # R²(opaque) = -0.005: no share, the term is still ranked
+    assert z["share"] is None and z["share_draw_q95"] is None and z["n_draws"] == 21
+
+
+def test_draw_groups_names_the_control_set_group(cm, harness, monkeypatch):
+    assert cm.draw_groups("dev-vgg19-ctrl") == ("nameable", "opaque")
+    with pytest.raises(ValueError, match="two groups"):
+        cm.draw_groups("dev-vgg19")
+    monkeypatch.setitem(harness.COMMON_ARMS, "dev-noctrl", {"opaque": ("cache:vgg19.conv4_3",),
+                                                            "named": ("model:faces",)})
+    monkeypatch.setattr(cm, "h", harness)
+    with pytest.raises(ValueError, match="ctrl"):
+        cm.draw_groups("dev-noctrl")
+
+
+def test_read_draws_reuses_the_base_units_and_reads_each_draw(cm, monkeypatch):
+    import argparse
+
+    from braintwill.encoding import commonality_weights
+
+    rng = np.random.default_rng(3)
+    n_groups, per = 10, 20
+    y = rng.standard_normal((n_groups * per, 4))
+    fit = lambda c: _sums(y, c * y + 0.3 * rng.standard_normal(y.shape), n_groups)  # noqa: E731
+    got = {"opaque": fit(0.5), "nameable": fit(0.4), "opaque+nameable": fit(0.6)}
+    valid = np.ones(4, bool)
+    keys = {s: {"space": f"stack-dev-vgg19-ctrl.{s}", "features": f"real-{s}", "spec": "x"} for s in got}
+    asked = []
+
+    def fake_load(paths, cache, register, spaces, sub, oof, engine):
+        asked.append(list(spaces))
+        draw = int(spaces[0].split("@d")[1][:3])
+        c = 0.05 * draw
+        g = {"nameable": fit(c), "opaque+nameable": fit(0.5 + c / 2)}
+        k = {s: {"space": sp, "features": f"draw{draw}-{s}", "spec": "x"}
+             for s, sp in zip(g, spaces)}
+        return g, valid, k, {}, {s: {"qp_max_gap": 1e-12 * (draw + 1)} for s in g}
+
+    monkeypatch.setattr(cm, "load_subsets", fake_load)
+    args = argparse.Namespace(arm="dev-vgg19-ctrl", engine="stack", register="films", oof="reuse")
+    rois = {"all": np.arange(4)}
+    w = commonality_weights(["opaque", "nameable"])
+    out = cm.read_draws(None, None, args, "##", range(0, 3), "nameable", "opaque", got, valid, keys, rois, w)
+    assert asked == [[f"stack-dev-vgg19-ctrl@d{i:03d}.nameable", f"stack-dev-vgg19-ctrl@d{i:03d}.opaque+nameable"]
+                     for i in range(3)]  # the opaque unit is never reloaded
+    assert out["read"]["opaque&nameable"]["all"]["n_draws"] == 3
+    assert out["qp_max_gap_max"] == pytest.approx(3e-12)
+
+    def stale_load(*a, **k):
+        g, v, kk, c, st = fake_load(*a, **k)
+        return g, v, {s: {**x, "features": f"real-{s}"} for s, x in kk.items()}, c, st
+
+    monkeypatch.setattr(cm, "load_subsets", stale_load)
+    with pytest.raises(RuntimeError, match="base arm's features"):
+        cm.read_draws(None, None, args, "##", range(0, 1), "nameable", "opaque", got, valid, keys, rois, w)
+
+
 # --- arms in the harness ----------------------------------------------------------------------
 
 def test_parse_common_names_an_arm_and_a_subset_in_arm_order(harness):
@@ -395,7 +499,25 @@ def _ctrl_pool(root: Path, sid: str, n_frames: int, d: int = 5, k: int = 2, n_dr
     bases = np.stack([np.linalg.qr(rng.standard_normal((d, k)))[0] for _ in range(n_draws)]).astype(np.float32)
     np.savez(root / "p" / "s.npz", members=np.array(["a"]), columns=np.array([0, 1]), k=k, share=0.4,
              bases=bases, shares=np.full(n_draws, 0.4), gamma_bracket=np.array([0.0, 1.0]))
+    draws = root / "p" / "draws" / "s"  # control_draws.py's layout, written as its draws verb does
+    draws.mkdir(parents=True, exist_ok=True)
+    np.save(draws / f"{sid}.npy", np.matmul(x.astype(np.float64)[None], bases.astype(np.float64)).astype(np.float32))
     return x, bases
+
+
+def test_film_ctrl_features_refuse_missing_or_stale_draw_features(harness, tmp_path):
+    n = 30
+    _ctrl_pool(tmp_path, "film-a", n_frames=n)
+    rows = _film_row()
+    f = tmp_path / "p" / "draws" / "s" / "film-a.npy"
+    np.save(f, np.zeros((2, n, 2), np.float32))  # two draws written, the bases hold three
+    with pytest.raises(RuntimeError, match="rerun `control_draws.py draws`"):
+        harness.film_ctrl_features(tmp_path, "p", "s", 0, rows, {"film-a": n})
+    f.unlink()
+    with pytest.raises(FileNotFoundError, match="control_draws.py draws --pool p"):
+        harness.film_ctrl_features(tmp_path, "p", "s", 0, rows, {"film-a": n})
+    # the set itself needs no draw features
+    assert harness.film_ctrl_features(tmp_path, "p", "s", None, rows, {"film-a": n})["film-a"].x.shape == (n, 2)
 
 
 @pytest.mark.parametrize("src, parsed, band", [
@@ -444,9 +566,10 @@ def test_film_ctrl_features_read_the_set_columns_and_project_a_draw(harness, tmp
     assert s.bands == {"ctrl-p.s": slice(0, 2)}
     np.testing.assert_allclose(s.x[on], x[on][:, :2] - x[on][:, :2].mean(0), rtol=1e-6)
     d = harness.film_ctrl_features(tmp_path, "p", "s", 2, rows, {"film-a": n})["film-a"]
-    proj = x.astype(np.float64) @ bases[2]
+    written = np.load(tmp_path / "p" / "draws" / "s" / "film-a.npy")[2]  # loaded, not projected
     assert d.bands == {"ctrl-p.s.d002": slice(0, 2)} and not d.x[~on].any()
-    np.testing.assert_allclose(d.x[on], proj[on] - proj[on].mean(0), rtol=1e-5)
+    np.testing.assert_allclose(d.x[on], written[on] - written[on].mean(0), rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(written, x.astype(np.float64) @ bases[2], rtol=1e-5)
     with pytest.raises(ValueError, match="draw 3 outside the 3 written"):
         harness.film_ctrl_features(tmp_path, "p", "s", 3, rows, {"film-a": n})
     with pytest.raises(FileNotFoundError, match="control_draws.py build --pool q"):

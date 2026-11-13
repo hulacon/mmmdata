@@ -146,7 +146,7 @@ import pandas as pd
 
 _REPO = Path(__file__).resolve().parents[2]
 _FS = _REPO / "scripts" / "functional_space"
-for _p in (_REPO / "src" / "python", _FS):
+for _p in (_REPO / "src" / "python", _FS, Path(__file__).resolve().parent):  # film_events, control_draws
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
@@ -1304,17 +1304,31 @@ def ctrl_set(controls: Path, pool: str, name: str) -> dict:
 
 def film_ctrl_features(controls: Path, pool: str, name: str, draw: int | None, rows: pd.DataFrame,
                        grid: dict[str, int]) -> dict[str, FrameFeatures]:
-    """A control source per window film: the set's pool columns (``draw`` None) or the pool's
-    columns through basis ``draw``, placed and centred as a cache band (``window_cache_frames``)."""
+    """A control source per window film: the set's pool columns (``draw`` None) or draw ``draw``'s
+    written features (``control_draws.py``), placed and centred as a cache band
+    (``window_cache_frames``)."""
+    from control_draws import draw_features_path
+
     cs = ctrl_set(controls, pool, name)
-    n_draws = cs["bases"].shape[0]
+    n_draws, k = cs["bases"].shape[0], cs["bases"].shape[2]
     if draw is not None and not 0 <= draw < n_draws:
         raise ValueError(f"ctrl:{pool}.{name}: draw {draw} outside the {n_draws} written")
     band = source_band(f"ctrl:{pool}.{name}" + ("" if draw is None else f".d{draw:03d}"))
     out = {}
     for r in rows.itertuples(index=False):
         f = fs_enc.load_features(Path(controls) / pool / "pool" / f"{r.stimulus_id}.npz")
-        x = f.x[:, cs["columns"]] if draw is None else np.asarray(f.x, np.float64) @ cs["bases"][draw]
+        if draw is None:
+            x = f.x[:, cs["columns"]]
+        else:  # written by control_draws.py, never projected here (a product's bits vary by machine)
+            path = draw_features_path(controls, pool, name, r.stimulus_id)
+            if not path.exists():
+                raise FileNotFoundError(f"draw features {path} are missing; run `control_draws.py draws "
+                                        f"--pool {pool}` (stimfeat env)")
+            d = np.load(path, mmap_mode="r")
+            if d.shape != (n_draws, len(f.times), k):
+                raise RuntimeError(f"{path}: shape {d.shape}, expected {(n_draws, len(f.times), k)} "
+                                   f"from the set's bases and the pool film; rerun `control_draws.py draws`")
+            x = np.array(d[draw])
         out[r.stimulus_id] = window_cache_frames(band, r, grid[r.stimulus_id], f.times, x)
     return out
 

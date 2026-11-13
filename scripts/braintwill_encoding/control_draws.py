@@ -11,11 +11,18 @@ psytwill, so the draws are made here, once, and written beside the harness's sco
         pool/<stimulus_id>.npz   the pool's columns per film (feature-cache format), one band
                                  per pool source
         <set>.npz                the set's pool columns, its k and share, and the n bases
+        draws/<set>/<stimulus_id>.npy
+                                 every draw's features per film, (n, frames, k) float32: the
+                                 pool's columns through each basis, computed here once
         pool.json                provenance
 
 The harness reads them as arm sources (``harness.py``: ``ctrl:<pool>.<set>`` = the set's
-columns, ``ctrl:<pool>.<set>.d<NNN>`` = the pool's columns through basis NNN), centred over
-each film window as every source is.
+columns, ``ctrl:<pool>.<set>.d<NNN>`` = draw NNN's written features), centred over each film
+window as every source is. **The harness never projects.** A cache key hashes a unit's
+feature values, and a matrix product's last bits depend on the CPU and the thread count it
+ran on: a draw projected in the stack job (GPU node) and again in the reader (CPU node) got
+two keys (model-readout log 2026-11-12). Written once, a draw is loaded, never recomputed, so
+every job keys it alike.
 
 **The pool.** A psytwill release block's members, each in its fit-time whitened coordinates
 (``SpaceWhitener.transform``), plus extra sources that are not members of that block (word-on,
@@ -33,7 +40,10 @@ that one representation, so the set is a coordinate subset of the pool.
 
 Verbs:
 
-  build   one pool: load, whiten, gate, write the pool cache and every set's draws
+  build   one pool: load, whiten, gate, write the pool cache, every set's bases and draws
+  draws   (re)write every set's draw features from a written pool and its bases (``build``
+          ends with it): the pool and the bases are not recomputed, so the set's own units
+          keep their keys
   show    a written pool's provenance and each set's k, share and draw share range
 
 Usage (stimfeat env, on SLURM; ``control_draws.sbatch``):
@@ -114,6 +124,53 @@ class Paths:
 
 def pool_dir(controls: Path, pool: str) -> Path:
     return Path(controls) / pool
+
+
+#: Where a set's draw features live (the harness reads them through this, never projects).
+DRAWS = "draws"
+
+
+def draw_features_path(controls: Path, pool: str, name: str, stimulus_id: str) -> Path:
+    """One film's draw features of one set: an ``(n, frames, k)`` float32 ``.npy``."""
+    return pool_dir(controls, pool) / DRAWS / name / f"{stimulus_id}.npy"
+
+
+def project_draws(x: np.ndarray, bases: np.ndarray) -> np.ndarray:
+    """``(frames, columns)`` pool features through ``(n, columns, k)`` bases ->
+    ``(n, frames, k)`` float32 (the product in float64)."""
+    x, bases = np.asarray(x, np.float64), np.asarray(bases, np.float64)
+    if x.ndim != 2 or bases.ndim != 3 or bases.shape[1] != x.shape[1]:
+        raise ValueError(f"pool features {x.shape} and bases {bases.shape} do not compose")
+    return np.matmul(x[None], bases).astype(np.float32)
+
+
+def write_draws(controls: Path, pool: str, sets: list[str], films: list[str]) -> dict:
+    """Every set's draw features per film, from the written pool and bases. Returns, per set,
+    the draws written and the bytes on disk."""
+    out = {}
+    for name in sets:
+        with np.load(pool_dir(controls, pool) / f"{name}.npz") as z:
+            bases = z["bases"]
+        nbytes = 0
+        for s in films:
+            with np.load(pool_dir(controls, pool) / "pool" / f"{s}.npz") as f:
+                x = f["x"]
+            dest = draw_features_path(controls, pool, name, s)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name(dest.stem + ".tmp.npy")
+            np.save(tmp, project_draws(x, bases))
+            tmp.replace(dest)
+            nbytes += dest.stat().st_size
+        out[name] = {"n": int(bases.shape[0]), "k": int(bases.shape[2]), "bytes": int(nbytes)}
+        print(f"{pool}.{name}: {bases.shape[0]} draws x {len(films)} films written ({nbytes / 1e9:.2f} GB)", flush=True)
+    return out
+
+
+def _draws_meta(written: dict) -> dict:
+    return {"layout": f"{DRAWS}/<set>/<stimulus_id>.npy, (n, frames, k) float32",
+            "computed": "pool float32 columns @ float32 bases, in float64, stored float32",
+            "written": _dt.datetime.now(_dt.timezone.utc).isoformat(), "mmmdata_commit": _git_head(),
+            "sets": written}
 
 
 def pool_films(windows: pd.DataFrame) -> list[str]:
@@ -335,6 +392,7 @@ def build_pool(paths: Paths, pool: str) -> dict:
             "extra_scaling": "PR-whitened on the pool rows (psytwill fit_whitener, scaling pr)",
             "psytwill_version": psytwill.__version__, "mmmdata_commit": _git_head(),
             "development_pool": pool.startswith("dev")}
+    meta["draw_features"] = _draws_meta(write_draws(paths.controls, pool, list(sets), films))
     (out / "pool.json").write_text(json.dumps(meta, indent=1))
     return meta
 
@@ -356,6 +414,15 @@ def cmd_build(args) -> None:
     print(f"{args.pool}: {meta['rows']} rows x {meta['columns']} columns on {len(meta['films'])} films")
 
 
+def cmd_draws(args) -> None:
+    path = pool_dir(Paths().controls, args.pool) / "pool.json"
+    if not path.exists():
+        raise SystemExit(f"{path} is missing; run `control_draws.py build --pool {args.pool}`")
+    meta = json.loads(path.read_text())
+    meta["draw_features"] = _draws_meta(write_draws(Paths().controls, args.pool, list(meta["sets"]), meta["films"]))
+    path.write_text(json.dumps(meta, indent=1))
+
+
 def cmd_show(args) -> None:
     path = pool_dir(Paths().controls, args.pool) / "pool.json"
     if not path.exists():
@@ -371,7 +438,7 @@ def cmd_show(args) -> None:
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name, fn in (("build", cmd_build), ("show", cmd_show)):
+    for name, fn in (("build", cmd_build), ("draws", cmd_draws), ("show", cmd_show)):
         p = sub.add_parser(name)
         p.add_argument("--pool", required=True)
         p.set_defaults(fn=fn)
