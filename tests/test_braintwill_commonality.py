@@ -103,7 +103,8 @@ def test_a_group_shares_its_columns_spec_across_subsets(harness):
 @pytest.mark.parametrize("arm, msg", [
     ({"a": ("model:fasttext",), "b": ("word-on",)}, "text models"),
     ({"a": ("cache:vgg19.conv9_9",), "b": ("word-on",)}, "cache:<space>.<band>"),
-    ({"a": ("model:nope",), "b": ("word-on",)}, "no read-\\(b\\) model"),
+    ({"a": ("model:nope",), "b": ("word-on",)}, "no read-\\(b\\) or film-only model"),
+    ({"a": ("model:motion.",), "b": ("word-on",)}, "model:<m>.<feature>"),
     ({"a": ("model:faces",), "b": ("model:faces",)}, "is in groups"),
     ({"a": ("model:faces",)}, "at least two groups"),
     ({"a": ("model:faces",), "b": ()}, "no sources"),
@@ -114,6 +115,83 @@ def test_check_arm_refuses_bad_declarations(harness, monkeypatch, arm, msg):
     monkeypatch.setitem(harness.COMMON_ARMS, "test-arm", arm)
     with pytest.raises(ValueError, match=msg):
         harness.check_arm("test-arm")
+
+
+@pytest.mark.parametrize("src, parsed, band", [
+    ("model:motion", ("model", "motion", None), "motion"),
+    ("model:faces", ("model", "faces", None), "faces"),
+    ("model:speech_rate.speech_rate_words", ("model", "speech_rate", "speech_rate_words"),
+     "speech_rate.speech_rate_words"),
+    ("cuts", ("cuts", "cuts", None), "cuts"),
+    ("word-on", ("word-on", "onoff", None), "onoff"),
+    ("cache:vgg19.conv4_3", ("cache", "vgg19", "conv4_3"), "vgg19.conv4_3"),
+])
+def test_common_source_parses_every_kind_and_names_its_band(harness, src, parsed, band):
+    assert harness.common_source(src) == parsed
+    assert harness.source_band(src) == band
+
+
+def test_film_only_models_are_arm_sources_and_never_read_b_spaces(harness):
+    for m, table in harness.FILM_ONLY_MODELS.items():
+        assert f"{harness.MODEL_PREFIX}{m}" not in harness.MODEL_SPACES
+        assert harness.source_model_table(m) == table
+
+
+def _film_row(sid="film-a", start=7, n=2, tr=1.5):
+    return pd.DataFrame([{"stimulus_id": sid, "onset": 0.0, "start": start, "n": n, "repetition_time": tr}])
+
+
+def test_film_cuts_mark_window_cut_bins_only(harness):
+    n, rows = 30, _film_row()
+    on = harness.window_bins(np.array([7, 8]) * 1.5, 1.5, n)
+    inside, outside = int(np.flatnonzero(on)[1]), int(np.flatnonzero(~on)[-1])
+    cuts = pd.DataFrame({"stimulus_id": ["film-a"] * 2, "bin": [inside, outside]})
+    f = harness.film_cuts(cuts, rows, {"film-a": n})["film-a"]
+    assert f.bands == {"cuts": slice(0, 1)} and f.x.shape == (n, 1)
+    assert np.flatnonzero(f.x[:, 0]).tolist() == [inside]
+
+
+def test_film_cuts_refuse_a_film_the_table_lacks_and_a_cut_past_the_grid(harness):
+    rows = _film_row()
+    with pytest.raises(RuntimeError, match="no cuts for films \\['film-a'\\]"):
+        harness.film_cuts(pd.DataFrame({"stimulus_id": ["film-z"], "bin": [3]}), rows, {"film-a": 30})
+    with pytest.raises(RuntimeError, match="outside the film's 30 bins"):
+        harness.film_cuts(pd.DataFrame({"stimulus_id": ["film-a"], "bin": [30]}), rows, {"film-a": 30})
+
+
+def test_load_cuts_keeps_accepted_cuts_of_the_dataset_corpus_and_names_a_missing_table(harness, tmp_path):
+    with pytest.raises(FileNotFoundError, match="cut_schema_v1.parquet"):
+        harness.load_cuts(tmp_path)
+    dest = tmp_path / harness.CUT_TABLE
+    dest.parent.mkdir(parents=True)
+    pd.DataFrame({"corpus": ["mmmdata", "mmmdata", "friends"], "id": ["film-a", "film-a", "film-a"],
+                  "bin": [4, 9, 2], harness.CUT_RULE: [True, False, True]}).to_parquet(dest)
+    got = harness.load_cuts(tmp_path)
+    assert got.to_dict("list") == {"stimulus_id": ["film-a"], "bin": [4]}
+
+
+def _store_rows(n=30):
+    t = np.arange(n) * 0.5
+    return pd.concat([pd.DataFrame({"stimulus_id": "film-a", "time": t, "model": "speech_rate",
+                                    "feature": f, "value": v})
+                      for f, v in [("speech_rate_words", np.arange(n, dtype=float)),
+                                   ("speech_rate_pauses", np.ones(n))]], ignore_index=True)
+
+
+def test_a_one_feature_model_source_keeps_that_feature_under_its_own_band(harness, monkeypatch):
+    monkeypatch.setattr(harness, "load_model_long", lambda stimfeat, table, model, rows: _store_rows())
+    monkeypatch.setattr(harness, "declared_undefined", lambda stimfeat: {})
+    rows = _film_row()
+    feats, names = harness.load_film_source(Path("."), rows, "speech_rate", "speech_rate_words")
+    f = feats["film-a"]
+    assert names == ["speech_rate_words"] and f.bands == {"speech_rate.speech_rate_words": slice(0, 1)}
+    on = harness.window_bins(np.array([7, 8]) * 1.5, 1.5, 30)
+    v = np.arange(30, dtype=float)
+    np.testing.assert_allclose(f.x[on, 0], v[on] - v[on].mean())
+    whole, names = harness.load_film_source(Path("."), rows, "speech_rate")
+    assert names == ["speech_rate_pauses", "speech_rate_words"] and whole["film-a"].bands == {"speech_rate": slice(0, 2)}
+    with pytest.raises(ValueError, match="no feature 'speech_rate_nope'"):
+        harness.load_film_source(Path("."), rows, "speech_rate", "speech_rate_nope")
 
 
 def _cache(root: Path, sid: str, n_frames: int, width: int = 3, stamp_offset: float = 0.0):

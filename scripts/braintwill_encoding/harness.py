@@ -205,6 +205,7 @@ class Paths:
         self.features = p.cache
         self.cleaned = go.tree_root(p.derivatives)
         self.stimfeat = p.derivatives / "stimuli_features"
+        self.fit_corpora = p.fit_corpora
         self.out = p.derivatives / TREE
 
 
@@ -783,6 +784,24 @@ def load_film_model(stimfeat: Path, rows: pd.DataFrame, space: str
     return film_model_features(long, rows, model, declared_undefined(stimfeat).get(model, set()))
 
 
+def load_film_source(stimfeat: Path, rows: pd.DataFrame, model: str, feature: str | None = None
+                     ) -> tuple[dict[str, FrameFeatures], list[str]]:
+    """An arm's model source per window film: a read-(b) or film-only model, all its features
+    or ``feature`` alone, under band ``<model>`` or ``<model>.<feature>``."""
+    long = load_model_long(stimfeat, source_model_table(model, model), model, rows)
+    band = model
+    if feature is not None:
+        have = sorted(long["feature"].unique())
+        if feature not in have:
+            raise ValueError(f"{model}: no feature {feature!r} in the store (features: {have})")
+        long, band = long[long["feature"] == feature], f"{model}.{feature}"
+    feats, names = film_model_features(long, rows, model, declared_undefined(stimfeat).get(model, set()))
+    if band != model:
+        feats = {sid: FrameFeatures(f.stimulus_id, f.times, f.x, f.frame_s, {band: f.bands[model]})
+                 for sid, f in feats.items()}
+    return feats, names
+
+
 def stack_bands(parts: list[dict[str, FrameFeatures]]) -> dict[str, FrameFeatures]:
     """Per stimulus, several feature sets' bands side by side, in ``parts`` order.
 
@@ -882,6 +901,42 @@ def film_word_on(onsets: pd.DataFrame, rows: pd.DataFrame, grid: dict[str, int]
         out[r.stimulus_id] = FrameFeatures(r.stimulus_id, np.arange(n) * fs_enc.FRAME_S,
                                            on[:, None].astype(np.float64), fs_enc.FRAME_S,
                                            {ONOFF_SPACE: slice(0, 1)})
+    return out
+
+
+def load_cuts(fit_corpora: Path) -> pd.DataFrame:
+    """The films' accepted shot cuts (``CUT_TABLE``, ``CUT_RULE``): ``stimulus_id``, ``bin``."""
+    src = Path(fit_corpora) / CUT_TABLE
+    if not src.exists():
+        raise FileNotFoundError(f"cut table {src} is missing (space-timescale cut schema v1; "
+                                f"fit_corpora_dir in mmmdata config)")
+    d = pd.read_parquet(src, columns=["corpus", "id", "bin", CUT_RULE])
+    d = d[(d["corpus"] == CUT_CORPUS) & d[CUT_RULE].astype(bool)]
+    if d.empty:
+        raise RuntimeError(f"{src}: no {CUT_CORPUS!r} rows with {CUT_RULE}")
+    return d.rename(columns={"id": "stimulus_id"})[["stimulus_id", "bin"]].reset_index(drop=True)
+
+
+def film_cuts(cuts: pd.DataFrame, rows: pd.DataFrame, grid: dict[str, int]) -> dict[str, FrameFeatures]:
+    """Band ``cuts``: one column, 1 in the window's bins holding an accepted shot cut, 0
+    elsewhere. A window film absent from the cut table is an error, not a film without cuts:
+    the table lists every film its detectors read (all 60), so absence means a different set."""
+    have = set(cuts["stimulus_id"])
+    missing = sorted(set(rows["stimulus_id"]) - have)
+    if missing:
+        raise RuntimeError(f"cut table holds no cuts for films {missing}")
+    out = {}
+    for r in rows.itertuples(index=False):
+        n = grid[r.stimulus_id]
+        b = cuts.loc[cuts["stimulus_id"] == r.stimulus_id, "bin"].to_numpy(int)
+        if b.min() < 0 or b.max() >= n:
+            raise RuntimeError(f"{r.stimulus_id}: cuts outside the film's {n} bins")
+        on = np.zeros(n, bool)
+        on[b] = True
+        on &= _window_on(r, n)
+        out[r.stimulus_id] = FrameFeatures(r.stimulus_id, np.arange(n) * fs_enc.FRAME_S,
+                                           on[:, None].astype(np.float64), fs_enc.FRAME_S,
+                                           {CUT_SPACE: slice(0, 1)})
     return out
 
 
@@ -1089,14 +1144,35 @@ COMMON_GROUP_NAME = re.compile(r"[a-z][a-z0-9_]*")
 #: subsets differ only in which groups enter. ``commonality.py`` reads the 2^k - 1 cached scores
 #: into commonality terms; the harness fits each subset on its own and partitions nothing.
 #:
-#: Sources: ``model:<m>`` a read-(b) visual or audio model space (``MODEL_TABLES``; text models
-#: need the word grid and are not offered yet); ``cache:<space>.<band>`` one band of a
-#: functional-space feature cache (``encoding.FEATURE_SPACES``, e.g. ``vgg19.conv4_3``);
-#: ``word-on`` the films' word-on band (``film_word_on``). Every source is a centred modulator
-#: over the film window's bins and 0 outside them, as model spaces are.
+#: Sources:
+#:
+#: - ``model:<m>`` a read-(b) visual or audio model space (``MODEL_TABLES``; text models need
+#:   the word grid and are not offered yet), or a film-only model (``FILM_ONLY_MODELS``);
+#: - ``model:<m>.<feature>`` one feature of such a model, alone (e.g. word rate,
+#:   ``speech_rate.speech_rate_words``);
+#: - ``cache:<space>.<band>`` one band of a functional-space feature cache
+#:   (``encoding.FEATURE_SPACES``, e.g. ``vgg19.conv4_3``);
+#: - ``word-on`` the films' word-on band (``film_word_on``);
+#: - ``cuts`` the films' shot-cut band (``film_cuts``).
+#:
+#: Model and cache sources are centred modulators over the film window's bins, 0 outside them,
+#: as model spaces are. ``word-on`` and ``cuts`` are event indicators (1 in the window's bins
+#: holding an event, 0 elsewhere).
 #:
 #: ``dev`` arms exist to build and check designs before the real groups are fixed. Their group
 #: membership is a placeholder, not a decision, and their scores are not results.
+#: Film-only models offered as arm sources, never as read-(b) spaces (they have no TB
+#: counterpart; ``MODEL_TABLES``): model -> its films store table.
+FILM_ONLY_MODELS = {"motion": "movies_frames", "conversation": "movies_audio_frames",
+                    "speech_rate": "movies_audio_frames"}
+#: The films' shot cuts: space-timescale's cut schema v1, under ``fit_corpora_dir``. A cut bin
+#: is a classifier-accepted cut, the schema's high-precision rule, not its high-recall masking
+#: rule (the union): as a regressor a false cut is noise in the column (model-readout).
+CUT_TABLE = Path("space-timescale") / "cuts" / "cut_schema_v1.parquet"
+CUT_CORPUS = "mmmdata"
+CUT_RULE = "classifier_accept"
+CUT_SPACE = "cuts"
+
 COMMON_ARMS: dict[str, dict[str, tuple[str, ...]]] = {
     # model-readout pilot shape (opaque / named / timing), membership provisional until
     # psytwill-space 0.2.0 fixes its members and the strict/learned split.
@@ -1108,18 +1184,32 @@ COMMON_ARMS: dict[str, dict[str, tuple[str, ...]]] = {
 }
 
 
+def source_model_table(model: str, src: str = "") -> str:
+    """The films store table of a model an arm may name; ``ValueError`` otherwise."""
+    if model in FILM_ONLY_MODELS:
+        return FILM_ONLY_MODELS[model]
+    space = f"{MODEL_PREFIX}{model}"
+    if space not in MODEL_SPACES:
+        raise ValueError(f"source {src!r}: no read-(b) or film-only model {model!r}")
+    if MODEL_SPACES[space][0] == TEXT_TABLE:
+        raise ValueError(f"source {src!r}: text models are not offered in commonality arms yet")
+    return MODEL_SPACES[space][0]
+
+
 def common_source(src: str) -> tuple[str, str, str | None]:
-    """``(kind, name, band)`` of one arm source; ``ValueError`` names what is wrong."""
+    """``(kind, name, band)`` of one arm source; ``ValueError`` names what is wrong. A model
+    source's ``band`` is the one feature it keeps (None: all of them)."""
     if src == "word-on":
         return "word-on", ONOFF_SPACE, None
+    if src == CUT_SPACE:
+        return "cuts", CUT_SPACE, None
     kind, sep, rest = src.partition(":")
     if kind == "model" and sep:
-        space = f"{MODEL_PREFIX}{rest}"
-        if space not in MODEL_SPACES:
-            raise ValueError(f"source {src!r}: no read-(b) model {rest!r}")
-        if MODEL_SPACES[space][0] == TEXT_TABLE:
-            raise ValueError(f"source {src!r}: text models are not offered in commonality arms yet")
-        return "model", rest, None
+        model, dot, feature = rest.partition(".")
+        if dot and not feature:
+            raise ValueError(f"source {src!r}: expected model:<m> or model:<m>.<feature>")
+        source_model_table(model, src)
+        return "model", model, feature or None
     if kind == "cache" and sep:
         space, dot, band = rest.partition(".")
         spec = fs_enc.FEATURE_SPACES.get(space, {})
@@ -1127,13 +1217,14 @@ def common_source(src: str) -> tuple[str, str, str | None]:
             raise ValueError(f"source {src!r}: expected cache:<space>.<band> with a band of a feature-cache "
                              f"space ({', '.join(s for s, v in fs_enc.FEATURE_SPACES.items() if 'bands' in v)})")
         return "cache", space, band
-    raise ValueError(f"source {src!r}: expected model:<m>, cache:<space>.<band> or word-on")
+    raise ValueError(f"source {src!r}: expected model:<m>[.<feature>], cache:<space>.<band>, "
+                     f"word-on or {CUT_SPACE}")
 
 
 def source_band(src: str) -> str:
     """The design band a source's columns are stacked under."""
     kind, name, band = common_source(src)
-    return f"{name}.{band}" if kind == "cache" else name
+    return f"{name}.{band}" if band else name
 
 
 def check_arm(arm: str) -> dict[str, tuple[str, ...]]:
@@ -1234,15 +1325,18 @@ def film_sources(paths: "Paths", rows: pd.DataFrame, srcs: list[str]
     source, and the indicator gates prune_indicators kept for each model source."""
     kinds = [common_source(s)[0] for s in srcs]
     onsets = film_word_onsets(paths.stimfeat) if "word-on" in kinds else None
-    grid = film_grid(paths.stimfeat, rows) if ("word-on" in kinds or "cache" in kinds) else None
+    grid = film_grid(paths.stimfeat, rows) if {"word-on", "cuts", "cache"} & set(kinds) else None
     per, gates = {}, {}
     for s in srcs:
         kind, name, band = common_source(s)
         if kind == "word-on":
             per[s] = film_word_on(onsets, rows, grid)
+        elif kind == "cuts":
+            per[s] = film_cuts(load_cuts(paths.fit_corpora), rows, grid)
         elif kind == "model":
-            feats, names = load_film_model(paths.stimfeat, rows, f"{MODEL_PREFIX}{name}")
-            per[s], gates[name] = prune_indicators(feats, name, names)
+            b = source_band(s)
+            feats, names = load_film_source(paths.stimfeat, rows, name, band)
+            per[s], gates[b] = prune_indicators(feats, b, names)
         else:
             per[s] = film_cache_features(paths.features, name, band, rows, grid)
     return per, gates
@@ -1364,7 +1458,7 @@ def stack_label(paths: "Paths", space: str, srcs: list[str], gates: dict, mask_p
             "weighting": "each member (source) its own one-band ridge; per column, convex weights over "
                          "the union's members from their out-of-fold training errors",
             "modulators": "every source minus its mean over the film window's bins, 0 outside",
-            "gates": {k: v for k, v in gates.items() if k in {common_source(s)[1] for s in srcs}},
+            "gates": {k: v for k, v in gates.items() if k in {source_band(s) for s in srcs}},
             "scored_columns": str(mask_path), "source": str(paths.stimfeat / "psytwill"),
             "cache": str(paths.features), "development_arm": arm.startswith("dev")}
 
