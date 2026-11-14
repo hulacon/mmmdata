@@ -106,6 +106,16 @@ sums (settle 3 reads per-column R², and its null permutes labels without a refi
 ``directions`` job per subject and block builds the block's design and responses once and
 caches each direction as its own unit, keyed by its own column's content.
 
+Subspace spaces (``sub-<B>/<object>``, model-readout settle 3): one psytwill subspace object
+of a block (``S``, ``U``, ``U:<member>`` or a draw, ``psytwill space subspaces``) on the films,
+from ``rescue.py project --subspaces``'s table: its orthonormal coordinates (orthonormal on the
+block's fit rows), placed as the block's own source is, fitted alone as one band by the
+primal route at read (b)'s spec. Films only; the films reliability mask's columns only; no
+per-group sums. One ``subspaces`` job per subject and block loads the responses once and
+caches each object as its own unit, keyed by its own columns' content, so a draw equal to
+its parent (a side with exactly d dimensions) is one cached unit. The harness never
+projects: every object's coordinates come from the table psytwill wrote.
+
 Feature sets: for films, the per-stimulus caches ``functional_space/encoding.py cache``
 writes (``<derivatives>/functional_space/features/<space>/``), only the register's films;
 for tb-enc, the shared1000 image tables under ``<derivatives>/stimuli_features/``. Either
@@ -120,6 +130,7 @@ Verbs:
   score        nested-CV scores for one subject (cached)
   stack        one arm's stacked spaces for one subject, in one job (every uncached union)
   directions   one block's direction spaces for one subject, in one job (every uncached one)
+  subspaces    one block's subspace objects for one subject, in one job (every uncached one)
   equivalence  refit one functional-space stimulus-route job's encoders through braintwill on
                that job's films and compare the fit diagnostics with the job's sidecar; also
                checks the design and responses equal ``encoding.film_design``'s exactly
@@ -135,6 +146,7 @@ Usage:
     python harness.py stack --arm <arm> --sub ## --oof reuse
     python harness.py plan --space stack-<arm>.<group> --sub ## --oof reuse
     python harness.py directions --block L --sub ## [--components 0:64] --backend numpy
+    python harness.py subspaces --block L.<tag> --sub ## [--objects S,U] --backend numpy
     python harness.py equivalence --space ebind --scenario primary --pct 0 --draw 0 --target ##
 """
 
@@ -262,17 +274,30 @@ def frame_features(features_root: Path, space: str, ids) -> list[FrameFeatures]:
 
 def film_design(rows: pd.DataFrame, feats: dict[str, FrameFeatures], cleaned: Path):
     """FIR design, per-window z-scored responses and film groups, in row order."""
-    xs, ys, groups, bands, runs = [], [], [], None, {}
+    x, bands = film_fir(rows, feats)
+    y, groups = film_responses(rows, cleaned)
+    return x, y, groups, bands
+
+
+def film_fir(rows: pd.DataFrame, feats: dict[str, FrameFeatures]) -> tuple[np.ndarray, dict]:
+    """The FIR design alone, in row order (``film_design``'s x and bands)."""
+    xs, bands = [], None
     for r in rows.itertuples(index=False):
         tr = float(r.repetition_time)
         starts = fs_enc.film_volume_starts(r.onset, r.start, r.n, tr)
         x, bands = fir_design(feats[r.stimulus_id], starts, tr, fs_enc.DELAYS_TR, end=r.play_s)
         xs.append(x)
+    return np.concatenate(xs), bands
+
+
+def film_responses(rows: pd.DataFrame, cleaned: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Per-window z-scored responses and film groups, in row order (``film_design``'s y and groups)."""
+    ys, groups, runs = [], [], {}
+    for r in rows.itertuples(index=False):
         ys.append(fm.film_series(r, cleaned, runs))
         groups += [r.stimulus_id] * int(r.n)
     groups = np.array(groups)
-    y = fs_enc._zscore_film_windows(np.concatenate(ys), groups)
-    return np.concatenate(xs), y, groups, bands
+    return fs_enc._zscore_film_windows(np.concatenate(ys), groups), groups
 
 
 def response_provenance(windows: pd.DataFrame, cleaned: Path) -> dict:
@@ -2424,6 +2449,159 @@ def cmd_directions(args) -> None:
 
 
 # ---------------------------------------------------------------------------
+# subspace spaces (model-readout settle 3; module docstring)
+# ---------------------------------------------------------------------------
+
+SUB_PREFIX = "sub-"
+#: Where ``rescue.py project --subspaces`` writes a block's subspace coordinates on a corpus.
+SUBSPACE_PROJECTION = Path("subspaces") / "projection"
+#: A subspace object's name as psytwill ``space subspaces`` writes it: ``S``, ``U``, ``U:<m>``,
+#: and draws ``S@dNNN``, ``U@dNNN``, ``ref@dNNN``, ``S@<m>.dNNN``.
+SUB_OBJECT = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?::[A-Za-z0-9_.-]+)?(?:@(?:[A-Za-z0-9_.-]+\.)?d\d{3})?")
+
+
+def subspace_projection(out: Path, block: str, corpus: str) -> Path:
+    return Path(out) / SUBSPACE_PROJECTION / f"{corpus}_{block}.parquet"
+
+
+def subspace_space(block: str, obj: str) -> str:
+    """``sub-<B>/<object>``; B a projectable block or ``<letter>.<tag>``. Loud otherwise."""
+    block_stream(block)
+    if not SUB_OBJECT.fullmatch(obj):
+        raise ValueError(f"subspace object {obj!r} does not match {SUB_OBJECT.pattern}")
+    return f"{SUB_PREFIX}{block}/{obj}"
+
+
+def parse_subspace(space: str) -> tuple[str, str]:
+    """``sub-<B>/<object>`` -> (B, object). Loud on anything else."""
+    if not space.startswith(SUB_PREFIX) or "/" not in space:
+        raise ValueError(f"{space!r}: expected {SUB_PREFIX}<block>/<object>")
+    block, _, obj = space[len(SUB_PREFIX):].partition("/")
+    try:
+        subspace_space(block, obj)
+    except ValueError as exc:
+        raise ValueError(f"{space}: {exc}") from None
+    return block, obj
+
+
+def read_subspace_projection(path: Path) -> tuple[pd.DataFrame, dict]:
+    """``rescue.py project --subspaces``'s table and psytwill's meta (its objects); loud if missing."""
+    w = read_projection(path)  # also requires rescue.py's own sidecar
+    meta_path = Path(path).with_name(Path(path).name.removesuffix(".parquet") + ".meta.json")
+    if not meta_path.exists():
+        raise SystemExit(f"{meta_path} is missing: psytwill's meta lists the subspace objects")
+    meta = json.loads(meta_path.read_text())
+    if "subspaces" not in meta:
+        raise SystemExit(f"{meta_path} is a block projection's meta, not a subspace projection's")
+    return w, meta
+
+
+def subspace_columns(base: pd.DataFrame, obj: str, dim: int) -> list[str]:
+    """Object ``obj``'s ``<obj>__<jjj>`` columns; loud if the table lacks any."""
+    cols = [f"{obj}__{j:03d}" for j in range(dim)]
+    missing = [c for c in cols if c not in base.columns]
+    if missing:
+        raise RuntimeError(f"subspace {obj}: the projection lacks {len(missing)} of its {dim} columns "
+                           f"(e.g. {missing[0]})")
+    return cols
+
+
+def subspace_features(base: pd.DataFrame, block: str, obj: str, dim: int, rows: pd.DataFrame,
+                      grid: dict[str, int], tokens: pd.DataFrame | None, wordless: pd.DataFrame | None
+                      ) -> dict[str, FrameFeatures]:
+    """One object's coordinates per window film under band ``sub-<B>/<object>``, placed as the
+    block's own source is (``film_block_words`` for a chunk-keyed block, else ``film_block_frames``)."""
+    space = subspace_space(block, obj)
+    chunked = block_stream(block) in CHUNK_BLOCKS
+    keys = ["stimulus_id", "chunk_idx"] if chunked else ["stimulus_id", "time"]
+    one = base[keys + subspace_columns(base, obj, dim)]
+    if chunked:
+        return film_block_words(one, tokens, rows, grid, space, wordless)
+    return film_block_frames(one, rows, grid, space)
+
+
+def subspace_objects(meta: dict, names: list[str] | None) -> dict[str, dict]:
+    """The objects to score: every one with a dimension (default) or the named ones."""
+    objs = meta["subspaces"]["objects"]
+    if names:
+        missing = [n for n in names if n not in objs]
+        if missing:
+            raise SystemExit(f"--objects: {', '.join(missing)} not in the projection ({len(objs)} objects)")
+        empty = [n for n in names if not objs[n]["dim"]]
+        if empty:
+            raise SystemExit(f"--objects: {', '.join(empty)} have no dimensions")
+        return {n: objs[n] for n in names}
+    return {n: o for n, o in objs.items() if o["dim"]}
+
+
+def subspace_label(paths: "Paths", block: str, obj: str, info: dict, proj: Path, mask_path: Path) -> dict:
+    return {"space": subspace_space(block, obj), "block": block, "object": obj, "kind": info["kind"],
+            "dim": info["dim"], "gate_passed": info.get("gate_passed"), "draw_of": info.get("draw_of"),
+            "projection": str(proj), "projection_sidecar": json.loads(proj.with_suffix(".json").read_text()),
+            "engine": "one band, primal ridge (himalaya RidgeCV; braintwill RidgeSpec.primal), read (b)'s spec",
+            "modulators": ("the block source's placement (film_block_words for chunk-keyed blocks, "
+                           "film_block_frames otherwise)"),
+            "scored_columns": str(mask_path), "development": "." in block and block.partition(".")[2].startswith("dev")}
+
+
+def subspace_setup(paths: "Paths", block: str, sub: str) -> dict:
+    """What every subspace object of ``block`` shares for ``sub``: the pool's rows, the
+    reliability mask, the masked register, the projection and its objects, and the film grid."""
+    try:
+        block_stream(block)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    proj = subspace_projection(paths.out, block, RESCUE_CORPUS["films"])
+    base, meta = read_subspace_projection(proj)
+    windows = fm.load_windows(paths.derivatives)
+    rows = alignment_rows(windows, sub)
+    mask, mask_path = stack_mask(paths.out, sub)
+    register = masked_register(film_register(windows, paths.cleaned, list(rows["stimulus_id"])), mask)
+    chunked = block_stream(block) in CHUNK_BLOCKS
+    return {"rows": rows, "mask": mask, "mask_path": mask_path, "register": register, "base": base,
+            "meta": meta, "proj": proj, "grid": film_grid(paths.stimfeat, rows),
+            "tokens": film_word_chunks(paths.stimfeat) if chunked else None,
+            "wordless": film_wordless_chunks(paths.stimfeat) if chunked else None}
+
+
+def cmd_subspaces(args) -> None:
+    paths = Paths()
+    cache = ScoreCache(paths.out)
+    spec = direction_spec()
+    t0 = time.time()
+    st = subspace_setup(paths, args.block, args.sub)
+    objs = subspace_objects(st["meta"], [x for x in (args.objects or "").split(",") if x] or None)
+    todo = {}
+    for obj, info in objs.items():
+        space = subspace_space(args.block, obj)
+        feats = subspace_features(st["base"], args.block, obj, info["dim"], st["rows"], st["grid"],
+                                  st["tokens"], st["wordless"])
+        key = cache_key(feature_set_hash(feats.values()), st["register"], spec, f"sub-{args.sub}")
+        if cache.get(key) is not None:
+            print(f"{space}: cached {cache.path(key)}")
+            continue
+        todo[space] = (obj, info, feats, key)
+    if not todo:
+        print(f"every {args.block} subspace object asked for is cached for sub-{args.sub}")
+        return
+    y, groups = film_responses(st["rows"], paths.cleaned)
+    y = np.array(y, dtype=np.float32, copy=True)
+    y[:, ~st["mask"]] = np.nan  # fitted columns: the mask's (as fit_stack)
+    t_load = time.time() - t0
+    print(f"sub-{args.sub}: {len(todo)} of {len(objs)} subspace objects of {args.block} to fit, "
+          f"{int(st['mask'].sum())} of {st['mask'].size} columns", flush=True)
+    _ensure_root(paths.out)
+    for space, (obj, info, feats, key) in todo.items():
+        t1 = time.time()
+        x, bands = film_fir(st["rows"], feats)
+        result = score(x, y, groups, {space: bands[space]}, spec, backend=args.backend)
+        seconds = {"load": round(t_load, 1), "score": round(time.time() - t1, 1)}
+        dest = cache.put(key, result, provenance(args.backend, seconds),
+                         subspace_label(paths, args.block, obj, info, st["proj"], st["mask_path"]))
+        print(f"{space}: wrote {dest} ({info['dim']} dims, {seconds['score']} s)", flush=True)
+
+
+# ---------------------------------------------------------------------------
 # equivalence with functional-space's encoders (settle 2)
 # ---------------------------------------------------------------------------
 
@@ -2529,6 +2707,11 @@ def main() -> None:
     d.add_argument("--sub", required=True)
     d.add_argument("--components", help="A:B: components A..B-1 only (default: every component)")
     d.add_argument("--backend", default="numpy", help="the primal route is cheap on CPU")
+    u = sub.add_parser("subspaces")
+    u.add_argument("--block", required=True, help="a projectable block (V, A, L) or <letter>.<tag>")
+    u.add_argument("--sub", required=True)
+    u.add_argument("--objects", help="comma-separated objects (default: every object with a dimension)")
+    u.add_argument("--backend", default="numpy", help="primal route; torch_cuda for wide objects")
     e = sub.add_parser("equivalence")
     e.add_argument("--space", choices=list(fs_enc.FEATURE_SPACES), required=True)
     e.add_argument("--scenario", default="primary")
@@ -2538,7 +2721,7 @@ def main() -> None:
     e.add_argument("--backend", default="torch_cuda")
     args = ap.parse_args()
     {"plan": cmd_plan, "score": cmd_score, "stack": cmd_stack, "directions": cmd_directions,
-     "equivalence": cmd_equivalence}[args.verb](args)
+     "subspaces": cmd_subspaces, "equivalence": cmd_equivalence}[args.verb](args)
 
 
 if __name__ == "__main__":
