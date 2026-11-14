@@ -73,9 +73,10 @@ as a second band, so one member's unique variance is the difference of two cache
 ``<B>`` is a block letter or a named projection ``<letter>.<tag>`` (``rescue-A.interp``), so
 several fits of one block's stream are scored side by side (``rescue.py compare``).
 The base is ``rescue.py project``'s projection of the reduced block's manifest; the member
-must be one of the block's stream's ``MODEL_TABLES``. On films both bands are window-centred
-modulators (as model spaces); on tb-enc (V only, image-keyed as ``TB_SPACES``) both are raw
-per-image values. Their spec keeps per-group sums (``RESCUE_SPEC``), so ``rescue.py read``
+must be one of the block's stream's ``MODEL_TABLES`` (V, A) or ``CHUNK_MODELS`` (L). On films
+V and A's bands are window-centred modulators (as model spaces); L's base and member are
+chunk-level, placed on the word grid beside a word-on band (``film_rescue_chunk_features``).
+On tb-enc (V only, image-keyed as ``TB_SPACES``) both bands are raw per-image values. Their spec keeps per-group sums (``RESCUE_SPEC``), so ``rescue.py read``
 bootstraps over groups without refitting.
 
 Commonality spaces (``common-<arm>.<g>[+<g>...]``, mmmdata-agents model-readout settle 2b):
@@ -974,8 +975,19 @@ def load_film_text(stimfeat: Path, rows: pd.DataFrame, model: str, onsets: pd.Da
 # ---------------------------------------------------------------------------
 
 RESCUE_PREFIX = "rescue-"
-#: A block's members' film stream: the composed table its member models come from.
-RESCUE_FILM_TABLE = {"V": "movies_frames", "A": "movies_audio_frames"}
+#: A block's members' film stream: the composed table its member models come from. L's is the
+#: chunk table (its fit rows are transcript chunks), so an L rescue is placed on the word grid
+#: (``film_rescue_chunk_features``).
+RESCUE_FILM_TABLE = {"V": "movies_frames", "A": "movies_audio_frames", "L": "movies_transcript_chunks"}
+#: A chunk table's models an L rescue may add, each at the grain the block was fit at: release
+#: 0.1.0's L_v0.4 members. They are not ``MODEL_TABLES`` models: read (b)'s text spaces are the
+#: word table's word-grain models, a different feature of the same name.
+CHUNK_MODELS = {"movies_transcript_chunks": (
+    "clap_text", "clip_text", "ebind_text", "emotion", "fasttext", "gpt2_surprisal", "interaction",
+    "lexical_norms", "minilm", "readability", "sentiment", "word2vec", "wordform")}
+#: Store features that are bookkeeping, never a model's feature (psytwill ``store``'s
+#: ``RESERVED_FEATURE_SUFFIXES``): e.g. ``fasttext_n_pooled``, the tokens a chunk mean pooled.
+BOOKKEEPING_SUFFIXES = ("_n_pooled",)
 #: Blocks scored on tb-enc: image-keyed only, for the reason at ``TB_SPACES``.
 RESCUE_TB_BLOCKS = ("V",)
 #: The shared1000 image table a V member is read from on tb-enc.
@@ -988,11 +1000,11 @@ RESCUE_CORPUS = {"films": "movies", "tb-enc": "shared1000"}
 #: label-selected arms) are scored side by side. The tag names the projection file only.
 RESCUE_TAG = re.compile(r"[a-z0-9][a-z0-9_-]*")
 #: Blocks ``rescue.py project`` can project onto the films, and the films store table each
-#: one's members come from. Rescue spaces stay V and A; every block here is a ``block:<B>``
-#: arm source (model-readout R12). L's fit rows are transcript chunks
-#: (key ``stimulus_id,chunk_idx``), so its projection is chunk-keyed and is placed on the word
-#: grid (``film_block_words``); V's and A's are frame-keyed (``film_block_frames``).
-BLOCK_FILM_TABLE = {**RESCUE_FILM_TABLE, "L": "movies_transcript_chunks"}
+#: one's members come from. Every block here is a rescue block and a ``block:<B>`` arm source
+#: (model-readout R12). L's fit rows are transcript chunks (key ``stimulus_id,chunk_idx``), so
+#: its projection is chunk-keyed and is placed on the word grid (``film_block_words``); V's and
+#: A's are frame-keyed (``film_block_frames``).
+BLOCK_FILM_TABLE = dict(RESCUE_FILM_TABLE)
 #: Blocks whose projection rows are transcript chunks, not frames.
 CHUNK_BLOCKS = ("L",)
 
@@ -1027,10 +1039,35 @@ def parse_rescue(space: str) -> tuple[str, str | None]:
         if "+" in space:
             raise ValueError(f"{space}: no member after '+'")
         return block, None
-    if member not in MODEL_TABLES[table]:
-        raise ValueError(f"{space}: {member!r} is not a model of {table} "
-                         f"({', '.join(MODEL_TABLES[table])})")
+    models = rescue_models(table)
+    if member not in models:
+        raise ValueError(f"{space}: {member!r} is not a model of {table} ({', '.join(models)})")
     return block, member
+
+
+def rescue_models(table: str) -> tuple[str, ...]:
+    """The models a rescue on ``table`` may add: a chunk table's L members, or a frame table's
+    read-(b) models."""
+    return CHUNK_MODELS.get(table) or MODEL_TABLES[table]
+
+
+def load_chunk_member(stimfeat: Path, table: str, member: str, rows: pd.DataFrame) -> pd.DataFrame:
+    """One chunk-level model's films rows, wide: ``stimulus_id``, ``chunk_idx`` and its features
+    (bookkeeping features dropped), one row per chunk. A repeated chunk/feature row, or a
+    window film with no rows while the projection has some, is an error downstream
+    (``film_block_words``)."""
+    src = Path(stimfeat) / "psytwill" / f"{table}_features.parquet"
+    long = pd.read_parquet(src, columns=["stimulus_id", "chunk_idx", "feature", "value"],
+                           filters=[("model", "==", member),
+                                    ("stimulus_id", "in", sorted(rows["stimulus_id"]))])
+    if long.empty:
+        raise RuntimeError(f"{src}: no rows for model {member!r} in the window films")
+    long = long[~long["feature"].str.endswith(BOOKKEEPING_SUFFIXES)]
+    if long.duplicated(["stimulus_id", "chunk_idx", "feature"]).any():
+        raise RuntimeError(f"{member}: a chunk repeats a feature in {src}")
+    wide = long.pivot(index=["stimulus_id", "chunk_idx"], columns="feature", values="value")
+    wide = wide[sorted(wide.columns)].reset_index()
+    return wide.assign(chunk_idx=wide["chunk_idx"].astype(np.int64))
 
 
 def rescue_projection(out: Path, block: str, corpus: str) -> Path:
@@ -1126,6 +1163,32 @@ def image_rescue_features(base: pd.DataFrame, member_long: pd.DataFrame | None, 
     if not np.isfinite(x).all():
         raise RuntimeError(f"rescue {member or 'base'}: {int((~np.isfinite(x)).sum())} undefined image values")
     return {sid: FrameFeatures(sid, [0.0], x[i:i + 1], 1.0, bands) for i, sid in enumerate(wide.index)}
+
+
+def film_rescue_chunk_features(base: pd.DataFrame, tokens: pd.DataFrame, rows: pd.DataFrame,
+                               grid: dict[str, int], member_wide: pd.DataFrame | None = None,
+                               member: str | None = None, wordless: pd.DataFrame | None = None
+                               ) -> tuple[dict[str, FrameFeatures], list[str]]:
+    """A chunk-keyed block's rescue (L) per window film: band ``onoff`` (word-on), band
+    ``base`` (the projection), then the member's band if any (psytwill-space-next DECIDED
+    2026-10-23: L enters film encoding as centred modulators × a speech-on band).
+
+    The base and the member are placed alike, on the word grid (``film_block_words``: each
+    token takes its chunk's values, centred over the window's word-on bins, 0 elsewhere), so
+    the ``onoff`` and ``base`` bands are identical with or without a member, and ΔR² is the
+    member's modulators alone. Word-on marks the bins holding a token onset, the same bins
+    the modulators are defined on. ``tokens`` is ``film_word_chunks``'s table; ``wordless``
+    (``film_wordless_chunks``) drops the chunks no token can place, from both tables.
+    """
+    parts = [film_word_on(tokens, rows, grid),
+             film_block_words(base, tokens, rows, grid, "base", wordless)]
+    names: list[str] = []
+    if member is not None:
+        if member in ("base", ONOFF_SPACE):
+            raise ValueError(f"member {member!r} collides with a fixed band name")
+        parts.append(film_block_words(member_wide, tokens, rows, grid, member, wordless))
+        names = [c for c in member_wide.columns if c not in ("stimulus_id", "chunk_idx")]
+    return stack_bands(parts), names
 
 
 # ---------------------------------------------------------------------------
@@ -2023,23 +2086,34 @@ class Request:
                 self.feats, self.label = film_common_features(paths, self.rows, *common)
             elif rescue:
                 block, member = rescue
+                stream = rescue_stream(block)
                 src = rescue_projection(paths.out, block, RESCUE_CORPUS["films"])
                 base = read_projection(src)
-                long, gated = None, set()
-                if member is not None:
-                    long = load_model_long(paths.stimfeat, RESCUE_FILM_TABLE[rescue_stream(block)], member,
-                                           self.rows)
-                    gated = declared_undefined(paths.stimfeat).get(member, set())
-                feats, names = film_rescue_features(base, self.rows, long, member, gated)
                 gates = None
-                if member is not None:
-                    feats, gates = prune_indicators(feats, member, names)
+                if stream in CHUNK_BLOCKS:  # word grid: word-on + base + member (DECIDED 2026-10-23)
+                    wide = (load_chunk_member(paths.stimfeat, RESCUE_FILM_TABLE[stream], member, self.rows)
+                            if member is not None else None)
+                    feats, _ = film_rescue_chunk_features(
+                        base, film_word_chunks(paths.stimfeat), self.rows, film_grid(paths.stimfeat, self.rows),
+                        wide, member, film_wordless_chunks(paths.stimfeat))
+                    modulators = ("band onoff = word-on (bins holding a token onset); base and member: each "
+                                  "token takes its chunk's values, each band minus its mean over the window's "
+                                  "word-on bins, 0 elsewhere")
+                else:
+                    long, gated = None, set()
+                    if member is not None:
+                        long = load_model_long(paths.stimfeat, RESCUE_FILM_TABLE[stream], member, self.rows)
+                        gated = declared_undefined(paths.stimfeat).get(member, set())
+                    feats, names = film_rescue_features(base, self.rows, long, member, gated)
+                    if member is not None:
+                        feats, gates = prune_indicators(feats, member, names)
+                    modulators = "each band minus its mean over the film window's bins"
                 self.feats = feats
                 self.label = {"space": args.space, "base": str(src),
                               "base_sidecar": json.loads(src.with_suffix(".json").read_text()),
-                              "member": member, "modulators": "each band minus its mean over the film window's bins",
+                              "member": member, "modulators": modulators,
                               **({"member_source": str(paths.stimfeat / "psytwill"
-                                                       / f"{RESCUE_FILM_TABLE[rescue_stream(block)]}_features.parquet"),
+                                                       / f"{RESCUE_FILM_TABLE[stream]}_features.parquet"),
                                   "gates": gates} if member else {})}
             elif joint or model_space or args.space == ONOFF_SPACE:
                 models = list(TB_TS_SPACES[args.space])

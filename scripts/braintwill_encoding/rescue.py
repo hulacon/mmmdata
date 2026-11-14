@@ -18,7 +18,7 @@ Verbs:
            projects through fewer components than the fit's k: a row is placed only where
            its present members span k directions, so a block with gated (often absent)
            members needs k at or below its always-present members' whitened rank to place
-           every frame. Rescue spaces read V and A; any projected block is a ``block:<B>``
+           every frame. Every projected block is a rescue block and a ``block:<B>``
            commonality-arm source (``harness.film_block_features``). ``--subspaces`` writes a
            ``psytwill space subspaces`` result's objects instead (films only), to
            ``<derivatives>/encoding_harness/subspaces/projection/movies_<B>.parquet``: the

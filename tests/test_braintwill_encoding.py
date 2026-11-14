@@ -687,7 +687,7 @@ def test_parse_rescue_names_a_block_and_an_optional_member(harness):
     assert harness.parse_rescue("rescue-V") == ("V", None)
     assert harness.parse_rescue("rescue-V+clip") == ("V", "clip")
     assert harness.parse_rescue("rescue-A+loudness") == ("A", "loudness")
-    for bad in ("rescue-L", "rescue-V+", "rescue-V+loudness", "rescue-A+clip", "model-clip"):
+    for bad in ("rescue-X", "rescue-V+", "rescue-V+loudness", "rescue-A+clip", "model-clip"):
         with pytest.raises(ValueError):
             harness.parse_rescue(bad)
 
@@ -696,7 +696,7 @@ def test_parse_rescue_takes_a_named_projection_of_a_block(harness, tmp_path):
     assert harness.parse_rescue("rescue-A.interp") == ("A.interp", None)
     assert harness.parse_rescue("rescue-A.ao-all+ebind_audio") == ("A.ao-all", "ebind_audio")
     assert harness.rescue_stream("A.interp") == "A" and harness.rescue_stream("V") == "V"
-    for bad in ("rescue-A.", "rescue-A.Interp", "rescue-L.x", "rescue-A.x+clip", "rescue-.x"):
+    for bad in ("rescue-A.", "rescue-A.Interp", "rescue-X.x", "rescue-A.x+clip", "rescue-.x"):
         with pytest.raises(ValueError):
             harness.parse_rescue(bad)
     # the tag names the projection file; an untagged block keeps its old path
