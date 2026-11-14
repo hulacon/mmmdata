@@ -844,6 +844,11 @@ def test_subspace_space_names_round_trip_and_refuse_bad_names(harness):
             harness.parse_subspace(bad)
 
 
+def test_subspace_spec_is_the_direction_spec_with_group_sums(harness):
+    spec, d = harness.subspace_spec(), harness.direction_spec()
+    assert spec.group_sums and spec.ridge == d.ridge and spec.outer_folds == d.outer_folds
+
+
 def test_subspace_objects_default_to_every_object_with_a_dimension(harness):
     meta = {"subspaces": {"objects": {"S": {"kind": "shared", "dim": 2}, "U:b": {"kind": "unique", "dim": 0},
                                       "U": {"kind": "unique-union", "dim": 1}}}}

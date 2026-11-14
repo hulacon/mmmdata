@@ -110,8 +110,8 @@ Subspace spaces (``sub-<B>/<object>``, model-readout settle 3): one psytwill sub
 of a block (``S``, ``U``, ``U:<member>`` or a draw, ``psytwill space subspaces``) on the films,
 from ``rescue.py project --subspaces``'s table: its orthonormal coordinates (orthonormal on the
 block's fit rows), placed as the block's own source is, fitted alone as one band by the
-primal route at read (b)'s spec. Films only; the films reliability mask's columns only; no
-per-group sums. One ``subspaces`` job per subject and block loads the responses once and
+primal route at read (b)'s spec, keeping per-group sums (its read is a paired film
+bootstrap). Films only; the films reliability mask's columns only. One ``subspaces`` job per subject and block loads the responses once and
 caches each object as its own unit, keyed by its own columns' content, so a draw equal to
 its parent (a side with exactly d dimensions) is one cached unit. The harness never
 projects: every object's coordinates come from the table psytwill wrote.
@@ -2460,6 +2460,14 @@ SUBSPACE_PROJECTION = Path("subspaces") / "projection"
 SUB_OBJECT = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?::[A-Za-z0-9_.-]+)?(?:@(?:[A-Za-z0-9_.-]+\.)?d\d{3})?")
 
 
+def subspace_spec() -> EncodingSpec:
+    """``direction_spec`` keeping per-group sums: settle 3's read is a paired film bootstrap
+    over objects (``braintwill.encoding.combination_stats``)."""
+    from dataclasses import replace
+
+    return replace(direction_spec(), group_sums=True)
+
+
 def subspace_projection(out: Path, block: str, corpus: str) -> Path:
     return Path(out) / SUBSPACE_PROJECTION / f"{corpus}_{block}.parquet"
 
@@ -2567,7 +2575,7 @@ def subspace_setup(paths: "Paths", block: str, sub: str) -> dict:
 def cmd_subspaces(args) -> None:
     paths = Paths()
     cache = ScoreCache(paths.out)
-    spec = direction_spec()
+    spec = subspace_spec()
     t0 = time.time()
     st = subspace_setup(paths, args.block, args.sub)
     objs = subspace_objects(st["meta"], [x for x in (args.objects or "").split(",") if x] or None)
