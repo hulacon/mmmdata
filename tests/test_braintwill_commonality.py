@@ -611,12 +611,80 @@ def test_block_source_refuses_an_unknown_block_or_a_bad_tag(harness, src):
         harness.common_source(src)
 
 
-def test_rescue_spaces_stay_v_and_a_while_l_is_projectable(harness):
+def test_every_projectable_block_is_a_rescue_block(harness):
     assert harness.block_stream("L.dev") == "L" and harness.block_stream("V") == "V"
-    with pytest.raises(ValueError):
-        harness.rescue_stream("L")
-    with pytest.raises(ValueError):
-        harness.parse_rescue("rescue-L")
+    assert set(harness.BLOCK_FILM_TABLE) == set(harness.RESCUE_FILM_TABLE) == {"V", "A", "L"}
+    assert harness.rescue_stream("L") == "L"
+    assert harness.parse_rescue("rescue-L") == ("L", None)
+    assert harness.parse_rescue("rescue-L.base+interaction") == ("L.base", "interaction")
+    # an L rescue adds chunk-level L members, never a frame model; V and A never a chunk member
+    for bad in ("rescue-L+clip", "rescue-L+lexical_norms_experiential", "rescue-V+interaction",
+                "rescue-A+sentiment"):
+        with pytest.raises(ValueError):
+            harness.parse_rescue(bad)
+
+
+def _l_rescue_inputs(harness, n=40):
+    rows, win, idx = _l_window(harness, n)
+    t = harness.fs_enc.FRAME_S
+    b0, b1, b2 = (int(i) for i in idx[[0, 2, 5]])
+    tokens = pd.DataFrame({"stimulus_id": "film-a", "word_idx": [0, 1, 2, 3],
+                           "onset": [b0 * t, b1 * t, b1 * t + 0.1, b2 * t], "chunk_idx": [0, 0, 1, 2]})
+    base = pd.DataFrame({"stimulus_id": "film-a", "chunk_idx": [0, 1, 2, 3],
+                         "c0": [1.0, 3.0, 8.0, 99.0], "c1": [0.0, 2.0, 4.0, 99.0]})
+    member = pd.DataFrame({"stimulus_id": "film-a", "chunk_idx": [0, 1, 2, 3], "m_a": [2.0, 4.0, 6.0, np.nan]})
+    wordless = pd.DataFrame({"stimulus_id": ["film-a"], "chunk_idx": [3]})
+    return rows, tokens, base, member, wordless, (b0, b1, b2), {"film-a": n}
+
+
+def test_film_rescue_chunk_puts_word_on_and_the_base_unchanged_beside_a_member(harness):
+    rows, tokens, base, member, wordless, (b0, b1, b2), grid = _l_rescue_inputs(harness)
+    alone, none = harness.film_rescue_chunk_features(base, tokens, rows, grid, wordless=wordless)
+    both, names = harness.film_rescue_chunk_features(base, tokens, rows, grid, member, "interaction", wordless)
+    a, b = alone["film-a"], both["film-a"]
+    assert a.bands == {"onoff": slice(0, 1), "base": slice(1, 3)} and none == []
+    assert b.bands == {"onoff": slice(0, 1), "base": slice(1, 3), "interaction": slice(3, 4)}
+    assert names == ["m_a"]
+    np.testing.assert_array_equal(a.x, b.x[:, :3])
+    on = np.zeros(a.x.shape[0], bool)
+    on[[b0, b1, b2]] = True
+    np.testing.assert_array_equal(a.x[:, 0], on.astype(float))  # word-on: bins holding a token onset
+    # the member is placed as the base is: b1 holds a chunk-0 and a chunk-1 word -> (2 + 4) / 2
+    raw = {b0: 2.0, b1: 3.0, b2: 6.0}
+    mean = np.mean(list(raw.values()))
+    for k, v in raw.items():
+        assert b.x[k, 3] == pytest.approx(v - mean)
+    assert not b.x[~on, 1:].any()  # modulators are 0 off word-on, never filled across silence
+    # the wordless chunk (3) is dropped from both tables: its 99s and its undefined value never land
+    assert np.isfinite(b.x).all() and np.abs(b.x).max() < 50
+
+
+def test_film_rescue_chunk_refuses_a_member_short_of_a_token_chunk_and_a_band_name_clash(harness):
+    rows, tokens, base, member, wordless, _, grid = _l_rescue_inputs(harness)
+    with pytest.raises(RuntimeError, match="hold words but have no projection row"):
+        harness.film_rescue_chunk_features(base, tokens, rows, grid, member[member["chunk_idx"] != 1],
+                                           "interaction", wordless)
+    for clash in ("base", "onoff"):
+        with pytest.raises(ValueError, match="collides"):
+            harness.film_rescue_chunk_features(base, tokens, rows, grid, member, clash, wordless)
+
+
+def test_load_chunk_member_is_wide_per_chunk_and_drops_bookkeeping(harness, tmp_path):
+    (tmp_path / "psytwill").mkdir()
+    long = pd.DataFrame({"stimulus_id": "film-a", "chunk_idx": [0, 0, 0, 1, 1, 1, 0],
+                         "model": ["fasttext"] * 6 + ["sentiment"],
+                         "feature": ["fasttext_001", "fasttext_000", "fasttext_n_pooled"] * 2 + ["sentiment_positive"],
+                         "value": [1.0, 2.0, 5.0, 3.0, 4.0, 6.0, 0.5]})
+    long.to_parquet(tmp_path / "psytwill" / "movies_transcript_chunks_features.parquet")
+    rows = _film_row()
+    got = harness.load_chunk_member(tmp_path, "movies_transcript_chunks", "fasttext", rows)
+    assert list(got.columns) == ["stimulus_id", "chunk_idx", "fasttext_000", "fasttext_001"]
+    assert got["chunk_idx"].tolist() == [0, 1] and got["fasttext_000"].tolist() == [2.0, 4.0]
+    with pytest.raises(RuntimeError, match="no rows for model 'interaction'"):
+        harness.load_chunk_member(tmp_path, "movies_transcript_chunks", "interaction", rows)
+    pd.concat([long, long.iloc[:1]]).to_parquet(tmp_path / "psytwill" / "movies_transcript_chunks_features.parquet")
+    with pytest.raises(RuntimeError, match="repeats a feature"):
+        harness.load_chunk_member(tmp_path, "movies_transcript_chunks", "fasttext", rows)
 
 
 def _l_window(harness, n=40):
