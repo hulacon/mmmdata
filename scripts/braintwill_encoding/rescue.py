@@ -19,7 +19,10 @@ Verbs:
            its present members span k directions, so a block with gated (often absent)
            members needs k at or below its always-present members' whitened rank to place
            every frame. Rescue spaces read V and A; any projected block is a ``block:<B>``
-           commonality-arm source (``harness.film_block_features``)
+           commonality-arm source (``harness.film_block_features``). ``--subspaces`` writes a
+           ``psytwill space subspaces`` result's objects instead (films only), to
+           ``<derivatives>/encoding_harness/subspaces/projection/movies_<B>.parquet``: the
+           harness's ``subspaces`` verb scores each one
   read     one register's rule over every subject for a block and its members -> JSON + CSV
   compare  descriptive, no rule: named arms (any harness spaces with per-group sums) side by
            side per ROI, with paired bootstrap intervals for each arm and each named contrast
@@ -38,6 +41,7 @@ Usage:
     python rescue.py project --block V --corpus movies --manifest <fit>.json
     python rescue.py read --block V --members m1,m2 --register films --out <dir>
     python rescue.py project --block A.<tag> --corpus movies --manifest <fit>.json [--k <k>]
+    python rescue.py project --block L.<tag> --corpus movies --manifest <fit>.json --subspaces <sub>.json
     python rescue.py compare --name <name> --register films --out <dir> \
         --arms E=model-ebind_audio,P=rescue-A.<tag> --contrasts P-E
 """
@@ -142,18 +146,28 @@ def cmd_project(args) -> None:
     if m.get("key") and h.block_stream(args.block) in h.CHUNK_BLOCKS and m["key"] != "stimulus_id,chunk_idx":
         raise SystemExit(f"{manifest} is keyed {m['key']!r}; a chunk-keyed block's films rows are stimulus_id,chunk_idx")
     k = projection_k(m, args.k)
+    subspaces = Path(args.subspaces).resolve() if args.subspaces else None
+    if subspaces is not None:
+        if args.k is not None:
+            raise SystemExit("--subspaces writes each object's own coordinates: drop --k")
+        if args.corpus != h.RESCUE_CORPUS["films"]:
+            raise SystemExit("subspace spaces are scored on the films only")
+        if not subspaces.exists():
+            raise SystemExit(f"{subspaces} is missing; run `psytwill space subspaces --like {manifest}`")
     weights = manifest.with_name(m["weights"])
     if not weights.exists():
         raise SystemExit(f"{weights} (the manifest's weights) is missing")
     features, key = projection_inputs(paths.stimfeat, args.block, args.corpus)
     if not features.exists():
         raise SystemExit(f"{features} is missing")
-    out = h.rescue_projection(paths.out, args.block, args.corpus)
+    out = (h.rescue_projection(paths.out, args.block, args.corpus) if subspaces is None
+           else h.subspace_projection(paths.out, args.block, args.corpus))
     if out.exists() and not args.force:
         raise SystemExit(f"{out} exists; a projection is replaced only with --force")
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [str(psytwill), "space", "project", "--features", str(features), *key, "--space", str(manifest),
-           "--chunk-size", str(args.chunk_size), "--k", str(k), "-o", str(out)]
+           "--chunk-size", str(args.chunk_size),
+           *(["--k", str(k)] if subspaces is None else ["--subspaces", str(subspaces)]), "-o", str(out)]
     print("+", " ".join(cmd), flush=True)
     subprocess.run(cmd, check=True)
     version = subprocess.run([str(psytwill), "--version"], check=True, capture_output=True, text=True).stdout.strip()
@@ -164,7 +178,9 @@ def cmd_project(args) -> None:
         "weights": {"path": str(weights), "sha256": sha256(weights)},
         "features": {"path": str(features), "bytes": features.stat().st_size,
                      "mtime": _dt.datetime.fromtimestamp(features.stat().st_mtime, _dt.timezone.utc).isoformat()},
-        "view": "covariance (psytwill space project default)",
+        "view": ("covariance (psytwill space project default)" if subspaces is None
+                 else "subspace objects' orthonormal coordinates (psytwill space project --subspaces)"),
+        **({"subspaces": {"path": str(subspaces), "sha256": sha256(subspaces)}} if subspaces is not None else {}),
         "psytwill_version": version, "command": cmd,
         "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
     }
@@ -477,6 +493,8 @@ def main() -> None:
     p.add_argument("--chunk-size", type=int, default=10, help="stimulus_ids per projection chunk")
     p.add_argument("--k", type=int, help="project through the first K block components (default: the fit's k); "
                    "a row is placed only where its present members span K directions")
+    p.add_argument("--subspaces", help="a `psytwill space subspaces` .json for this manifest: write its objects' "
+                   "coordinates (films only) to the subspace projection the harness's `subspaces` verb reads")
     p.add_argument("--force", action="store_true")
     r = sub.add_parser("read")
     r.add_argument("--block", required=True, type=_block, help="a block letter or <letter>.<tag>")

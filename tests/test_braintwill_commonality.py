@@ -830,3 +830,88 @@ def test_roi_means_and_holm_over_blocks(uv):
     adj = uv.holm_over_blocks({"V": np.array([0.01, 0.2]), "A": np.array([0.04, 0.03]), "L": np.array([0.5, 0.01])})
     np.testing.assert_allclose([adj["V"][0], adj["A"][0], adj["L"][0]], [0.03, 0.08, 0.5])
     np.testing.assert_allclose([adj["L"][1], adj["A"][1], adj["V"][1]], [0.03, 0.06, 0.2])
+
+
+# --- subspace spaces (settle 3): one psytwill subspace object at a time, primal route -------
+
+def test_subspace_space_names_round_trip_and_refuse_bad_names(harness):
+    for block, obj in (("L", "S"), ("L.v010", "U:minilm"), ("A.x", "S@d003"), ("V", "S@faces_extent.d019"),
+                       ("L", "ref@d000"), ("L", "U@d012")):
+        space = harness.subspace_space(block, obj)
+        assert space == f"sub-{block}/{obj}" and harness.parse_subspace(space) == (block, obj)
+    for bad in ("sub-L", "sub-X/S", "sub-L/", "sub-L/S@d3", "sub-L/S@x.d03", "sub-L/9S", "dir-L.c001"):
+        with pytest.raises(ValueError):
+            harness.parse_subspace(bad)
+
+
+def test_subspace_spec_is_the_direction_spec_with_group_sums(harness):
+    spec, d = harness.subspace_spec(), harness.direction_spec()
+    assert spec.group_sums and spec.ridge == d.ridge and spec.outer_folds == d.outer_folds
+
+
+def test_subspace_objects_default_to_every_object_with_a_dimension(harness):
+    meta = {"subspaces": {"objects": {"S": {"kind": "shared", "dim": 2}, "U:b": {"kind": "unique", "dim": 0},
+                                      "U": {"kind": "unique-union", "dim": 1}}}}
+    assert list(harness.subspace_objects(meta, None)) == ["S", "U"]
+    assert list(harness.subspace_objects(meta, ["U"])) == ["U"]
+    with pytest.raises(SystemExit, match="not in the projection"):
+        harness.subspace_objects(meta, ["U:z"])
+    with pytest.raises(SystemExit, match="no dimensions"):
+        harness.subspace_objects(meta, ["U:b"])
+
+
+def test_subspace_features_place_one_object_as_its_block_source_would(harness):
+    n = 40
+    rows, win, idx = _l_window(harness, n)
+    t = harness.fs_enc.FRAME_S
+    # frame-keyed (V/A): the object's columns alone, placed and centred as film_block_frames does
+    rng = np.random.default_rng(4)
+    times = (np.arange(n) + 0.5) * t
+    frames = pd.DataFrame({"stimulus_id": "film-a", "time": times, "S__000": rng.standard_normal(n),
+                           "S__001": rng.standard_normal(n), "U__000": rng.standard_normal(n)})
+    got = harness.subspace_features(frames, "A.x", "S", 2, rows, {"film-a": n}, None, None)["film-a"]
+    ref = harness.film_block_frames(frames[["stimulus_id", "time", "S__000", "S__001"]], rows, {"film-a": n},
+                                    "sub-A.x/S")["film-a"]
+    np.testing.assert_array_equal(got.x, ref.x)
+    assert got.bands == {"sub-A.x/S": slice(0, 2)}
+    # chunk-keyed (L): placed on the word grid
+    tokens = pd.DataFrame({"stimulus_id": "film-a", "word_idx": [0, 1], "onset": [idx[0] * t, idx[2] * t],
+                           "chunk_idx": [0, 1]})
+    chunks = pd.DataFrame({"stimulus_id": "film-a", "chunk_idx": [0, 1], "U__000": [1.0, 3.0],
+                           "S__000": [5.0, 5.0]})
+    f = harness.subspace_features(chunks, "L.x", "U", 1, rows, {"film-a": n}, tokens, None)["film-a"]
+    assert f.bands == {"sub-L.x/U": slice(0, 1)} and f.x[idx[0], 0] == -1.0 and f.x[idx[2], 0] == 1.0
+    with pytest.raises(RuntimeError, match="lacks 1 of its 2 columns"):
+        harness.subspace_features(chunks, "L.x", "U", 2, rows, {"film-a": n}, tokens, None)
+
+
+def test_read_subspace_projection_needs_both_sidecars_and_a_subspace_meta(harness, tmp_path):
+    path = tmp_path / "movies_L.x.parquet"
+    pd.DataFrame({"stimulus_id": ["film-a"], "chunk_idx": ["0"], "S__000": [0.1]}).to_parquet(path)
+    with pytest.raises(SystemExit, match="sidecar"):
+        harness.read_subspace_projection(path)
+    path.with_suffix(".json").write_text("{}")
+    with pytest.raises(SystemExit, match="meta.json is missing"):
+        harness.read_subspace_projection(path)
+    meta = tmp_path / "movies_L.x.meta.json"
+    meta.write_text('{"block": "L"}')
+    with pytest.raises(SystemExit, match="not a subspace projection"):
+        harness.read_subspace_projection(path)
+    meta.write_text('{"subspaces": {"objects": {"S": {"kind": "shared", "dim": 1}}}}')
+    w, m = harness.read_subspace_projection(path)
+    assert w["chunk_idx"].tolist() == [0] and m["subspaces"]["objects"]["S"]["dim"] == 1
+
+
+def test_film_design_is_film_fir_plus_film_responses(harness, monkeypatch):
+    rows = _film_row(start=7, n=6, tr=1.5).assign(play_s=18.0)
+    n = 40
+    f = harness.FrameFeatures("film-a", np.arange(n) * 0.5, np.random.default_rng(5).standard_normal((n, 2)), 0.5,
+                              {"b": slice(0, 2)})
+    series = np.random.default_rng(6).standard_normal((6, 3))
+    monkeypatch.setattr(harness.fm, "film_series", lambda r, cleaned, runs: series)
+    x, y, groups, bands = harness.film_design(rows, {"film-a": f}, Path("unused"))
+    x2, bands2 = harness.film_fir(rows, {"film-a": f})
+    y2, g2 = harness.film_responses(rows, Path("unused"))
+    np.testing.assert_array_equal(x, x2)
+    np.testing.assert_array_equal(y, y2)
+    assert bands == bands2 and (groups == g2).all()
