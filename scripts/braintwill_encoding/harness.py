@@ -2572,6 +2572,13 @@ def subspace_setup(paths: "Paths", block: str, sub: str) -> dict:
             "wordless": film_wordless_chunks(paths.stimfeat) if chunked else None}
 
 
+def subspace_key(st: dict, block: str, obj: str, info: dict, sub: str) -> tuple[dict[str, FrameFeatures], dict]:
+    """Object ``obj``'s features and cache key for ``sub`` (``subspaces`` writes it; a reader looks it up)."""
+    feats = subspace_features(st["base"], block, obj, info["dim"], st["rows"], st["grid"], st["tokens"],
+                              st["wordless"])
+    return feats, cache_key(feature_set_hash(feats.values()), st["register"], subspace_spec(), f"sub-{sub}")
+
+
 def cmd_subspaces(args) -> None:
     paths = Paths()
     cache = ScoreCache(paths.out)
@@ -2582,9 +2589,7 @@ def cmd_subspaces(args) -> None:
     todo = {}
     for obj, info in objs.items():
         space = subspace_space(args.block, obj)
-        feats = subspace_features(st["base"], args.block, obj, info["dim"], st["rows"], st["grid"],
-                                  st["tokens"], st["wordless"])
-        key = cache_key(feature_set_hash(feats.values()), st["register"], spec, f"sub-{args.sub}")
+        feats, key = subspace_key(st, args.block, obj, info, args.sub)
         if cache.get(key) is not None:
             print(f"{space}: cached {cache.path(key)}")
             continue
