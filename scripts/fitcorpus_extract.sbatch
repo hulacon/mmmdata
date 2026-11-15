@@ -79,6 +79,24 @@
 # partition; 208G held it. The compute QOS caps one user at mem=4T, so the
 # array's own throttle is unnecessary. Runtime is ~3-4.6x real time.
 #
+# Per-item corpora (`stage.py --per-item`: twp-unpresented, fma, musopen, one
+# clip per item, thousands of units) run batched: the driver scores many items
+# per aud2psy call, each model loaded once (psytwill >= 0.63.0, aud2psy >= 0.24.0).
+# One array task per item would reload every model per item, so set
+# ITEMS_PER_TASK: task i then takes units [i*N, (i+1)*N) via --unit-slice
+# instead of one --unit-index. Same GPU / CPU split as above:
+#
+#   N=$(( $(tail -n +2 <durable>/fma/inputs/units.csv | wc -l) ))   # units staged
+#   T=$(( (N + 499) / 500 - 1 ))                                    # last task index
+#   sbatch --array=0-$T --export=ALL,ITEMS_PER_TASK=500 fitcorpus_extract.sbatch \
+#          --corpus fma --source audio --skip-model psychoacoustic
+#   sbatch --array=0-$T --export=ALL,ITEMS_PER_TASK=500 --partition=compute --gres=gpu:0 \
+#          --cpus-per-task=4 --mem=<longest item, table above> fitcorpus_extract.sbatch \
+#          --corpus fma --source audio --model psychoacoustic
+#
+# Psychoacoustic memory follows the longest ITEM in the task (a musopen
+# movement can run 17 min), not the task's total.
+#
 # Idempotent per cell (a §4.1 sidecar that passes `psytwill battery --check`
 # is the done-marker); a task that hits the wall clock is resumed by
 # resubmitting the same array index. No email flags by standing preference.
@@ -122,9 +140,13 @@ echo "framing table: ${PSYTWILL_FRAMING_TABLE}"
 DRIVER=/gpfs/projects/hulacon/shared/mmmdata/code/psytwill/scripts/fitcorpus/extract.py
 
 UNIT_ARGS=()
-if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
+if [[ -n "${SLURM_ARRAY_TASK_ID:-}" && -n "${ITEMS_PER_TASK:-}" ]]; then
+    # per-item corpora: a slice of units per task, scored in batches
+    UNIT_ARGS=(--unit-slice "$(( SLURM_ARRAY_TASK_ID * ITEMS_PER_TASK )):$(( (SLURM_ARRAY_TASK_ID + 1) * ITEMS_PER_TASK ))")
+elif [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     UNIT_ARGS=(--unit-index "${SLURM_ARRAY_TASK_ID}")
 fi
+echo "unit selection: ${UNIT_ARGS[*]:-all}"
 
 echo "=== versions ==="
 "${PY}" -c 'import viz2psy, aud2psy, word2psy, psytwill; print("viz2psy", viz2psy.__version__, "aud2psy", aud2psy.__version__, "word2psy", word2psy.__version__, "psytwill", psytwill.__version__)'
