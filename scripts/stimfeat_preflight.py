@@ -63,6 +63,10 @@ KNOWN_NESTED = {
     # viz2psy 0.18.0 `caption_vlm` emits only `caption_vlm_text`; `caption`
     # emits only `caption_text`. Longest-first resolution keeps them apart.
     ("caption_vlm", "caption"),
+    # word2psy `lexical_norms_experiential` emits `lexical_norms_experiential_<attr>`;
+    # no `lexical_norms` dimension starts with `experiential`, so longest-first
+    # resolution keeps them apart.
+    ("lexical_norms_experiential", "lexical_norms"),
 }
 
 
