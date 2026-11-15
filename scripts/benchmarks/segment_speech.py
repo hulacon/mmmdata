@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
-"""Speech share of each film segment, under the diarize frame gate.
+"""Speech coverage of each film segment, under the diarize voice gate.
 
 Splits a segment-level film benchmark (``psytwill bench retrieval
---subset``) into speech and non-speech items. A segment's frames are the
-film grid's bins whose start lies in ``[onset, offset)``, the same rows
-``bench retrieval --*-segments`` pools. A frame is speech when the union of
-the film's diarize turns (``<movies dir>/<film>/diarize_speakers.csv``,
-``onset, offset`` per turn) covers at least ``--min-coverage`` of
-``[t, t + window)``. Overlapping turns (two speakers) count once.
+--subset``) into speech and non-speech items. The voice gate is diarize
+coverage: the share of a window covered by the union of the film's diarize
+turns (``<movies dir>/<film>/diarize_speakers.csv``, ``onset, offset`` per
+turn; overlapping speakers count once), gated at ``--min-coverage`` (.25).
 
-Columns: ``stimulus_id, chunk_idx, n_frames, n_speech_frames, speech_share``.
-With ``--lists DIR``, also writes ``speech.txt`` and ``nonspeech.txt``
-(``stimulus_id|chunk_idx`` labels) split at ``--split`` on
-``speech_share`` (speech when ``>= split``).
+Two columns, two grains:
+
+- ``segment_coverage``: coverage of the segment's own span ``[onset, offset)``.
+  The default rule (``--rule span``) calls a segment speech when this is at
+  least ``--min-coverage``: the gate applied to the unit's own window, as the
+  voice gate is applied to each model's own window.
+- ``speech_share``: the share of the segment's grid frames (bins whose start
+  lies in ``[onset, offset)``, the rows ``bench retrieval --*-segments``
+  pools) that pass the gate on their own ``[t, t + window)``. ``--rule
+  frames`` calls a segment speech when this is at least ``--split``.
+
+Columns: ``stimulus_id, chunk_idx, n_frames, n_speech_frames, speech_share,
+segment_coverage``. With ``--lists DIR``, also writes ``speech.txt`` and
+``nonspeech.txt`` (``stimulus_id|chunk_idx`` labels) under the chosen rule.
 
 A film without a diarize file stops the build: an absent file is not a film
 without speech. A file with no turns is a film without speech.
@@ -80,8 +88,11 @@ def build(segments: pd.DataFrame, movies_dir: Path, *, window: float, min_covera
                 raise SystemExit(f"{film} segment {r.chunk_idx}: no {window} s frame starts in "
                                  f"[{r.onset}, {r.offset})")
             gated = frame_coverage(turns, starts, window) >= min_coverage
+            span = float(r.offset - r.onset)
+            seg_cov = frame_coverage(turns, np.array([float(r.onset)]), span)[0]
             rows.append({"stimulus_id": film, "chunk_idx": int(r.chunk_idx), "n_frames": int(starts.size),
-                         "n_speech_frames": int(gated.sum()), "speech_share": float(gated.mean())})
+                         "n_speech_frames": int(gated.sum()), "speech_share": float(gated.mean()),
+                         "segment_coverage": float(seg_cov)})
     return pd.DataFrame(rows)
 
 
@@ -93,7 +104,11 @@ def main(argv=None) -> int:
     ap.add_argument("--window", type=float, default=0.5, help="grid bin width, seconds")
     ap.add_argument("--min-coverage", type=float, default=0.25, help="turn coverage that gates a frame as speech")
     ap.add_argument("--lists", help="directory for speech.txt / nonspeech.txt item lists")
-    ap.add_argument("--split", type=float, default=0.5, help="speech_share at or above which a segment is speech")
+    ap.add_argument("--rule", choices=["span", "frames"], default="span",
+                    help="span: segment_coverage >= --min-coverage (the gate on the segment's own window); "
+                         "frames: speech_share >= --split")
+    ap.add_argument("--split", type=float, default=0.5, help="--rule frames: speech_share at or above which a "
+                                                             "segment is speech")
     args = ap.parse_args(argv)
     if args.movies_dir:
         movies = Path(args.movies_dir)
@@ -104,9 +119,14 @@ def main(argv=None) -> int:
     out = build(pd.read_csv(args.segments), movies, window=args.window, min_coverage=args.min_coverage)
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(args.output, index=False)
-    sp = out["speech_share"] >= args.split
-    print(f"  {len(out)} segments over {out['stimulus_id'].nunique()} films; speech_share >= {args.split}: "
-          f"{int(sp.sum())}, below: {int((~sp).sum())}, zero: {int((out['speech_share'] == 0).sum())}")
+    if args.rule == "span":
+        sp = out["segment_coverage"] >= args.min_coverage
+        rule = f"segment_coverage >= {args.min_coverage}"
+    else:
+        sp = out["speech_share"] >= args.split
+        rule = f"speech_share >= {args.split}"
+    print(f"  {len(out)} segments over {out['stimulus_id'].nunique()} films; {rule}: {int(sp.sum())} speech, "
+          f"{int((~sp).sum())} not; no speech at all: {int((out['segment_coverage'] == 0).sum())}")
     if args.lists:
         d = Path(args.lists)
         d.mkdir(parents=True, exist_ok=True)
