@@ -478,7 +478,7 @@ class JekyllGenerator:
                 f.write(f"nav_order: {idx + 1}\n")
                 f.write("---\n\n")
                 f.write(f"# {tool.stem}\n\n")
-                f.write(f"**Source:** `scripts/{tool.name}` · every flag: "
+                f.write(f"**Source:** `{_repo_relative(tool)}` · every flag: "
                         f"`{tool.stem} --help`\n")
                 f.write("{: .fs-3 .text-grey-dk-000 }\n\n")
                 f.write(_escape_prose(doc) + "\n")
@@ -545,6 +545,15 @@ class JekyllGenerator:
 
         if item.get("notes"):
             f.write(f"**Notes**\n\n{_escape_prose(item['notes'])}\n\n")
+
+
+def _repo_relative(path: Path) -> str:
+    """A tool's path from the repo root, for its page's Source line."""
+    repo = Path(__file__).resolve().parent.parent
+    try:
+        return Path(path).resolve().relative_to(repo).as_posix()
+    except ValueError:
+        return Path(path).name
 
 
 def _tool_summary(docstring: str) -> str:

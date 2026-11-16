@@ -131,7 +131,7 @@ def test_module_runs_with_only_src_on_the_path(tmp_path):
 
 def test_mmmview_dispatches_the_check_verb(tmp_path):
     write_pair(tmp_path)
-    proc = subprocess.run([sys.executable, str(REPO_ROOT / "scripts" / "mmmview.py"),
+    proc = subprocess.run([sys.executable, str(REPO_ROOT / "src" / "python" / "mmmview.py"),
                            "check", str(tmp_path)], capture_output=True, text=True)
     assert proc.returncode == check.EXIT_OK, proc.stderr
     assert "1 spec(s), 0 invalid" in proc.stdout

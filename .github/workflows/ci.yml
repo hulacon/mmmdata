@@ -6,14 +6,12 @@ on:
     paths:
       - "docs/**"
       - "src/python/**"
-      - "scripts/mmmview.py"
       - "scripts/generate_docs.py"
       - "scripts/update_docs.sh"
   pull_request:
     paths:
       - "docs/**"
       - "src/python/**"
-      - "scripts/mmmview.py"
       - "scripts/generate_docs.py"
       - "scripts/update_docs.sh"
 

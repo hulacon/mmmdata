@@ -96,11 +96,7 @@ def test_mmmview_roots_follow_the_env_root(tmp_path, monkeypatch):
     if (REPO_ROOT / "config" / "local.toml").exists():
         pytest.skip("a local.toml in this checkout may set output_dir explicitly")
     monkeypatch.setenv("MMMDATA_BIDS_ROOT", str(tmp_path))
-    sys.path.insert(0, str(REPO_ROOT / "scripts"))
-    try:
-        import mmmview
-    finally:
-        sys.path.remove(str(REPO_ROOT / "scripts"))
+    import mmmview  # src/python, on the path via the conftest
     roots = mmmview.load_roots()
     assert roots.deriv == tmp_path / "derivatives"
     assert roots.bids == tmp_path

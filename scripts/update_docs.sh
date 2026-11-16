@@ -24,7 +24,7 @@ OUTPUT_DIR="$PROJECT_ROOT/docs/doc/code"
 # Command-line tools with a page of their own (rendered from the module
 # docstring). Add a script here when its docstring is a user guide.
 TOOLS=(
-    "$PROJECT_ROOT/scripts/mmmview.py"
+    "$PROJECT_ROOT/src/python/mmmview.py"
 )
 
 echo "Generating API documentation..."

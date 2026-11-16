@@ -5,7 +5,7 @@
 #                                            pinned, for a project's code
 #
 # A pinned install supports what project code imports: mmmget, resultsview
-# and mmmget.testing. The MCP server, the converters and the scripts find
+# and mmmget.testing, plus the `mmmview` command. The MCP server, the converters and the scripts find
 # files relative to the repo root (models/, config/dcm2bids_*, bin/), so they
 # need a clone. The packages install under their own top-level names (core,
 # neuroimaging, ...), not under one namespace.
@@ -36,6 +36,10 @@ dependencies = [
     "seaborn",
     "plotly",
 ]
+
+[project.scripts]
+# The same dispatcher bin/mmmview runs, with bin/mmmview's group-writable umask.
+mmmview = "mmmview:cli"
 
 [project.optional-dependencies]
 mcp = ["mcp>=2.0"]
