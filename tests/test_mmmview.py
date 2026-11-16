@@ -1,4 +1,4 @@
-"""mmmview dispatcher (scripts/mmmview.py) on entity-named fake paths.
+"""mmmview dispatcher (src/python/mmmview.py) on entity-named fake paths.
 
 The charter's Settles-when (workbench brain-viewer, sub-effort mmmview) is
 checked here without real data: (1) a map under derivatives/prf or
@@ -17,9 +17,8 @@ import pytest
 
 nib = pytest.importorskip("nibabel")
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
-if str(SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+# src/python/mmmview.py: the conftest's src/python entry is enough.
 import mmmview  # noqa: E402
 from mmmview import (Opts, Roots, Unplaceable, classify, family_of,  # noqa: E402
                      find_sidecar, parse_entities, render, resolve)
@@ -881,10 +880,27 @@ class TestCli:
         assert "renderer failed" in capsys.readouterr().err
 
     def test_shim_pins_the_repo_venv(self):
-        shim = SCRIPTS.parent / "bin" / "mmmview"
+        shim = REPO_ROOT / "bin" / "mmmview"
         assert shim.exists() and shim.stat().st_mode & 0o111
         text = shim.read_text()
-        assert ".venv/bin/python" in text and "scripts/mmmview.py" in text
+        assert ".venv/bin/python" in text and "src/python/mmmview.py" in text
+
+    def test_installed_command_is_declared(self):
+        """pip install of mmmdata puts `mmmview` on PATH: the console script
+        names cli(), and setup.py ships the top-level module."""
+        import tomllib
+        meta = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+        assert meta["project"]["scripts"]["mmmview"] == "mmmview:cli"
+        assert 'py_modules=["mmmview"]' in (REPO_ROOT / "setup.py").read_text()
+
+    def test_installed_command_sets_the_group_writable_umask(self, monkeypatch):
+        """The console script has no bin/mmmview around it, so cli() sets
+        the umask the wrapper sets, before any bundle is written."""
+        calls = []
+        monkeypatch.setattr(mmmview.os, "umask", lambda m: calls.append(m) or 0o022)
+        monkeypatch.setattr(mmmview, "main", lambda: calls.append("main") or 0)
+        assert mmmview.cli() == 0
+        assert calls == [0o002, "main"]
 
 
 # ---------------------------------------------------------------------------

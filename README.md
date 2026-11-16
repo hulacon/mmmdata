@@ -19,6 +19,9 @@ Python 3.11 or newer. Two ways, depending on what you need:
   `mmmget.testing` pytest plugin): in the project's `requirements.txt`,
   `mmmdata @ git+https://github.com/hulacon/mmmdata@<tag or commit>`.
 
+Both put the `mmmview` command on the environment's PATH. On Talapas the
+shared clone's `bin/mmmview` runs the same command with no install.
+
 Either way, `MMMDATA_BIDS_ROOT` points the code at a copy of the dataset.
 
 ## MCP server for agents
