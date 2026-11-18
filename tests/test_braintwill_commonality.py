@@ -611,9 +611,14 @@ def test_block_source_refuses_an_unknown_block_or_a_bad_tag(harness, src):
         harness.common_source(src)
 
 
-def test_every_projectable_block_is_a_rescue_block(harness):
+def test_projectable_blocks_are_the_rescue_blocks_plus_d(harness):
     assert harness.block_stream("L.dev") == "L" and harness.block_stream("V") == "V"
-    assert set(harness.BLOCK_FILM_TABLE) == set(harness.RESCUE_FILM_TABLE) == {"V", "A", "L"}
+    assert set(harness.RESCUE_FILM_TABLE) == {"V", "A", "L"}
+    # D (motion) is a block source on the films, frame-keyed like V, but has no members to rescue
+    assert set(harness.BLOCK_FILM_TABLE) == {"V", "A", "L", "D"}
+    assert harness.block_stream("D.v021") == "D" and "D" not in harness.CHUNK_BLOCKS
+    with pytest.raises(ValueError):
+        harness.parse_rescue("rescue-D")
     assert harness.rescue_stream("L") == "L"
     assert harness.parse_rescue("rescue-L") == ("L", None)
     assert harness.parse_rescue("rescue-L.base+interaction") == ("L.base", "interaction")

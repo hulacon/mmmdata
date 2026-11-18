@@ -124,6 +124,19 @@ def projection_inputs(stimfeat: Path, block: str, corpus: str) -> tuple[Path, li
     raise SystemExit(f"corpus {corpus!r}: one of {sorted(h.RESCUE_CORPUS.values())}")
 
 
+def causal_flags(key: list[str], causal: bool) -> list[str]:
+    """``space project``'s ``--causal`` for a time-keyed projection: each windowed column (the fit's
+    Contract B 1.4 window labels) is relabelled from centred to trailing, so a brain read never sees
+    audio after the volume (psytwill-space-next E4, DECIDED 2026-11-08; applied to brain reads only,
+    step-5 S1, DECIDED 2026-11-18). psytwill refuses a fit without window labels. Loud on a key
+    without time (chunks, images): there is nothing to shift."""
+    if not causal:
+        return []
+    if "--window" not in key or "time" not in key[key.index("--key") + 1].split(","):
+        raise SystemExit("--causal shifts windows along time: this block's films rows are not time-keyed")
+    return ["--causal"]
+
+
 def projection_k(manifest: dict, k: int | None) -> int:
     """The k a projection runs at: the fit's own k, or a smaller one (a projection only drops components)."""
     k_fit = int(manifest["k"])
@@ -158,6 +171,7 @@ def cmd_project(args) -> None:
     if not weights.exists():
         raise SystemExit(f"{weights} (the manifest's weights) is missing")
     features, key = projection_inputs(paths.stimfeat, args.block, args.corpus)
+    causal = causal_flags(key, args.causal)
     if not features.exists():
         raise SystemExit(f"{features} is missing")
     out = (h.rescue_projection(paths.out, args.block, args.corpus) if subspaces is None
@@ -165,7 +179,7 @@ def cmd_project(args) -> None:
     if out.exists() and not args.force:
         raise SystemExit(f"{out} exists; a projection is replaced only with --force")
     out.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [str(psytwill), "space", "project", "--features", str(features), *key, "--space", str(manifest),
+    cmd = [str(psytwill), "space", "project", "--features", str(features), *key, *causal, "--space", str(manifest),
            "--chunk-size", str(args.chunk_size),
            *(["--k", str(k)] if subspaces is None else ["--subspaces", str(subspaces)]), "-o", str(out)]
     print("+", " ".join(cmd), flush=True)
@@ -180,6 +194,7 @@ def cmd_project(args) -> None:
                      "mtime": _dt.datetime.fromtimestamp(features.stat().st_mtime, _dt.timezone.utc).isoformat()},
         "view": ("covariance (psytwill space project default)" if subspaces is None
                  else "subspace objects' orthonormal coordinates (psytwill space project --subspaces)"),
+        "causal": bool(causal),
         **({"subspaces": {"path": str(subspaces), "sha256": sha256(subspaces)}} if subspaces is not None else {}),
         "psytwill_version": version, "command": cmd,
         "created": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
@@ -487,7 +502,7 @@ def main() -> None:
     sub = ap.add_subparsers(dest="verb", required=True)
     p = sub.add_parser("project")
     p.add_argument("--block", required=True, type=_projectable,
-                   help="a block letter (V, A, L), or a named projection <letter>.<tag> (e.g. A.interp)")
+                   help="a block letter (V, A, L, D), or a named projection <letter>.<tag> (e.g. A.interp)")
     p.add_argument("--corpus", required=True, choices=sorted(h.RESCUE_CORPUS.values()))
     p.add_argument("--manifest", required=True, help="the reduced block's `psytwill space fit` manifest")
     p.add_argument("--chunk-size", type=int, default=10, help="stimulus_ids per projection chunk")
@@ -495,6 +510,9 @@ def main() -> None:
                    "a row is placed only where its present members span K directions")
     p.add_argument("--subspaces", help="a `psytwill space subspaces` .json for this manifest: write its objects' "
                    "coordinates (films only) to the subspace projection the harness's `subspaces` verb reads")
+    p.add_argument("--causal", action="store_true",
+                   help="read windowed columns as trailing windows (`space project --causal`; time-keyed blocks "
+                        "only, and the fit must carry window labels). Brain reads of A use it (step-5 S1)")
     p.add_argument("--force", action="store_true")
     r = sub.add_parser("read")
     r.add_argument("--block", required=True, type=_block, help="a block letter or <letter>.<tag>")
