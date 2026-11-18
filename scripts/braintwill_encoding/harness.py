@@ -1004,7 +1004,9 @@ RESCUE_TAG = re.compile(r"[a-z0-9][a-z0-9_-]*")
 #: (model-readout R12). L's fit rows are transcript chunks (key ``stimulus_id,chunk_idx``), so
 #: its projection is chunk-keyed and is placed on the word grid (``film_block_words``); V's and
 #: A's are frame-keyed (``film_block_frames``).
-BLOCK_FILM_TABLE = dict(RESCUE_FILM_TABLE)
+#: D (motion) is projectable and scored as a block source, frame-keyed like V, but has no rescue
+#: members (it has one member, ``motion``), so it is not in ``RESCUE_FILM_TABLE``.
+BLOCK_FILM_TABLE = {**RESCUE_FILM_TABLE, "D": "movies_frames"}
 #: Blocks whose projection rows are transcript chunks, not frames.
 CHUNK_BLOCKS = ("L",)
 

@@ -718,6 +718,26 @@ def test_rescue_projection_inputs_key_l_by_chunk_and_frames_by_time(rescue, tmp_
         rescue.projection_inputs(tmp_path, "X", "movies")
 
 
+def test_rescue_projection_inputs_d_is_frame_keyed_on_the_frames_table(rescue, tmp_path):
+    src, key = rescue.projection_inputs(tmp_path, "D", "movies")
+    assert src.name == "movies_frames_features.parquet" and key[:2] == ["--key", "stimulus_id,time"]
+    with pytest.raises(SystemExit, match="not scored on tb-enc"):
+        rescue.projection_inputs(tmp_path, "D", "shared1000")
+
+
+def test_rescue_causal_flags_only_on_time_keyed_projections(rescue, tmp_path):
+    _, frames = rescue.projection_inputs(tmp_path, "A", "movies")
+    assert rescue.causal_flags(frames, True) == ["--causal"]
+    assert rescue.causal_flags(frames, False) == []
+    _, chunks = rescue.projection_inputs(tmp_path, "L", "movies")
+    assert rescue.causal_flags(chunks, False) == []
+    with pytest.raises(SystemExit, match="not time-keyed"):
+        rescue.causal_flags(chunks, True)
+    _, images = rescue.projection_inputs(tmp_path, "V", "shared1000")
+    with pytest.raises(SystemExit, match="not time-keyed"):
+        rescue.causal_flags(images, True)
+
+
 def test_read_projection_casts_string_keys(harness, tmp_path):
     path = tmp_path / "movies_L.parquet"
     pd.DataFrame({"stimulus_id": ["f"], "chunk_idx": ["3"], "c0": [1.0]}).to_parquet(path)
