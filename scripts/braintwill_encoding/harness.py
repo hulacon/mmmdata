@@ -1257,6 +1257,17 @@ COMMON_ARMS: dict[str, dict[str, tuple[str, ...]]] = {
         "opaque": ("cache:vgg19.conv4_3",),
         "nameable": ("ctrl:dev-v010.nameable",),
     },
+    # psytwill-space brain floor (psytwill-space-next step-5 spec §2, S3 (a)): psytwill V + A
+    # against the modality-matched EBind pair, one kernel band per group, so the floor's two
+    # arms are the subsets common-pspace-floor.v+a and .ebind+ebind_audio of one arm, scored on
+    # one spec and paired in one bootstrap. The blocks are release 0.2.1's V and A projected by
+    # `rescue.py project --block V.f021` and `--block A.f021 --causal` (S1: causal A on brain reads).
+    "pspace-floor": {
+        "v": ("block:V.f021",),
+        "a": ("block:A.f021",),
+        "ebind": ("model:ebind",),
+        "ebind_audio": ("model:ebind_audio",),
+    },
 }
 
 
