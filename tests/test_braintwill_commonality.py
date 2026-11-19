@@ -988,3 +988,13 @@ def test_film_design_is_film_fir_plus_film_responses(harness, monkeypatch):
     np.testing.assert_array_equal(x, x2)
     np.testing.assert_array_equal(y, y2)
     assert bands == bands2 and (groups == g2).all()
+
+
+def test_pspace_floor_arm_pairs_blocks_against_the_ebind_pair(harness):
+    """The brain floor's two arms are subsets of one arm: psytwill V + A vs ebind + ebind_audio,
+    one kernel band per group, so both are scored on one spec and paired in one bootstrap."""
+    assert list(harness.check_arm("pspace-floor")) == ["v", "a", "ebind", "ebind_audio"]
+    p, e = "common-pspace-floor.v+a", "common-pspace-floor.ebind+ebind_audio"
+    assert {p, e} <= set(harness.common_spaces("pspace-floor"))
+    assert harness.common_merge(*harness.parse_common(p)) == {"v": ("block-V.f021",), "a": ("block-A.f021",)}
+    assert harness.common_merge(*harness.parse_common(e)) == {"ebind": ("ebind",), "ebind_audio": ("ebind_audio",)}
