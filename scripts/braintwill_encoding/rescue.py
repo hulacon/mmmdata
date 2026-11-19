@@ -288,12 +288,16 @@ def roi_columns(labels: np.ndarray, mask: np.ndarray, valid: np.ndarray, min_col
 # ---------------------------------------------------------------------------
 
 def _cached(paths, cache, register: str, space: str, sub: str, group_sums: bool = False,
-            oof: str | None = None):
+            oof: str | None = None, lead_trim_s: float = 0.0,
+            trim_final_frame: bool = False):
     """A cached score with per-group sums. ``group_sums`` selects the group-sums spec for a model
-    space (rescue spaces always keep them); ``oof`` is a stacked space's route."""
+    space (rescue spaces always keep them); ``oof`` is a stacked space's route; ``lead_trim_s``
+    and ``trim_final_frame`` the films edge trims it was scored with
+    (``harness.trim_lead``, ``harness.trim_final_frame``)."""
     req = h.Request(argparse.Namespace(register=register, space=space, sub=sub, films=None,
                                        solver="random_search", n_iter=None, group_sums=group_sums,
-                                       oof=oof), paths)
+                                       oof=oof, lead_trim_s=lead_trim_s,
+                                       trim_final_frame=trim_final_frame), paths)
     got = cache.get(req.key)
     if got is None:
         if space.startswith(h.STACK_PREFIX):
@@ -301,7 +305,9 @@ def _cached(paths, cache, register: str, space: str, sub: str, group_sums: bool 
             raise SystemExit(f"{space} sub-{sub} ({oof}) is not scored: {cache.path(req.key)}; "
                              f"run harness.py stack --arm {arm} --sub {sub} --oof {oof}")
         raise SystemExit(f"{space} sub-{sub} on {register} is not scored: {cache.path(req.key)}; "
-                         f"run harness.py score --register {register} --space {space} --sub {sub}")
+                         f"run harness.py score --register {register} --space {space} --sub {sub}"
+                         + (f" --lead-trim-s {lead_trim_s}" if lead_trim_s else "")
+                         + (" --trim-final-frame" if trim_final_frame else ""))
     if got.groups is None:
         raise SystemExit(f"{cache.path(req.key)} has no per-group sums")
     return req.key, got
@@ -454,7 +460,8 @@ def cmd_compare(args) -> None:
         got, valid = {}, None
         keys[f"sub-{sub}"], checks[f"sub-{sub}"] = {}, {}
         for name, space in arms.items():
-            k, s = _cached(paths, cache, args.register, space, sub, group_sums=True)
+            k, s = _cached(paths, cache, args.register, space, sub, group_sums=True,
+                           lead_trim_s=args.lead_trim_s, trim_final_frame=args.trim_final_frame)
             keys[f"sub-{sub}"][name] = {"space": space, "features": k["feature_hash"], "spec": k["spec_hash"]}
             if valid is None:
                 valid = s.valid
@@ -529,6 +536,10 @@ def main() -> None:
     c.add_argument("--register", required=True, choices=sorted(h.RESCUE_CORPUS))
     c.add_argument("--subs", help="comma-separated subjects (default: the harness's)")
     c.add_argument("--out", required=True, help="output directory")
+    c.add_argument("--lead-trim-s", type=float, default=0.0,
+                   help="films: read the scores fitted with this lead trim (harness.py score --lead-trim-s)")
+    c.add_argument("--trim-final-frame", action="store_true",
+                   help="films: read the scores fitted with the final-frame trim (harness.py score --trim-final-frame)")
     args = ap.parse_args()
     {"project": cmd_project, "read": cmd_read, "compare": cmd_compare}[args.verb](args)
 

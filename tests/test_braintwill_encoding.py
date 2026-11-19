@@ -53,6 +53,46 @@ def test_a_film_outside_the_pool_is_refused(harness):
         harness.alignment_rows(_windows(harness), "01", ["film-held"])
 
 
+def _timed_rows(onset=6.0, start=12, n=40, tr=1.5):
+    return pd.DataFrame([{"stimulus_id": "film-00", "onset": onset, "start": start, "n": n, "repetition_time": tr}])
+
+
+def test_a_lead_trim_drops_the_volumes_whose_fir_reads_reach_before_it(harness):
+    """Volume i sits at film time i*TR - onset and reads from 7 TR earlier: with onset 6 s, TR 1.5 s
+    and start 12, volume 12 reads from 1.5 s, 13 from 3.0, 14 from 4.5, 15 from 6.0. A 5 s trim
+    keeps 15 onward."""
+    r = harness.trim_lead(_timed_rows(), 5.0)
+    assert (int(r["start"].iloc[0]), int(r["n"].iloc[0])) == (15, 37)
+    reach = (harness.fs_enc.film_volume_starts(6.0, 15, 37, 1.5) - max(harness.fs_enc.DELAYS_TR) * 1.5)
+    assert reach.min() >= 5.0
+
+
+def test_a_zero_lead_trim_is_the_rows_unchanged(harness):
+    rows = _timed_rows()
+    assert harness.trim_lead(rows, 0.0) is rows
+
+
+def test_a_lead_trim_that_empties_a_film_is_refused(harness):
+    with pytest.raises(RuntimeError, match="leaves no volume"):
+        harness.trim_lead(_timed_rows(n=3), 5.0)
+
+
+def test_the_final_frame_trim_drops_volumes_reading_the_last_partial_frame(harness):
+    """play_s 46.3 s: the final frame is the bin from 46.0 s. Volume i reads to i*TR - onset - 3 TR + TR;
+    with onset 6 s, TR 1.5 s, volumes 12..51 read to 9.0 ... 67.5 s, so only those reading to <= 46.0 s
+    stay (12..36, reads to 45.0 s; volume 37 reads to 46.5 s)."""
+    rows = _timed_rows().assign(play_s=46.3)
+    r = harness.trim_final_frame(rows)
+    assert (int(r["start"].iloc[0]), int(r["n"].iloc[0])) == (12, 25)
+    reach = harness.fs_enc.film_volume_starts(6.0, 12, 25, 1.5) - min(harness.fs_enc.DELAYS_TR) * 1.5 + 1.5
+    assert reach.max() <= 46.0
+
+
+def test_a_final_frame_trim_that_empties_a_film_is_refused(harness):
+    with pytest.raises(RuntimeError, match="leaves no volume"):
+        harness.trim_final_frame(_timed_rows().assign(play_s=5.0))
+
+
 def test_a_heldout_session_row_with_an_alignment_role_is_refused(harness):
     w = _windows(harness)
     w.loc[w["stimulus_id"] == "film-held", "role"] = "alignment"

@@ -265,6 +265,51 @@ def alignment_rows(windows: pd.DataFrame, sub: str, films: list[str] | None = No
     return rows[rows["stimulus_id"].isin(films)]
 
 
+def trim_lead(rows: pd.DataFrame, lead_s: float, delays=fs_enc.DELAYS_TR) -> pd.DataFrame:
+    """Each film window without its leading volumes whose FIR reads reach film time < ``lead_s``.
+
+    A volume at film time ``a`` reads bins from ``a - max(delays) * TR`` (``window_bins``), so
+    the volumes kept are those with ``a - max(delays) * TR >= lead_s``. Used when a source is
+    undefined at each film's start by construction (a causal projection masks the first w/2 of
+    each film), so every arm of a read drops the same volumes and stays paired. ``lead_s = 0``
+    returns ``rows`` unchanged. A film left with no volume is an error.
+    """
+    if lead_s < 0:
+        raise ValueError(f"lead trim {lead_s} s: must be >= 0")
+    if lead_s == 0:
+        return rows
+    out = rows.copy()
+    for i, r in zip(out.index, out.itertuples(index=False)):
+        tr = float(r.repetition_time)
+        reach = fs_enc.film_volume_starts(r.onset, int(r.start), int(r.n), tr) - max(delays) * tr
+        k = int(np.searchsorted(reach, lead_s - 1e-6))
+        if k >= int(r.n):
+            raise RuntimeError(f"{r.stimulus_id}: a lead trim of {lead_s} s leaves no volume")
+        out.at[i, "start"], out.at[i, "n"] = int(r.start) + k, int(r.n) - k
+    return out
+
+
+def trim_final_frame(rows: pd.DataFrame, delays=fs_enc.DELAYS_TR) -> pd.DataFrame:
+    """Each film window without its trailing volumes whose FIR reads reach the film's final frame.
+
+    The final frame is the bin holding the end of playback, from ``floor(play_s / FRAME_S) * FRAME_S``:
+    usually a partial frame, which a block can leave unplaced (a projection's last row). A volume at
+    film time ``a`` reads up to ``a - min(delays) * TR + TR`` (``window_bins``), so the volumes kept
+    are those whose reads end at or before that bin's start. Like ``trim_lead`` it is applied to
+    every arm of a read, so the arms stay paired. A film left with no volume is an error.
+    """
+    out = rows.copy()
+    for i, r in zip(out.index, out.itertuples(index=False)):
+        tr = float(r.repetition_time)
+        last = np.floor(float(r.play_s) / fs_enc.FRAME_S - 1e-9) * fs_enc.FRAME_S
+        reach = fs_enc.film_volume_starts(r.onset, int(r.start), int(r.n), tr) - min(delays) * tr + tr
+        n = int(np.searchsorted(reach, last + 1e-6, side="right"))
+        if n <= 0:
+            raise RuntimeError(f"{r.stimulus_id}: trimming the final frame leaves no volume")
+        out.at[i, "n"] = n
+    return out
+
+
 def frame_features(features_root: Path, space: str, ids) -> list[FrameFeatures]:
     out = []
     for sid in ids:
@@ -2089,6 +2134,11 @@ class Request:
             windows = fm.load_windows(paths.derivatives)
             films = args.films.split(",") if getattr(args, "films", None) else None
             self.rows = alignment_rows(windows, args.sub, films)
+            lead = float(getattr(args, "lead_trim_s", 0.0) or 0.0)
+            tail = bool(getattr(args, "trim_final_frame", False))
+            self.rows = trim_lead(self.rows, lead)
+            if tail:
+                self.rows = trim_final_frame(self.rows)
             if stack:
                 mask, mask_path = stack_mask(paths.out, args.sub)
                 srcs = stack_sources(*stack)
@@ -2173,6 +2223,10 @@ class Request:
                 self.feats = {f.stimulus_id: f for f in feats}
                 self.label = _label(paths, args.space)
             self.register = film_register(windows, paths.cleaned, list(self.rows["stimulus_id"]))
+            if lead > 0:  # only when set, so every untrimmed key is unchanged
+                self.register["lead_trim_s"] = lead
+            if tail:
+                self.register["trim_final_frame"] = True
             if stack:
                 self.register = masked_register(self.register, mask)
         elif args.register in TS_REGISTERS:
@@ -2796,6 +2850,12 @@ def main() -> None:
                        help="model and onoff spaces: keep per-group sums (a separate spec hash), e.g. to "
                             "check how much of the held-out loss one group carries")
         p.add_argument("--oof", choices=STACK_OOF, help=f"{STACK_PREFIX} spaces: the stacking route (required)")
+        p.add_argument("--lead-trim-s", type=float, default=0.0,
+                       help="films: drop each window's leading volumes whose FIR reads reach film time below "
+                            "this (trim_lead), e.g. a causal projection's w/2; recorded in the register key")
+        p.add_argument("--trim-final-frame", action="store_true",
+                       help="films: drop each window's trailing volumes whose FIR reads reach the film's final "
+                            "(partial) frame (trim_final_frame); recorded in the register key")
     k = sub.add_parser("stack")
     k.add_argument("--arm", required=True)
     k.add_argument("--sub", required=True)
