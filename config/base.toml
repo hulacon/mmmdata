@@ -55,6 +55,12 @@ framing_table = "/gpfs/projects/hulacon/shared/psytwill/fit-corpora/space/framin
 # src/python/neuroimaging/nsd.py; its betas may live elsewhere (each tool takes --betas).
 nsd_dir = "/gpfs/projects/hulacon/shared/nsd"
 
+# Openly licensed teaching stimuli (a film, an image set) and their *2psy
+# features, for a public teaching series. Not MMMData stimuli and not a
+# psytwill fit corpus: nothing here comes from the dataset, and nothing that
+# walks the fit-corpus roots reads it. Layout: media/, images/, features/.
+teaching_dir = "/gpfs/projects/hulacon/shared/teaching/brainfeatures"
+
 # MATLAB toolboxes for the pRF fit (analyzePRF + its knkutils dependency),
 # pinned clones outside the BIDS tree; commits are recorded in every fit
 # sidecar. fit_prf_analyzeprf.sbatch exports them for prf_analyzeprf_fit.m.
