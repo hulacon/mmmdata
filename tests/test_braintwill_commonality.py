@@ -998,3 +998,14 @@ def test_pspace_floor_arm_pairs_blocks_against_the_ebind_pair(harness):
     assert {p, e} <= set(harness.common_spaces("pspace-floor"))
     assert harness.common_merge(*harness.parse_common(p)) == {"v": ("block-V.f021",), "a": ("block-A.f021",)}
     assert harness.common_merge(*harness.parse_common(e)) == {"ebind": ("ebind",), "ebind_audio": ("ebind_audio",)}
+
+
+def test_pspace_frontier_arms_declare_their_sources_and_draw_their_one_set(harness):
+    for arm in ("pspace-frontier", "pspace-fr-nameable", "pspace-fr-noprobe", "pspace-fr-strict",
+                "pspace-banding"):
+        harness.check_arm(arm)
+    assert harness.check_arm("pspace-fr-strict@d007")["n"] == ("ctrl:r021.fr-strict.d007",)
+    assert harness.common_source("block:A.f021-centred") == ("block", "block-A.f021-centred", None)
+    assert len(harness.check_arm("pspace-banding")["members"]) == 26
+    with pytest.raises(ValueError, match="exactly one"):  # two control sets: no draw arm
+        harness.check_arm("pspace-banding@d000")

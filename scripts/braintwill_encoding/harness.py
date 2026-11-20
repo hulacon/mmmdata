@@ -1313,6 +1313,29 @@ COMMON_ARMS: dict[str, dict[str, tuple[str, ...]]] = {
         "ebind": ("model:ebind",),
         "ebind_audio": ("model:ebind_audio",),
     },
+    # psytwill-space-next step-5 spec §3 (frontier arms) and §6 (banding), on release 0.2.1, read
+    # through the stacking engine (S4). Every A source is store-centred here: the block is
+    # `rescue.py project --block A.f021-centred` (no --causal), so P, P-interp, P-embed, E+ and
+    # the draws share one alignment. P vs E+ vs P-embed in one arm:
+    "pspace-frontier": {
+        "p": ("block:V.f021", "block:A.f021-centred"),
+        "e": ("model:ebind", "model:ebind_audio"),
+        "embed": ("ctrl:r021.fr-embed",),
+    },
+    # P-interp (one control set: `stack --draws` reads its matched-subspace draws) against E+,
+    # one arm per sibling set of control_draws.py's r021 pool.
+    **{f"pspace-fr-{s}": {"e": ("model:ebind", "model:ebind_audio"), "n": (f"ctrl:r021.fr-{s}",)}
+       for s in ("nameable", "noprobe", "strict")},
+    # Banding: P's blocks against the same members as separately stacked sources, each in its
+    # fit-time coordinates (r021's one-member sets).
+    "pspace-banding": {
+        "blocks": ("block:V.f021", "block:A.f021-centred"),
+        "members": tuple(f"ctrl:r021.m-{m}" for m in (
+            "clip", "depth", "dinov2", "ebind", "emonet", "faces_extent", "faces_layout", "gist", "llstat",
+            "resmem", "saliency", "clap", "conversation", "ebind_audio", "egemaps", "loudness",
+            "music_emotion", "onsets", "pitch", "psychoacoustic", "rhythm", "speech", "speech_emotion",
+            "speech_rate", "timbre", "tonal")),
+    },
 }
 
 
