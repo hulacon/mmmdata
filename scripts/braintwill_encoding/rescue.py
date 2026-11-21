@@ -460,7 +460,7 @@ def cmd_compare(args) -> None:
         got, valid = {}, None
         keys[f"sub-{sub}"], checks[f"sub-{sub}"] = {}, {}
         for name, space in arms.items():
-            k, s = _cached(paths, cache, args.register, space, sub, group_sums=True,
+            k, s = _cached(paths, cache, args.register, space, sub, group_sums=True, oof=args.oof,
                            lead_trim_s=args.lead_trim_s, trim_final_frame=args.trim_final_frame)
             keys[f"sub-{sub}"][name] = {"space": space, "features": k["feature_hash"], "spec": k["spec_hash"]}
             if valid is None:
@@ -536,6 +536,8 @@ def main() -> None:
     c.add_argument("--register", required=True, choices=sorted(h.RESCUE_CORPUS))
     c.add_argument("--subs", help="comma-separated subjects (default: the harness's)")
     c.add_argument("--out", required=True, help="output directory")
+    c.add_argument("--oof", choices=h.STACK_OOF,
+                   help=f"{h.STACK_PREFIX} spaces: the stacking route they were fitted with (harness.py stack --oof)")
     c.add_argument("--lead-trim-s", type=float, default=0.0,
                    help="films: read the scores fitted with this lead trim (harness.py score --lead-trim-s)")
     c.add_argument("--trim-final-frame", action="store_true",
