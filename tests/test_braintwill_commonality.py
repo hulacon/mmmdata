@@ -165,6 +165,32 @@ def test_edge_trims_key_only_when_set(harness):
     assert harness.edge_trimmed(rows, 0.0, False) is rows
 
 
+def test_a_unit_a_concurrent_job_wrote_first_is_kept_and_the_rest_still_written(harness):
+    from braintwill.ledger import Refusal
+
+    class Cache:
+        def __init__(self):
+            self.held = {"k-shared": "first"}
+
+        def path(self, key):
+            return f"/cache/{key}"
+
+        def put(self, key, result, prov, label):
+            if key in self.held:
+                raise Refusal(f"{key} already holds a score")
+            self.held[key] = result
+            return self.path(key)
+
+    class Score:
+        summary = {}
+
+    cache = Cache()
+    todo = {"stack-a.e": {"key": "k-shared", "label": {}}, "stack-a.n": {"key": "k-own", "label": {}}}
+    done = harness.put_units(cache, todo, {"stack-a.e": Score(), "stack-a.n": Score()}, {})
+    assert done == {"stack-a.e": "kept", "stack-a.n": "wrote"}
+    assert cache.held["k-shared"] == "first" and "k-own" in cache.held
+
+
 def test_stack_takes_the_edge_trims(harness, monkeypatch):
     import sys
 

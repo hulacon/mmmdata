@@ -2480,9 +2480,29 @@ def cmd_stack(args) -> None:
     seconds = {"load": round(t_load, 1), "stack": round(time.time() - t0 - t_load, 1),
                "unions_in_job": len(todo), "members_in_job": len(need)}
     _ensure_root(paths.out)
+    put_units(cache, todo, result, provenance(args.backend, seconds))
+
+
+def put_units(cache, todo: dict, result: dict, prov: dict) -> dict:
+    """Write each stacked unit; one a concurrent job wrote first is kept, not overwritten.
+
+    Jobs check the cache only when they start, so two jobs can fit the same unit (arms sharing
+    a group, draw jobs sharing their arm's base units). Its key is its sources' content, the
+    spec and the register, so the first record stands and this job's copy is dropped.
+    Returns {space: "wrote" | "kept"}."""
+    from braintwill.ledger import Refusal
+
+    done = {}
     for s, u in todo.items():
-        dest = cache.put(u["key"], result[s], provenance(args.backend, seconds), u["label"])
+        try:
+            dest = cache.put(u["key"], result[s], prov, u["label"])
+        except Refusal:
+            print(f"{s}: {cache.path(u['key'])} was written by a concurrent job meanwhile; kept it")
+            done[s] = "kept"
+            continue
         print(f"{s}: wrote {dest}\n  {json.dumps(result[s].summary)}")
+        done[s] = "wrote"
+    return done
 
 
 # ---------------------------------------------------------------------------
