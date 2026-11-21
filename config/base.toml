@@ -58,7 +58,9 @@ nsd_dir = "/gpfs/projects/hulacon/shared/nsd"
 # Openly licensed teaching stimuli (a film, an image set) and their *2psy
 # features, for a public teaching series. Not MMMData stimuli and not a
 # psytwill fit corpus: nothing here comes from the dataset, and nothing that
-# walks the fit-corpus roots reads it. Layout: media/, images/, features/.
+# walks the fit-corpus roots reads it. It doubles as a stimfeat_campaign.py
+# staging root (STIMFEAT_BIDS_ROOT): media/ and images/ hold the sources,
+# stimuli/ the registry the campaign reads, derivatives/ the *2psy outputs.
 teaching_dir = "/gpfs/projects/hulacon/shared/teaching/brainfeatures"
 
 # MATLAB toolboxes for the pRF fit (analyzePRF + its knkutils dependency),

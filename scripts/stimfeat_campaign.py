@@ -570,10 +570,10 @@ def is_done(stem: Path) -> bool:
 
 
 # aud2psy models that read the stored diarize turn table: conversation derives
-# from it, and egemaps / speech_emotion gate on it (aud2psy >= 0.20.0, where
-# the diarize speech gate is the default).
-TURN_READERS = ("conversation", "egemaps", "speech_emotion")
-SPEECH_GATED = ("egemaps", "speech_emotion")
+# from it, and egemaps / speech_emotion / phonetics gate on it (aud2psy >=
+# 0.20.0, where the diarize speech gate is the default; phonetics since 0.23.0).
+TURN_READERS = ("conversation", "egemaps", "speech_emotion", "phonetics")
+SPEECH_GATED = ("egemaps", "speech_emotion", "phonetics")
 
 
 def _speech_gate_args(src: Source, model: str) -> list[str]:
