@@ -24,12 +24,14 @@ ran on: a draw projected in the stack job (GPU node) and again in the reader (CP
 two keys (model-readout log 2026-11-12). Written once, a draw is loaded, never recomputed, so
 every job keys it alike.
 
-**The pool.** A psytwill release block's members, each in its fit-time whitened coordinates
-(``SpaceWhitener.transform``), plus extra sources that are not members of that block (word-on,
+**The pool.** One or more psytwill release blocks' members, each in its fit-time whitened
+coordinates (``SpaceWhitener.transform``; a later block's rows placed on the first block's frames),
+plus extra sources that are not members of that block (word-on,
 cuts, store models from other tables), each PR-whitened on the pool's rows
 (``fit_whitener``, ``scaling="pr"``). The rows are every 0.5 s frame of the films-register
 pool films, which are the same for every subject (checked), so one set of draws serves them
-all. Nothing here reads brain data.
+all. A set may declare the sources its draws come from (``within``): its draws are then matched
+within those columns only and are 0 on the rest. Nothing here reads brain data.
 
 **Absent members (nested gate, DECIDED 2026-11-12).** A member is absent from a row where
 any of its columns is undefined (psytwill's rule). matched_subspaces needs a complete matrix,
@@ -78,15 +80,34 @@ FRAME_S = 0.5
 KEY = ("stimulus_id", "time")
 TREE = "encoding_harness"
 CONTROLS = "controls"
-#: The release sets a pool's block members; ``skip`` leaves members out with a reason.
-#: ``extra`` sources are not members of the block: ``word-on``, ``cuts``, or
+#: The films store table each release block's members are read from.
+BLOCK_TABLES = {"V": "movies_frames", "A": "movies_audio_frames"}
+
+#: The release sets a pool's block members: ``block`` names one block, ``blocks`` several (their
+#: members are pool sources by member name, so member names must not repeat across blocks);
+#: ``skip`` leaves members out with a reason.
+#: ``extra`` sources are not members of a block: ``word-on``, ``cuts``, or
 #: ``store:<table>:<model>[.<feature>]`` (a films store model, or one feature of it).
-#: ``sets`` are member lists (block members and extra sources by name). ``n``, ``n_pool``,
-#: ``tol`` and ``seed`` fix the draws; the harness names draw NNN of a set, so they are part
-#: of what a draw is.
+#: ``sets``: each a member list (block members and extra sources by name), or a dict with
+#: ``members``, optional ``within`` (the sources its draws are taken from; default every pool
+#: source) and optional ``draws`` (False: the set is a source only, with no control draws).
+#: ``n``, ``n_pool``, ``tol`` and ``seed`` fix the draws; the harness names draw NNN of a set,
+#: so they are part of what a draw is.
 #:
 #: ``dev-`` pools exist to build and check the route before psytwill-space 0.2.0 fixes the
 #: battery; their sets are placeholders, not decisions, and nothing read from them is a result.
+#:
+#: ``r021`` is release 0.2.1's one shared pool (one arm build per release; mmmdata-agents
+#: model-readout 2026-11-19, psytwill-space-next 2026-11-20). Its set lists are copied from
+#: those efforts' decisions, which own them; the comments name where each comes from.
+_V021 = ("clip", "depth", "dinov2", "ebind", "emonet", "faces_extent", "faces_layout", "gist",
+         "llstat", "resmem", "saliency")
+_A021 = ("clap", "conversation", "ebind_audio", "egemaps", "loudness", "music_emotion", "onsets",
+         "pitch", "psychoacoustic", "rhythm", "speech", "speech_emotion", "speech_rate", "timbre",
+         "tonal")
+_E_WORD_AUDIO = ("word-on", "cuts", "store:movies_audio_frames:speech_rate.speech_rate_words",
+                 "store:movies_audio_frames:onsets", "store:movies_audio_frames:loudness",
+                 "store:movies_frames:motion")
 POOLS: dict[str, dict] = {
     "dev-v010": {
         "release": "0.1.0",
@@ -109,7 +130,77 @@ POOLS: dict[str, dict] = {
         },
         "n": 100, "n_pool": 2000, "tol": 0.01, "seed": 0,
     },
+    "r021": {
+        "release": "0.2.1",
+        "blocks": ("V", "A"),
+        "skip": {},
+        # model-readout's E sources (readout-prereg §2.2): raw Contract B columns, PR-whitened
+        # here as in dev-v010. onsets / loudness / speech_rate are also A members; as extras they
+        # are separate sources (store:...), never the A block's coordinates.
+        "extra": _E_WORD_AUDIO,
+        "sets": {
+            # model-readout 2(b), readout-prereg §2.2: N_full, N_strict, N_-E.
+            # R14: draws from the V battery's whitened columns ∪ E's word and audio sources.
+            "mr-full": {"members": ("saliency", "emonet", "gist", "llstat", "depth", "faces_extent",
+                                    "faces_layout", "resmem") + _E_WORD_AUDIO,
+                        "within": _V021 + _E_WORD_AUDIO},
+            "mr-strict": {"members": ("gist", "llstat", "store:movies_frames:motion",
+                                      "store:movies_audio_frames:onsets",
+                                      "store:movies_audio_frames:loudness"),
+                          "within": _V021 + _E_WORD_AUDIO},
+            "mr-no-e": {"members": ("saliency", "emonet", "gist", "depth", "faces_extent", "faces_layout",
+                                    "resmem"),
+                        "within": _V021 + _E_WORD_AUDIO},
+            # psytwill-space-next step-5 spec §3 (S4): P-interp = the V + A block members whose
+            # columns are labelled nameable (0.2.1 labels: every member is all-nameable or
+            # all-embedding); -noprobe drops probe members (no zero-shot member is in V or A);
+            # -strict keeps formula / formula-on-model members plus those with a passing
+            # check-register row on the films domain (speech). Draws from the V + A battery.
+            "fr-nameable": {"members": ("depth", "emonet", "faces_extent", "faces_layout", "gist", "llstat",
+                                        "resmem", "saliency", "conversation", "egemaps", "loudness",
+                                        "music_emotion", "onsets", "pitch", "psychoacoustic", "rhythm",
+                                        "speech", "speech_emotion", "speech_rate", "timbre", "tonal"),
+                            "within": _V021 + _A021},
+            "fr-noprobe": {"members": ("depth", "faces_extent", "faces_layout", "gist", "llstat", "resmem",
+                                       "conversation", "egemaps", "loudness", "onsets", "pitch",
+                                       "psychoacoustic", "rhythm", "speech", "speech_emotion", "speech_rate",
+                                       "timbre", "tonal"),
+                           "within": _V021 + _A021},
+            "fr-strict": {"members": ("gist", "llstat", "conversation", "egemaps", "loudness", "onsets", "pitch",
+                                      "psychoacoustic", "rhythm", "speech", "speech_rate", "timbre", "tonal"),
+                          "within": _V021 + _A021},
+            # P-embed: the embedding members, one source; no draws (§3 reads draws for P-interp only).
+            "fr-embed": {"members": ("clip", "dinov2", "ebind", "clap", "ebind_audio"), "draws": False},
+            # Block-vs-member banding (§6): each V + A member alone, in its fit-time coordinates.
+            **{f"m-{m}": {"members": (m,), "draws": False} for m in _V021 + _A021},
+        },
+        "n": 100, "n_pool": 2000, "tol": 0.01, "seed": 0,
+    },
 }
+
+
+def pool_blocks(decl: dict) -> tuple[str, ...]:
+    """The release blocks a pool declares (``block`` or ``blocks``, exactly one of them)."""
+    if ("block" in decl) == ("blocks" in decl):
+        raise ValueError("a pool declares exactly one of `block` or `blocks`")
+    blocks = (decl["block"],) if "block" in decl else tuple(decl["blocks"])
+    unknown = [b for b in blocks if b not in BLOCK_TABLES]
+    if not blocks or unknown or len(set(blocks)) != len(blocks):
+        raise ValueError(f"pool blocks {blocks}: each once, from {sorted(BLOCK_TABLES)}")
+    return blocks
+
+
+def set_spec(entry) -> dict:
+    """A set's declaration as ``{members, within, draws}`` (a bare member list draws from every
+    pool source)."""
+    if isinstance(entry, dict):
+        stray = set(entry) - {"members", "within", "draws"}
+        if stray or "members" not in entry:
+            raise ValueError(f"set entry keys {sorted(entry)}: expected members [, within, draws]")
+        within = entry.get("within")
+        return {"members": tuple(entry["members"]), "within": None if within is None else tuple(within),
+                "draws": bool(entry.get("draws", True))}
+    return {"members": tuple(entry), "within": None, "draws": True}
 
 
 class Paths:
@@ -151,6 +242,8 @@ def write_draws(controls: Path, pool: str, sets: list[str], films: list[str]) ->
     for name in sets:
         with np.load(pool_dir(controls, pool) / f"{name}.npz") as z:
             bases = z["bases"]
+        if bases.shape[0] == 0:  # a source-only set (``draws: False``)
+            continue
         nbytes = 0
         for s in films:
             with np.load(pool_dir(controls, pool) / "pool" / f"{s}.npz") as f:
@@ -207,8 +300,15 @@ def check_pool(pool: str) -> dict:
     if pool not in POOLS:
         raise ValueError(f"unknown pool {pool!r}: one of {sorted(POOLS)}")
     decl = POOLS[pool]
+    pool_blocks(decl)
     for s in decl["extra"]:
         parse_extra(s)
+    for name, entry in decl["sets"].items():
+        spec = set_spec(entry)
+        if spec["within"] is not None:
+            outside = [m for m in spec["members"] if m not in spec["within"]]
+            if outside:
+                raise ValueError(f"set {name!r}: members {outside} are not in its draws' `within` sources")
     return decl
 
 
@@ -233,19 +333,15 @@ def set_columns(bands: dict[str, slice], members: tuple[str, ...]) -> np.ndarray
     return np.concatenate([np.arange(bands[m].start, bands[m].stop) for m in members])
 
 
-def _load_block(paths: Paths, decl: dict, films: list[str]):
-    """Block members' fit-time whitened coordinates on every frame of the films, keyed rows."""
+def _block_coords(paths: Paths, rel_path: Path, block: str, skip: dict, films: list[str]):
+    """One block's members' fit-time whitened coordinates on every frame of the films."""
     from psytwill.release import load_release
     from psytwill.space import member_source, select_features
     from psytwill.store import align_spaces, load_spaces
 
-    rel_path = paths.releases / f"psytwill-space_{decl['release']}.json"
-    fit = load_release(rel_path).block(decl["block"])
-    members = [m for m in fit.members if m not in decl["skip"]]
-    stray = [m for m in decl["skip"] if m not in fit.members]
-    if stray:
-        raise ValueError(f"skip {stray}: not members of block {decl['block']}")
-    table = paths.stimfeat / "psytwill" / "movies_frames_features.parquet"
+    fit = load_release(rel_path).block(block)
+    members = [m for m in fit.members if m not in skip]
+    table = paths.stimfeat / "psytwill" / f"{BLOCK_TABLES[block]}_features.parquet"
     # whole table: a slice of films can lack a sparse model's columns
     got = load_spaces(table, key=KEY, models=sorted({member_source(m)[0] for m in members}), window=FRAME_S)
     spaces = {}
@@ -259,9 +355,53 @@ def _load_block(paths: Paths, decl: dict, films: list[str]):
     keep = np.array([lab.split("|")[0] in set(films) for lab in labels])
     coords = {m: fit.map.whiteners[m].transform(aligned[m].X[keep]) for m in members}
     labels = [lab for lab, k in zip(labels, keep) if k]
-    prov = {"release": str(rel_path), "release_sha256": _sha256(rel_path), "block": decl["block"],
-            "members": {m: int(fit.map.whiteners[m].rank) for m in members}, "skip": decl["skip"],
-            "table": str(table)}
+    return coords, labels, {m: int(fit.map.whiteners[m].rank) for m in members}, str(table), fit.members
+
+
+def _onto_rows(name: str, X: np.ndarray, labels: list[str], at: dict[tuple[str, int], int]) -> np.ndarray:
+    """A later block's rows placed on the pool rows by (film, frame bin); every pool row must
+    have one (its values may be undefined, which the nested gate handles)."""
+    out = np.full((len(at), X.shape[1]), np.nan)
+    hit = np.zeros(len(at), bool)
+    for j, lab in enumerate(labels):
+        s, t = lab.split("|")[0], float(lab.split("|")[1])
+        i = at.get((s, int(round(t / FRAME_S))))
+        if i is not None:
+            if hit[i]:
+                raise RuntimeError(f"{name}: two rows on pool row {s} t={t}")
+            out[i], hit[i] = X[j], True
+    if not hit.all():
+        raise RuntimeError(f"{name}: {(~hit).sum()} pool rows have no row")
+    return out
+
+
+def _load_block(paths: Paths, decl: dict, films: list[str]):
+    """Every declared block's members' fit-time whitened coordinates on every frame of the films,
+    on the first block's rows."""
+    rel_path = paths.releases / f"psytwill-space_{decl['release']}.json"
+    blocks = pool_blocks(decl)
+    coords, labels, ranks, tables, seen = {}, None, {}, {}, []
+    for b in blocks:
+        c, lab, r, table, members = _block_coords(paths, rel_path, b, decl["skip"], films)
+        seen += members
+        dup = sorted(set(c) & set(coords))
+        if dup:
+            raise ValueError(f"members {dup} are in more than one pool block")
+        if labels is None:
+            labels, at = lab, _row_index(lab)[2]
+        else:
+            c = {m: _onto_rows(f"{b}.{m}", Z, lab, at) for m, Z in c.items()}
+        coords.update(c)
+        ranks.update(r)
+        tables[b] = table
+    stray = [m for m in decl["skip"] if m not in seen]
+    if stray:
+        raise ValueError(f"skip {stray}: not members of blocks {blocks}")
+    prov = {"release": str(rel_path), "release_sha256": _sha256(rel_path), "blocks": list(blocks),
+            "members": ranks, "skip": decl["skip"], "tables": tables}
+    if "block" in decl:  # one-block pools keep their provenance keys
+        prov.update(block=decl["block"], table=tables[decl["block"]])
+        del prov["blocks"], prov["tables"]
     return coords, labels, prov
 
 
@@ -333,6 +473,46 @@ def _pr_whiten(name: str, X: np.ndarray) -> np.ndarray:
     return out
 
 
+def build_sets(X: np.ndarray, bands: dict[str, slice], decl: dict, out: Path, pool: str,
+               captured_share, matched_subspaces) -> dict:
+    """Each declared set's pool columns, k, captured share and draw bases -> ``<set>.npz``.
+    A set with ``within`` takes its draws from those sources' columns only: its share is captured
+    within them and its bases are 0 on every other pool column. A ``draws: False`` set gets no
+    bases (``(0, columns, k)``) and consumes no randomness. Returns each set's provenance."""
+    rng = np.random.RandomState(decl["seed"])
+    sets = {}
+    for name, entry in decl["sets"].items():  # one RandomState, consumed in set order by sets with draws
+        spec = set_spec(entry)
+        members = spec["members"]
+        idx = set_columns(bands, members)
+        k = len(idx)
+        within = (np.arange(X.shape[1]) if spec["within"] is None
+                  else np.sort(set_columns(bands, spec["within"])))
+        Xw = X[:, within]
+        pos = np.searchsorted(within, idx)
+        Q = np.zeros((len(within), k))
+        Q[pos, np.arange(k)] = 1.0
+        share = captured_share(Xw, Q)
+        bases = np.zeros((0, X.shape[1], k), np.float32)
+        info = {"members": list(members), "k": int(k), "share": float(share),
+                "within": None if spec["within"] is None else list(spec["within"]), "draws": spec["draws"]}
+        extra = {}
+        if spec["draws"]:
+            ms = matched_subspaces(Xw, k, share, n=decl["n"], n_pool=decl["n_pool"], tol=decl["tol"],
+                                   random_state=rng)
+            bases = np.zeros((decl["n"], X.shape[1], k), np.float32)
+            bases[:, within, :] = np.stack(ms.bases).astype(np.float32)  # 0 outside `within`
+            extra = {"shares": ms.shares, "gamma_bracket": np.array(ms.gamma_bracket)}
+            info.update(draw_share_range=list(ms.share_range), gamma_bracket=list(ms.gamma_bracket))
+        np.savez(out / f"{name}.npz", members=np.array(members), columns=idx, k=k, share=share,
+                 within=within, bases=bases, **extra)
+        sets[name] = info
+        rng_txt = (f", draws {info['draw_share_range'][0]:.4f}-{info['draw_share_range'][1]:.4f}"
+                   if spec["draws"] else ", no draws")
+        print(f"{pool}.{name}: k {k}, share {share:.4f}{rng_txt}", flush=True)
+    return sets
+
+
 def build_pool(paths: Paths, pool: str) -> dict:
     from psytwill.subspace import captured_share, matched_subspaces
     import psytwill
@@ -367,22 +547,7 @@ def build_pool(paths: Paths, pool: str) -> dict:
         dest.parent.mkdir(parents=True, exist_ok=True)
         np.savez(dest, stimulus_id=s, times=bins[idx] * FRAME_S, x=X[idx].astype(np.float32),
                  band_names=np.array(list(bands)), band_bounds=np.array([[b.start, b.stop] for b in bands.values()]))
-    rng = np.random.RandomState(decl["seed"])
-    sets = {}
-    for name, members in decl["sets"].items():  # one RandomState, consumed in set order
-        idx = set_columns(bands, members)
-        k = len(idx)
-        Q = np.zeros((X.shape[1], k))
-        Q[idx, np.arange(k)] = 1.0
-        share = captured_share(X, Q)
-        ms = matched_subspaces(X, k, share, n=decl["n"], n_pool=decl["n_pool"], tol=decl["tol"], random_state=rng)
-        np.savez(out / f"{name}.npz", members=np.array(members), columns=idx, k=k, share=share,
-                 bases=np.stack(ms.bases).astype(np.float32), shares=ms.shares,
-                 gamma_bracket=np.array(ms.gamma_bracket))
-        sets[name] = {"members": list(members), "k": int(k), "share": float(share),
-                      "draw_share_range": list(ms.share_range), "gamma_bracket": list(ms.gamma_bracket)}
-        print(f"{pool}.{name}: k {k}, share {share:.4f}, draws {ms.share_range[0]:.4f}-{ms.share_range[1]:.4f}",
-              flush=True)
+    sets = build_sets(X, bands, decl, out, pool, captured_share, matched_subspaces)
     meta = {"pool": pool, "created": _dt.datetime.now(_dt.timezone.utc).isoformat(), **prov,
             "extra": list(decl["extra"]), "films": films, "rows": len(labels), "columns": int(X.shape[1]),
             "bands": {b: [s.start, s.stop] for b, s in bands.items()}, "absent_rows": gated,
@@ -431,8 +596,9 @@ def cmd_show(args) -> None:
     print(f"{args.pool}: {meta['rows']} rows x {meta['columns']} columns, release {Path(meta['release']).name}, "
           f"psytwill {meta['psytwill_version']}, mmmdata {meta['mmmdata_commit']}")
     for name, s in meta["sets"].items():
-        print(f"  {name}: k {s['k']}, share {s['share']:.4f}, draws {s['draw_share_range'][0]:.4f}-"
-              f"{s['draw_share_range'][1]:.4f}")
+        rng = (f"draws {s['draw_share_range'][0]:.4f}-{s['draw_share_range'][1]:.4f}"
+               if s.get("draws", True) else "no draws")
+        print(f"  {name}: k {s['k']}, share {s['share']:.4f}, {rng}")
 
 
 def main(argv=None) -> None:

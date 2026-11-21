@@ -224,14 +224,17 @@ def cmd_spaces(args) -> None:
 
 
 def load_subsets(paths, cache, register: str, spaces: list[str], sub: str, oof: str | None,
-                 engine: str) -> tuple[dict, np.ndarray, dict, dict, dict]:
+                 engine: str, lead_trim_s: float = 0.0,
+                 trim_final_frame: bool = False) -> tuple[dict, np.ndarray, dict, dict, dict]:
     """One subject's cached subset scores, checked: (per-group sums by subset, valid columns,
-    keys by subset, group-sums check by subset, stacking summary by subset (``stack`` only))."""
+    keys by subset, group-sums check by subset, stacking summary by subset (``stack`` only)).
+    ``lead_trim_s`` and ``trim_final_frame``: the films edge trims the subsets were fitted with."""
     from braintwill.encoding import resampled_r2
 
     got, valid, keys, checks, stacking = {}, None, {}, {}, {}
     for space in spaces:
-        k, s = rs._cached(paths, cache, register, space, sub, oof=oof)
+        k, s = rs._cached(paths, cache, register, space, sub, oof=oof, lead_trim_s=lead_trim_s,
+                          trim_final_frame=trim_final_frame)
         subset = space.split(".", 1)[1]
         keys[subset] = {"space": space, "features": k["feature_hash"], "spec": k["spec_hash"]}
         if valid is None:
@@ -276,7 +279,8 @@ def read_draws(paths, cache, args, sub: str, draws: range, ctrl: str, other: str
         if any(decl[g] != base[g] for g in decl if g != ctrl):
             raise RuntimeError(f"{arm}: a group other than {ctrl!r} differs from the base arm's")
         mine = [s for s in engine_spaces(arm, args.engine) if ctrl in s.split(".", 1)[1].split("+")]
-        g, v, k, _, st = load_subsets(paths, cache, args.register, mine, sub, args.oof, args.engine)
+        g, v, k, _, st = load_subsets(paths, cache, args.register, mine, sub, args.oof, args.engine,
+                                       args.lead_trim_s, args.trim_final_frame)
         if not np.array_equal(v, valid):
             raise RuntimeError(f"sub-{sub} {arm}: valid columns differ from the base arm's")
         same = [x for x in k if k[x]["features"] == keys[x]["features"]]
@@ -350,7 +354,8 @@ def cmd_read(args) -> None:
         with np.load(mask_path) as z:
             mask = z["mask"]
         got, valid, keys[f"sub-{sub}"], checks[f"sub-{sub}"], st = load_subsets(
-            paths, cache, args.register, spaces, sub, args.oof, args.engine)
+            paths, cache, args.register, spaces, sub, args.oof, args.engine, args.lead_trim_s,
+            args.trim_final_frame)
         if args.engine == "stack":
             stacking[f"sub-{sub}"] = st
         rois = rs.roi_columns(labels, mask, valid, rs.RULE["min_cols"])
@@ -371,7 +376,9 @@ def cmd_read(args) -> None:
     out = {"arm": args.arm, "engine": args.engine, "oof": args.oof,
            "groups": {g: list(v) for g, v in h.COMMON_ARMS[args.arm].items()},
            "development_arm": args.arm.startswith("dev"),
-           "register": args.register, "subjects": subs, "terms": weights,
+           "register": args.register, "edge_trims": {"lead_trim_s": args.lead_trim_s,
+                                                     "trim_final_frame": args.trim_final_frame},
+           "subjects": subs, "terms": weights,
            "read": {"family": rs.RULE["family"], "min_cols": rs.RULE["min_cols"], "n_boot": rs.RULE["n_boot"],
                     "seed": rs.RULE["seed"], "interval": f"{CI:.0%} percentile bootstrap over CV groups, "
                     "one draw of counts per subject shared by every subset fit (paired)",
@@ -422,6 +429,7 @@ def main() -> None:
     r.add_argument("--engine", choices=ENGINES, default="joint")
     r.add_argument("--oof", choices=h.STACK_OOF, help="--engine stack: the stacking route (required)")
     r.add_argument("--register", choices=("films",), default="films")
+    h.add_edge_trim_args(r)
     r.add_argument("--out", required=True)
     r.add_argument("--subs", help="comma-separated subjects (default: the films pool's)")
     r.add_argument("--draws", help="A:B: also read control draws A … B-1 of the arm's one control set")

@@ -366,6 +366,23 @@ def response_provenance(windows: pd.DataFrame, cleaned: Path) -> dict:
             "code_versions": sorted(set(used["code_version"]))}
 
 
+def edge_trimmed(rows: pd.DataFrame, lead_s: float, final_frame: bool) -> pd.DataFrame:
+    """``rows`` after the films edge trims (``trim_lead``, then ``trim_final_frame`` when set)."""
+    rows = trim_lead(rows, lead_s)
+    return trim_final_frame(rows) if final_frame else rows
+
+
+def mark_edge_trims(register: dict, lead_s: float, final_frame: bool) -> dict:
+    """``register`` recording the edge trims, only when set, so every untrimmed key is unchanged.
+    ``Request`` (score) and ``cmd_stack`` both key through it, so the readers find a stacked unit."""
+    register = dict(register)
+    if lead_s > 0:
+        register["lead_trim_s"] = lead_s
+    if final_frame:
+        register["trim_final_frame"] = True
+    return register
+
+
 def film_register(windows: pd.DataFrame, cleaned: Path, films: list[str]) -> dict:
     trs = sorted(set(windows.loc[windows["role"] == "alignment", "repetition_time"].astype(float)))
     if len(trs) != 1:
@@ -1313,6 +1330,29 @@ COMMON_ARMS: dict[str, dict[str, tuple[str, ...]]] = {
         "ebind": ("model:ebind",),
         "ebind_audio": ("model:ebind_audio",),
     },
+    # psytwill-space-next step-5 spec §3 (frontier arms) and §6 (banding), on release 0.2.1, read
+    # through the stacking engine (S4). Every A source is store-centred here: the block is
+    # `rescue.py project --block A.f021-centred` (no --causal), so P, P-interp, P-embed, E+ and
+    # the draws share one alignment. P vs E+ vs P-embed in one arm:
+    "pspace-frontier": {
+        "p": ("block:V.f021", "block:A.f021-centred"),
+        "e": ("model:ebind", "model:ebind_audio"),
+        "embed": ("ctrl:r021.fr-embed",),
+    },
+    # P-interp (one control set: `stack --draws` reads its matched-subspace draws) against E+,
+    # one arm per sibling set of control_draws.py's r021 pool.
+    **{f"pspace-fr-{s}": {"e": ("model:ebind", "model:ebind_audio"), "n": (f"ctrl:r021.fr-{s}",)}
+       for s in ("nameable", "noprobe", "strict")},
+    # Banding: P's blocks against the same members as separately stacked sources, each in its
+    # fit-time coordinates (r021's one-member sets).
+    "pspace-banding": {
+        "blocks": ("block:V.f021", "block:A.f021-centred"),
+        "members": tuple(f"ctrl:r021.m-{m}" for m in (
+            "clip", "depth", "dinov2", "ebind", "emonet", "faces_extent", "faces_layout", "gist", "llstat",
+            "resmem", "saliency", "clap", "conversation", "ebind_audio", "egemaps", "loudness",
+            "music_emotion", "onsets", "pitch", "psychoacoustic", "rhythm", "speech", "speech_emotion",
+            "speech_rate", "timbre", "tonal")),
+    },
 }
 
 
@@ -2136,9 +2176,7 @@ class Request:
             self.rows = alignment_rows(windows, args.sub, films)
             lead = float(getattr(args, "lead_trim_s", 0.0) or 0.0)
             tail = bool(getattr(args, "trim_final_frame", False))
-            self.rows = trim_lead(self.rows, lead)
-            if tail:
-                self.rows = trim_final_frame(self.rows)
+            self.rows = edge_trimmed(self.rows, lead, tail)
             if stack:
                 mask, mask_path = stack_mask(paths.out, args.sub)
                 srcs = stack_sources(*stack)
@@ -2222,11 +2260,8 @@ class Request:
                 feats = frame_features(paths.features, args.space, self.rows["stimulus_id"])
                 self.feats = {f.stimulus_id: f for f in feats}
                 self.label = _label(paths, args.space)
-            self.register = film_register(windows, paths.cleaned, list(self.rows["stimulus_id"]))
-            if lead > 0:  # only when set, so every untrimmed key is unchanged
-                self.register["lead_trim_s"] = lead
-            if tail:
-                self.register["trim_final_frame"] = True
+            self.register = mark_edge_trims(film_register(windows, paths.cleaned, list(self.rows["stimulus_id"])),
+                                            lead, tail)
             if stack:
                 self.register = masked_register(self.register, mask)
         elif args.register in TS_REGISTERS:
@@ -2416,9 +2451,10 @@ def cmd_stack(args) -> None:
     cache = ScoreCache(paths.out)
     t0 = time.time()
     windows = fm.load_windows(paths.derivatives)
-    rows = alignment_rows(windows, args.sub)
+    rows = edge_trimmed(alignment_rows(windows, args.sub), args.lead_trim_s, args.trim_final_frame)
     mask, mask_path = stack_mask(paths.out, args.sub)
-    register = masked_register(film_register(windows, paths.cleaned, list(rows["stimulus_id"])), mask)
+    register = masked_register(mark_edge_trims(film_register(windows, paths.cleaned, list(rows["stimulus_id"])),
+                                               args.lead_trim_s, args.trim_final_frame), mask)
     units, per = stack_units(paths, rows, register, spec, args.sub, spaces, mask_path)
     todo, seen = {}, {}
     for s, u in units.items():
@@ -2444,9 +2480,29 @@ def cmd_stack(args) -> None:
     seconds = {"load": round(t_load, 1), "stack": round(time.time() - t0 - t_load, 1),
                "unions_in_job": len(todo), "members_in_job": len(need)}
     _ensure_root(paths.out)
+    put_units(cache, todo, result, provenance(args.backend, seconds))
+
+
+def put_units(cache, todo: dict, result: dict, prov: dict) -> dict:
+    """Write each stacked unit; one a concurrent job wrote first is kept, not overwritten.
+
+    Jobs check the cache only when they start, so two jobs can fit the same unit (arms sharing
+    a group, draw jobs sharing their arm's base units). Its key is its sources' content, the
+    spec and the register, so the first record stands and this job's copy is dropped.
+    Returns {space: "wrote" | "kept"}."""
+    from braintwill.ledger import Refusal
+
+    done = {}
     for s, u in todo.items():
-        dest = cache.put(u["key"], result[s], provenance(args.backend, seconds), u["label"])
+        try:
+            dest = cache.put(u["key"], result[s], prov, u["label"])
+        except Refusal:
+            print(f"{s}: {cache.path(u['key'])} was written by a concurrent job meanwhile; kept it")
+            done[s] = "kept"
+            continue
         print(f"{s}: wrote {dest}\n  {json.dumps(result[s].summary)}")
+        done[s] = "wrote"
+    return done
 
 
 # ---------------------------------------------------------------------------
@@ -2832,6 +2888,16 @@ def cmd_equivalence(args) -> None:
 KNOWN_SPACES = set(fs_enc.FEATURE_SPACES) | set(TB_SPACES) | set(TB_TS_SPACES)
 
 
+def add_edge_trim_args(p: argparse.ArgumentParser) -> None:
+    """The films edge trims (``score``, ``stack``, and the readers that rebuild their keys)."""
+    p.add_argument("--lead-trim-s", type=float, default=0.0,
+                   help="films: drop each window's leading volumes whose FIR reads reach film time below "
+                        "this (trim_lead), e.g. a causal projection's w/2; recorded in the register key")
+    p.add_argument("--trim-final-frame", action="store_true",
+                   help="films: drop each window's trailing volumes whose FIR reads reach the film's final "
+                        "(partial) frame (trim_final_frame); recorded in the register key")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="verb", required=True)
@@ -2850,13 +2916,9 @@ def main() -> None:
                        help="model and onoff spaces: keep per-group sums (a separate spec hash), e.g. to "
                             "check how much of the held-out loss one group carries")
         p.add_argument("--oof", choices=STACK_OOF, help=f"{STACK_PREFIX} spaces: the stacking route (required)")
-        p.add_argument("--lead-trim-s", type=float, default=0.0,
-                       help="films: drop each window's leading volumes whose FIR reads reach film time below "
-                            "this (trim_lead), e.g. a causal projection's w/2; recorded in the register key")
-        p.add_argument("--trim-final-frame", action="store_true",
-                       help="films: drop each window's trailing volumes whose FIR reads reach the film's final "
-                            "(partial) frame (trim_final_frame); recorded in the register key")
+        add_edge_trim_args(p)
     k = sub.add_parser("stack")
+    add_edge_trim_args(k)
     k.add_argument("--arm", required=True)
     k.add_argument("--sub", required=True)
     k.add_argument("--oof", choices=STACK_OOF, required=True)

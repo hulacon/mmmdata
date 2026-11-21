@@ -117,7 +117,8 @@ def test_read_draws_reuses_the_base_units_and_reads_each_draw(cm, monkeypatch):
     keys = {s: {"space": f"stack-dev-vgg19-ctrl.{s}", "features": f"real-{s}", "spec": "x"} for s in got}
     asked = []
 
-    def fake_load(paths, cache, register, spaces, sub, oof, engine):
+    def fake_load(paths, cache, register, spaces, sub, oof, engine, lead_trim_s=0.0, trim_final_frame=False):
+        assert (lead_trim_s, trim_final_frame) == (5.0, True)  # each draw keys on the real read's edge trims
         asked.append(list(spaces))
         draw = int(spaces[0].split("@d")[1][:3])
         c = 0.05 * draw
@@ -127,7 +128,8 @@ def test_read_draws_reuses_the_base_units_and_reads_each_draw(cm, monkeypatch):
         return g, valid, k, {}, {s: {"qp_max_gap": 1e-12 * (draw + 1)} for s in g}
 
     monkeypatch.setattr(cm, "load_subsets", fake_load)
-    args = argparse.Namespace(arm="dev-vgg19-ctrl", engine="stack", register="films", oof="reuse")
+    args = argparse.Namespace(arm="dev-vgg19-ctrl", engine="stack", register="films", oof="reuse",
+                              lead_trim_s=5.0, trim_final_frame=True)
     rois = {"all": np.arange(4)}
     w = commonality_weights(["opaque", "nameable"])
     counts = draw_counts(n_groups, 50, 0)
@@ -152,6 +154,52 @@ def test_read_draws_reuses_the_base_units_and_reads_each_draw(cm, monkeypatch):
     monkeypatch.setattr(cm, "load_subsets", stale_load)
     with pytest.raises(RuntimeError, match="base arm's features"):
         cm.read_draws(None, None, args, "##", range(0, 1), "nameable", "opaque", got, valid, keys, rois, w, counts)
+
+
+def test_edge_trims_key_only_when_set(harness):
+    reg = {"grid": "x"}
+    assert harness.mark_edge_trims(reg, 0.0, False) == reg  # untrimmed keys never move
+    marked = harness.mark_edge_trims(reg, 5.0, True)
+    assert marked == {"grid": "x", "lead_trim_s": 5.0, "trim_final_frame": True} and reg == {"grid": "x"}
+    rows = pd.DataFrame({"stimulus_id": ["a"]})
+    assert harness.edge_trimmed(rows, 0.0, False) is rows
+
+
+def test_a_unit_a_concurrent_job_wrote_first_is_kept_and_the_rest_still_written(harness):
+    from braintwill.ledger import Refusal
+
+    class Cache:
+        def __init__(self):
+            self.held = {"k-shared": "first"}
+
+        def path(self, key):
+            return f"/cache/{key}"
+
+        def put(self, key, result, prov, label):
+            if key in self.held:
+                raise Refusal(f"{key} already holds a score")
+            self.held[key] = result
+            return self.path(key)
+
+    class Score:
+        summary = {}
+
+    cache = Cache()
+    todo = {"stack-a.e": {"key": "k-shared", "label": {}}, "stack-a.n": {"key": "k-own", "label": {}}}
+    done = harness.put_units(cache, todo, {"stack-a.e": Score(), "stack-a.n": Score()}, {})
+    assert done == {"stack-a.e": "kept", "stack-a.n": "wrote"}
+    assert cache.held["k-shared"] == "first" and "k-own" in cache.held
+
+
+def test_stack_takes_the_edge_trims(harness, monkeypatch):
+    import sys
+
+    seen = {}
+    monkeypatch.setattr(harness, "cmd_stack", lambda a: seen.update(vars(a)))
+    monkeypatch.setattr(sys, "argv", ["harness.py", "stack", "--arm", "a", "--sub", "##", "--oof", "reuse",
+                                      "--lead-trim-s", "5.0", "--trim-final-frame"])
+    harness.main()
+    assert seen["lead_trim_s"] == 5.0 and seen["trim_final_frame"] is True
 
 
 def test_excess_stats_are_paired_over_the_same_bootstrap_draws(cm):
@@ -998,3 +1046,14 @@ def test_pspace_floor_arm_pairs_blocks_against_the_ebind_pair(harness):
     assert {p, e} <= set(harness.common_spaces("pspace-floor"))
     assert harness.common_merge(*harness.parse_common(p)) == {"v": ("block-V.f021",), "a": ("block-A.f021",)}
     assert harness.common_merge(*harness.parse_common(e)) == {"ebind": ("ebind",), "ebind_audio": ("ebind_audio",)}
+
+
+def test_pspace_frontier_arms_declare_their_sources_and_draw_their_one_set(harness):
+    for arm in ("pspace-frontier", "pspace-fr-nameable", "pspace-fr-noprobe", "pspace-fr-strict",
+                "pspace-banding"):
+        harness.check_arm(arm)
+    assert harness.check_arm("pspace-fr-strict@d007")["n"] == ("ctrl:r021.fr-strict.d007",)
+    assert harness.common_source("block:A.f021-centred") == ("block", "block-A.f021-centred", None)
+    assert len(harness.check_arm("pspace-banding")["members"]) == 26
+    with pytest.raises(ValueError, match="exactly one"):  # two control sets: no draw arm
+        harness.check_arm("pspace-banding@d000")
