@@ -117,7 +117,8 @@ def test_read_draws_reuses_the_base_units_and_reads_each_draw(cm, monkeypatch):
     keys = {s: {"space": f"stack-dev-vgg19-ctrl.{s}", "features": f"real-{s}", "spec": "x"} for s in got}
     asked = []
 
-    def fake_load(paths, cache, register, spaces, sub, oof, engine):
+    def fake_load(paths, cache, register, spaces, sub, oof, engine, lead_trim_s=0.0, trim_final_frame=False):
+        assert (lead_trim_s, trim_final_frame) == (5.0, True)  # each draw keys on the real read's edge trims
         asked.append(list(spaces))
         draw = int(spaces[0].split("@d")[1][:3])
         c = 0.05 * draw
@@ -127,7 +128,8 @@ def test_read_draws_reuses_the_base_units_and_reads_each_draw(cm, monkeypatch):
         return g, valid, k, {}, {s: {"qp_max_gap": 1e-12 * (draw + 1)} for s in g}
 
     monkeypatch.setattr(cm, "load_subsets", fake_load)
-    args = argparse.Namespace(arm="dev-vgg19-ctrl", engine="stack", register="films", oof="reuse")
+    args = argparse.Namespace(arm="dev-vgg19-ctrl", engine="stack", register="films", oof="reuse",
+                              lead_trim_s=5.0, trim_final_frame=True)
     rois = {"all": np.arange(4)}
     w = commonality_weights(["opaque", "nameable"])
     counts = draw_counts(n_groups, 50, 0)
@@ -152,6 +154,26 @@ def test_read_draws_reuses_the_base_units_and_reads_each_draw(cm, monkeypatch):
     monkeypatch.setattr(cm, "load_subsets", stale_load)
     with pytest.raises(RuntimeError, match="base arm's features"):
         cm.read_draws(None, None, args, "##", range(0, 1), "nameable", "opaque", got, valid, keys, rois, w, counts)
+
+
+def test_edge_trims_key_only_when_set(harness):
+    reg = {"grid": "x"}
+    assert harness.mark_edge_trims(reg, 0.0, False) == reg  # untrimmed keys never move
+    marked = harness.mark_edge_trims(reg, 5.0, True)
+    assert marked == {"grid": "x", "lead_trim_s": 5.0, "trim_final_frame": True} and reg == {"grid": "x"}
+    rows = pd.DataFrame({"stimulus_id": ["a"]})
+    assert harness.edge_trimmed(rows, 0.0, False) is rows
+
+
+def test_stack_takes_the_edge_trims(harness, monkeypatch):
+    import sys
+
+    seen = {}
+    monkeypatch.setattr(harness, "cmd_stack", lambda a: seen.update(vars(a)))
+    monkeypatch.setattr(sys, "argv", ["harness.py", "stack", "--arm", "a", "--sub", "##", "--oof", "reuse",
+                                      "--lead-trim-s", "5.0", "--trim-final-frame"])
+    harness.main()
+    assert seen["lead_trim_s"] == 5.0 and seen["trim_final_frame"] is True
 
 
 def test_excess_stats_are_paired_over_the_same_bootstrap_draws(cm):

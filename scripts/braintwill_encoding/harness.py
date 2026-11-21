@@ -366,6 +366,23 @@ def response_provenance(windows: pd.DataFrame, cleaned: Path) -> dict:
             "code_versions": sorted(set(used["code_version"]))}
 
 
+def edge_trimmed(rows: pd.DataFrame, lead_s: float, final_frame: bool) -> pd.DataFrame:
+    """``rows`` after the films edge trims (``trim_lead``, then ``trim_final_frame`` when set)."""
+    rows = trim_lead(rows, lead_s)
+    return trim_final_frame(rows) if final_frame else rows
+
+
+def mark_edge_trims(register: dict, lead_s: float, final_frame: bool) -> dict:
+    """``register`` recording the edge trims, only when set, so every untrimmed key is unchanged.
+    ``Request`` (score) and ``cmd_stack`` both key through it, so the readers find a stacked unit."""
+    register = dict(register)
+    if lead_s > 0:
+        register["lead_trim_s"] = lead_s
+    if final_frame:
+        register["trim_final_frame"] = True
+    return register
+
+
 def film_register(windows: pd.DataFrame, cleaned: Path, films: list[str]) -> dict:
     trs = sorted(set(windows.loc[windows["role"] == "alignment", "repetition_time"].astype(float)))
     if len(trs) != 1:
@@ -2159,9 +2176,7 @@ class Request:
             self.rows = alignment_rows(windows, args.sub, films)
             lead = float(getattr(args, "lead_trim_s", 0.0) or 0.0)
             tail = bool(getattr(args, "trim_final_frame", False))
-            self.rows = trim_lead(self.rows, lead)
-            if tail:
-                self.rows = trim_final_frame(self.rows)
+            self.rows = edge_trimmed(self.rows, lead, tail)
             if stack:
                 mask, mask_path = stack_mask(paths.out, args.sub)
                 srcs = stack_sources(*stack)
@@ -2245,11 +2260,8 @@ class Request:
                 feats = frame_features(paths.features, args.space, self.rows["stimulus_id"])
                 self.feats = {f.stimulus_id: f for f in feats}
                 self.label = _label(paths, args.space)
-            self.register = film_register(windows, paths.cleaned, list(self.rows["stimulus_id"]))
-            if lead > 0:  # only when set, so every untrimmed key is unchanged
-                self.register["lead_trim_s"] = lead
-            if tail:
-                self.register["trim_final_frame"] = True
+            self.register = mark_edge_trims(film_register(windows, paths.cleaned, list(self.rows["stimulus_id"])),
+                                            lead, tail)
             if stack:
                 self.register = masked_register(self.register, mask)
         elif args.register in TS_REGISTERS:
@@ -2439,9 +2451,10 @@ def cmd_stack(args) -> None:
     cache = ScoreCache(paths.out)
     t0 = time.time()
     windows = fm.load_windows(paths.derivatives)
-    rows = alignment_rows(windows, args.sub)
+    rows = edge_trimmed(alignment_rows(windows, args.sub), args.lead_trim_s, args.trim_final_frame)
     mask, mask_path = stack_mask(paths.out, args.sub)
-    register = masked_register(film_register(windows, paths.cleaned, list(rows["stimulus_id"])), mask)
+    register = masked_register(mark_edge_trims(film_register(windows, paths.cleaned, list(rows["stimulus_id"])),
+                                               args.lead_trim_s, args.trim_final_frame), mask)
     units, per = stack_units(paths, rows, register, spec, args.sub, spaces, mask_path)
     todo, seen = {}, {}
     for s, u in units.items():
@@ -2855,6 +2868,16 @@ def cmd_equivalence(args) -> None:
 KNOWN_SPACES = set(fs_enc.FEATURE_SPACES) | set(TB_SPACES) | set(TB_TS_SPACES)
 
 
+def add_edge_trim_args(p: argparse.ArgumentParser) -> None:
+    """The films edge trims (``score``, ``stack``, and the readers that rebuild their keys)."""
+    p.add_argument("--lead-trim-s", type=float, default=0.0,
+                   help="films: drop each window's leading volumes whose FIR reads reach film time below "
+                        "this (trim_lead), e.g. a causal projection's w/2; recorded in the register key")
+    p.add_argument("--trim-final-frame", action="store_true",
+                   help="films: drop each window's trailing volumes whose FIR reads reach the film's final "
+                        "(partial) frame (trim_final_frame); recorded in the register key")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="verb", required=True)
@@ -2873,13 +2896,9 @@ def main() -> None:
                        help="model and onoff spaces: keep per-group sums (a separate spec hash), e.g. to "
                             "check how much of the held-out loss one group carries")
         p.add_argument("--oof", choices=STACK_OOF, help=f"{STACK_PREFIX} spaces: the stacking route (required)")
-        p.add_argument("--lead-trim-s", type=float, default=0.0,
-                       help="films: drop each window's leading volumes whose FIR reads reach film time below "
-                            "this (trim_lead), e.g. a causal projection's w/2; recorded in the register key")
-        p.add_argument("--trim-final-frame", action="store_true",
-                       help="films: drop each window's trailing volumes whose FIR reads reach the film's final "
-                            "(partial) frame (trim_final_frame); recorded in the register key")
+        add_edge_trim_args(p)
     k = sub.add_parser("stack")
+    add_edge_trim_args(k)
     k.add_argument("--arm", required=True)
     k.add_argument("--sub", required=True)
     k.add_argument("--oof", choices=STACK_OOF, required=True)
