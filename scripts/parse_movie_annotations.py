@@ -232,20 +232,17 @@ def level_problems(df: pd.DataFrame, duration_s: float, tolerance: float) -> lis
     return out
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--check", action="store_true",
-                    help="validate against registry durations; write nothing")
-    ap.add_argument("-o", "--out", type=Path, help="output TSV")
-    ap.add_argument("--raw", action="store_true",
-                    help="skip the declared corrections; show the source as-is")
-    ap.add_argument("--tolerance", type=float, default=15.0,
-                    help="seconds the last offset may exceed/undershoot duration_s")
-    args = ap.parse_args()
+def load_annotations(raw: bool = False, tolerance: float = 15.0):
+    """Parse every registered movie's annotation file into the long table.
 
+    Returns ``(table, problems, applied, registry)``. Callers that need the
+    table, not the report (the nat_encret builder, the rMatch driver), read
+    it from here, so the m.ss conversion and the declared corrections are
+    applied in one place.
+    """
     reg = pd.read_csv(REGISTRY, sep="\t")
     have = reg[reg["annotation_file"].notna()]
-    corrections = pd.DataFrame() if args.raw else load_corrections()
+    corrections = pd.DataFrame() if raw else load_corrections()
 
     frames, problems, applied_all = [], [], []
     for _, row in have.iterrows():
@@ -268,13 +265,29 @@ def main() -> int:
             problems += [f"{row['stimulus_id']}: REFUSED {r}" for r in refused]
 
         dur = float(row["duration_s"])
-        problems += [f"{row['stimulus_id']}: {p}" for p in level_problems(df, dur, args.tolerance)]
+        problems += [f"{row['stimulus_id']}: {p}" for p in level_problems(df, dur, tolerance)]
         if (df["duration"] < 0).any():
             problems.append(f"{row['stimulus_id']}: negative segment duration")
         frames.append(df)
 
-    missing = reg[reg["annotation_file"].isna()]["stimulus_id"].tolist()
     all_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    return all_df, problems, applied_all, reg
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--check", action="store_true",
+                    help="validate against registry durations; write nothing")
+    ap.add_argument("-o", "--out", type=Path, help="output TSV")
+    ap.add_argument("--raw", action="store_true",
+                    help="skip the declared corrections; show the source as-is")
+    ap.add_argument("--tolerance", type=float, default=15.0,
+                    help="seconds the last offset may exceed/undershoot duration_s")
+    args = ap.parse_args()
+
+    all_df, problems, applied_all, reg = load_annotations(args.raw, args.tolerance)
+    have = reg[reg["annotation_file"].notna()]
+    missing = reg[reg["annotation_file"].isna()]["stimulus_id"].tolist()
 
     print(f"movies with an annotation file : {len(have)} / {len(reg)}")
     if missing:
