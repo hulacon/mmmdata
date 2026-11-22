@@ -126,8 +126,12 @@ MEANVOL_FRAC, BETA_CAP = 0.25, 100.0
 #: Scoring arms. ``ebind`` is the pre-registered run (§6, combined = CHA + EBind + response). ``psytwill`` is
 #: the later arm (DECIDED 2026-10-07): psytwill-space replaces EBind in the combined model, and EBind's
 #: combined model and stimulus route are scored beside it on the same columns; its own tree.
-ARMS = ("ebind", "psytwill")
-M4_SPACES_BY_ARM = {"ebind": ("ebind", "vgg19"), "psytwill": ("psytwill",)}
+ARMS = ("ebind", "psytwill", "tv")
+M4_SPACES_BY_ARM = {"ebind": ("ebind", "vgg19"), "psytwill": ("psytwill",), "tv": ()}
+#: The ``tv`` arm (template-viability settle 1, 0 % jobs): the psytwill arm's anatomical, CHA, stimulus and
+#: frozen combined models for both spaces, plus ``combined_pernet.py``'s segid and pernet models, on one
+#: column set, so the new combiners pair with the frozen ones on identical columns.
+TV_MODELS = ("segid", "pernet")
 
 
 def scores_root(derivatives: Path, arm: str = "ebind") -> Path:
@@ -633,6 +637,24 @@ def score_maps(models: dict, maps: dict, keys: list[tuple], keep: dict, networks
     return pd.DataFrame(rows)
 
 
+def pernet_model(job: dict, space: str, model: str, template_subs: list[str], n: int) -> tuple[dict, dict]:
+    """A ``combined_pernet.py`` model (segid or pernet): saved crosses, each piece at its own λ."""
+    import cha
+    import combined_pernet as cp
+
+    d = cp.out_dir(job["derivatives"], space, model, job["scenario"], job["pct"], job["draw"], job["target"])
+    side = json.loads((d / "combined.json").read_text())
+    subs = [*template_subs, job["target"]]
+    tfs = {}
+    for s in subs:
+        cross = cha.load_cross(d / f"cross_sub-{s}.npz")
+        lam = {lab: float(side["pieces"][str(lab)]["lam"]) for lab in cross}
+        tfs[s] = pr.transform_from_cross(cross, n, lam)
+    return tfs, {"source": f"combined_pernet {model}", "combined_job": f"combined-{space}-{model}",
+                 "kappa": side["kappa"], "global": side["global"], "networks": side["networks"],
+                 "straddle_share": side["straddle_share"], "code_version": side["code_version"]}
+
+
 def arm_name(name: str, space: str) -> str:
     """A combined-<space> face's name in the psytwill arm: combined faces carry their space."""
     return name.replace("combined", f"combined-{space}", 1) if name.startswith("combined") else name
@@ -661,6 +683,17 @@ def build_models(job: dict, template_subs: list[str], n: int, n_jobs: int, clean
                                        rename=lambda nm: arm_name(nm, "ebind"))
         models.update(faces)
         info.update(face_info)
+        return models, info
+    if arm == "tv":
+        for space, only in (("psytwill", ("combined", "cha", "stimulus-psytwill")),
+                            ("ebind", ("combined", "stimulus-ebind"))):
+            faces, face_info = face_models(job, template_subs, n, n_jobs, log, space=space, only=only,
+                                           rename=lambda nm, sp=space: arm_name(nm, sp))
+            models.update(faces)
+            info.update(face_info)
+            for model in TV_MODELS:
+                models[f"combined-{space}-{model}"], info[f"combined-{space}-{model}"] = pernet_model(
+                    job, space, model, template_subs, n)
         return models, info
     faces, face_info = face_models(job, template_subs, n, n_jobs, log)
     models.update(faces)

@@ -46,7 +46,9 @@ for p in (REPO_ROOT / "src" / "python", HERE):
 #: routes, scored in the same jobs on the same columns, so a gain over them is the paired psytwill - EBind
 #: difference (P1-P4, DECIDED 2026-10-07).
 REFERENCES_BY_ARM = {"ebind": ("anatomical", "cha"),
-                     "psytwill": ("anatomical", "cha", "stimulus-ebind", "combined-ebind")}
+                     "psytwill": ("anatomical", "cha", "stimulus-ebind", "combined-ebind"),
+                     # tv: the new combiners against the frozen combined models they replace
+                     "tv": ("anatomical", "cha", "combined-psytwill", "combined-ebind")}
 REFERENCES = REFERENCES_BY_ARM["ebind"]
 CI = (2.5, 97.5)
 

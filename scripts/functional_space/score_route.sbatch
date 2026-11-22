@@ -24,6 +24,7 @@
 #   (array index = `partitions.py job --index N`)
 #   sbatch --export=ALL,VERB=mni,TARGET=03 score_route.sbatch
 #   psytwill arm (scores/psytwill-arm/): add ARM=psytwill to --export, for score, m4 or families
+#   tv arm (scores/tv-arm/, 0 % only): ARM=tv after combined_pernet.sbatch has written both spaces
 #   Secondary families + smoothed-anatomical control (after `families.py cache-tb` per subject):
 #   sbatch --array=0-479%20 --export=ALL,VERB=families score_route.sbatch
 #   Segment guesses kept (post hoc; 0% primary = indices 0-149; psytwill arm covers both arms' models):
@@ -41,7 +42,7 @@
 
 set -euo pipefail
 
-REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
+REPO_ROOT="${REPO_ROOT:-/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata}"  # a worktree runs unmerged code
 PY="/gpfs/projects/hulacon/shared/envs/functional-space/bin/python"
 VERB="${VERB:-score}"
 ARM="${ARM:-ebind}"  # psytwill: the later arm, written under scores/psytwill-arm/
