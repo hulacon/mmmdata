@@ -144,7 +144,7 @@ Usage:
     python harness.py score --register films --space model-clip --sub ##
     python harness.py score --register tb-ret-ts --space model-fasttext --sub ##
     python harness.py score --register films --space rescue-V+clip --sub ##
-    python harness.py stack --arm <arm> --sub ## --oof reuse
+    python harness.py stack --arm <arm> [<arm> ...] --sub ## --oof reuse
     python harness.py plan --space stack-<arm>.<group> --sub ## --oof reuse
     python harness.py directions --block L --sub ## [--components 0:64] --backend numpy
     python harness.py subspaces --block L.<tag> --sub ## [--objects S,U] --backend numpy
@@ -1355,6 +1355,36 @@ COMMON_ARMS: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
+#: model-readout settle 2(b) (mmmdata-agents readout-prereg §2.2–§4), one arm family per release
+#: control pool. Opaque = one VGG19 block of the framed functional-space cache. Decisive arms
+#: ``mr-<pool>-vgg19-<block>-<set>`` enter a nameable set as ONE member (``control_draws.py``'s
+#: ``mr-<set>``, so ``stack --draws`` reads its matched-subspace control); attribution arms
+#: ``mr-<pool>-vgg19-<block>-members`` enter N_full's members as separately stacked sources: the V
+#: members in their fit-time coordinates (the pool's one-member sets ``m-<m>``), E as its harness
+#: sources (raw Contract B columns, prereg §2.2). The member lists must match the pool's
+#: ``mr-full`` declaration (``tests/test_braintwill_commonality.py`` checks it).
+READOUT_POOLS = ("r021",)
+READOUT_BLOCKS = ("conv1_2", "conv2_2", "conv3_3", "conv4_3")
+READOUT_SETS = {"full": "mr-full", "strict": "mr-strict", "no-e": "mr-no-e"}
+READOUT_V = ("saliency", "emonet", "gist", "llstat", "depth", "faces_extent", "faces_layout", "resmem")
+READOUT_E = ("word-on", CUT_SPACE, "model:speech_rate.speech_rate_words", "model:onsets", "model:loudness",
+             "model:motion")
+
+
+def readout_arms(pool: str) -> dict[str, dict[str, tuple[str, ...]]]:
+    """The settle-2(b) arms of one release control pool: 4 blocks x (3 sets + attribution)."""
+    arms = {}
+    for b in READOUT_BLOCKS:
+        opaque = (f"cache:vgg19.{b}",)
+        for tag, name in READOUT_SETS.items():
+            arms[f"mr-{pool}-vgg19-{b}-{tag}"] = {"opaque": opaque, "nameable": (f"ctrl:{pool}.{name}",)}
+        arms[f"mr-{pool}-vgg19-{b}-members"] = {
+            "opaque": opaque, "members": tuple(f"ctrl:{pool}.m-{m}" for m in READOUT_V) + READOUT_E}
+    return arms
+
+
+COMMON_ARMS.update({a: d for pool in READOUT_POOLS for a, d in readout_arms(pool).items()})
+
 
 def source_model_table(model: str, src: str = "") -> str:
     """The films store table of a model an arm may name; ``ValueError`` otherwise."""
@@ -2429,15 +2459,24 @@ def draw_range(text: str) -> range:
     return range(int(a), int(b))
 
 
-def stack_job_spaces(arm: str, draws: str | None = None) -> list[str]:
-    """A stack job's spaces: the arm's, then (``draws``) each draw arm's, once each in order.
-    A draw arm's spaces without its draw (the opaque block alone) are the base arm's units."""
-    spaces = stack_spaces(arm)
+def stack_job_spaces(arms: str | list[str], draws: str | None = None) -> list[str]:
+    """A stack job's spaces: each arm's, then (``draws``) each draw arm's, once each in order.
+    A draw arm's spaces without its draw (the opaque block alone) are the base arm's units.
+
+    Several arms in one job fit each member once for all of them: a member's first-level fit
+    is not cached (only unions are), so arms sharing a member (one control set's draws against
+    four opaque blocks) would otherwise refit it in every job. A union's stack reads only its
+    own members' out-of-fold predictions, so its score does not depend on which job fitted it."""
+    arms = [arms] if isinstance(arms, str) else list(arms)
+    if not arms:
+        raise ValueError("a stack job needs at least one arm")
+    spaces = [s for arm in arms for s in stack_spaces(arm)]
     if draws is not None:
-        if DRAW_ARM.fullmatch(arm):
-            raise ValueError(f"--draws takes the base arm, not a draw arm ({arm!r})")
+        for arm in arms:
+            if DRAW_ARM.fullmatch(arm):
+                raise ValueError(f"--draws takes the base arm, not a draw arm ({arm!r})")
         for i in draw_range(draws):
-            spaces += stack_spaces(f"{arm}@d{i:03d}")
+            spaces += [s for arm in arms for s in stack_spaces(f"{arm}@d{i:03d}")]
     return list(dict.fromkeys(spaces))
 
 
@@ -2468,7 +2507,7 @@ def cmd_stack(args) -> None:
             continue
         todo[s] = u
     if not todo:
-        print(f"every {args.arm} stacked unit is cached for sub-{args.sub}")
+        print(f"every {' '.join(args.arm)} stacked unit is cached for sub-{args.sub}")
         return
     need = [src for src in per if any(src in u["sources"] for u in todo.values())]
     x, y, groups, bands = film_design(rows, combine_sources(per, need), paths.cleaned)
@@ -2919,10 +2958,11 @@ def main() -> None:
         add_edge_trim_args(p)
     k = sub.add_parser("stack")
     add_edge_trim_args(k)
-    k.add_argument("--arm", required=True)
+    k.add_argument("--arm", required=True, nargs="+",
+                   help="one or more arms; their members are fitted once for all of them")
     k.add_argument("--sub", required=True)
     k.add_argument("--oof", choices=STACK_OOF, required=True)
-    k.add_argument("--draws", help="A:B: also stack draws A..B-1 of the arm's control set (arm@dNNN)")
+    k.add_argument("--draws", help="A:B: also stack draws A..B-1 of each arm's control set (arm@dNNN)")
     k.add_argument("--backend", default="torch_cuda")
     d = sub.add_parser("directions")
     d.add_argument("--block", required=True, help="a projectable block (V, A, L) or <letter>.<tag>")

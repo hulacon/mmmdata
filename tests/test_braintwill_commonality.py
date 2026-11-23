@@ -1057,3 +1057,64 @@ def test_pspace_frontier_arms_declare_their_sources_and_draw_their_one_set(harne
     assert len(harness.check_arm("pspace-banding")["members"]) == 26
     with pytest.raises(ValueError, match="exactly one"):  # two control sets: no draw arm
         harness.check_arm("pspace-banding@d000")
+
+
+def test_readout_arms_declare_four_blocks_by_three_sets_plus_attribution(harness):
+    arms = harness.readout_arms("r021")
+    assert len(arms) == 16 and set(arms) <= set(harness.COMMON_ARMS)
+    for arm in arms:
+        harness.check_arm(arm)
+    assert harness.check_arm("mr-r021-vgg19-conv1_2-no-e") == {
+        "opaque": ("cache:vgg19.conv1_2",), "nameable": ("ctrl:r021.mr-no-e",)}
+    assert harness.check_arm("mr-r021-vgg19-conv4_3-full@d042")["nameable"] == ("ctrl:r021.mr-full.d042",)
+    members = harness.check_arm("mr-r021-vgg19-conv2_2-members")["members"]
+    assert len(members) == 14
+    with pytest.raises(ValueError, match="exactly one"):  # eight one-member sets: no draw arm
+        harness.check_arm("mr-r021-vgg19-conv2_2-members@d000")
+
+
+def test_readout_member_lists_match_the_pool_declaration(harness):
+    spec = importlib.util.spec_from_file_location("control_draws", HERE / "control_draws.py")
+    cd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cd)
+    store = {"word-on": "word-on", harness.CUT_SPACE: "cuts",
+             "model:speech_rate.speech_rate_words": "store:movies_audio_frames:speech_rate.speech_rate_words",
+             "model:onsets": "store:movies_audio_frames:onsets",
+             "model:loudness": "store:movies_audio_frames:loudness", "model:motion": "store:movies_frames:motion"}
+    for pool in harness.READOUT_POOLS:
+        sets = cd.POOLS[pool]["sets"]
+        for name in harness.READOUT_SETS.values():
+            assert name in sets
+        full = cd.set_spec(sets["mr-full"])["members"]
+        assert set(full) == set(harness.READOUT_V) | {store[e] for e in harness.READOUT_E}
+        for m in harness.READOUT_V:
+            assert cd.set_spec(sets[f"m-{m}"])["members"] == (m,)
+
+
+def test_a_multi_arm_job_lists_each_arm_and_shares_units_with_the_same_members(harness, monkeypatch):
+    for b in ("conv3_3", "conv4_3"):
+        monkeypatch.setitem(harness.COMMON_ARMS, f"t-{b}", {"opaque": (f"cache:vgg19.{b}",),
+                                                           "named": ("ctrl:p.s",)})
+    one = harness.stack_job_spaces("t-conv3_3", "0:2")
+    both = harness.stack_job_spaces(["t-conv3_3", "t-conv4_3"], "0:2")
+    assert one == harness.stack_job_spaces(["t-conv3_3"], "0:2")
+    assert set(both) == set(one) | set(harness.stack_job_spaces("t-conv4_3", "0:2"))
+    members = {tuple(harness.stack_sources(*harness.parse_stack(s))) for s in both}
+    # per draw: one solo draw union shared by both arms, plus one opaque+draw union per arm
+    assert len({m for m in members if any(".d" in x for x in m)}) == 2 * (1 + 2)
+    assert {x for m in members for x in m} == {"cache:vgg19.conv3_3", "cache:vgg19.conv4_3", "ctrl:p.s",
+                                               "ctrl:p.s.d000", "ctrl:p.s.d001"}
+    with pytest.raises(ValueError, match="at least one arm"):
+        harness.stack_job_spaces([])
+    with pytest.raises(ValueError, match="base arm"):
+        harness.stack_job_spaces(["t-conv3_3", "t-conv4_3@d000"], "0:2")
+
+
+def test_stack_takes_several_arms(harness, monkeypatch):
+    import sys
+
+    seen = {}
+    monkeypatch.setattr(harness, "cmd_stack", lambda a: seen.update(vars(a)))
+    monkeypatch.setattr(sys, "argv", ["harness.py", "stack", "--arm", "a", "b", "--sub", "##", "--oof", "reuse"])
+    harness.main()
+    assert seen["arm"] == ["a", "b"]
