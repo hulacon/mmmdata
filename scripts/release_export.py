@@ -20,6 +20,7 @@ Usage:
   release_export.py flag     ROOT [--glob 'sub-*/**/*_beh.tsv' ...] [--columns word] [--out PRIV.tsv]
   release_export.py sweep    ROOT [--names-file NAMES.txt] [--epoch YYYY-MM-DD] [--ext .tsv ...]
   release_export.py media    ROOT [--allow-dir stimuli ...]
+  release_export.py faces    ROOT [--subject 03 ...] [--report SCORES.tsv]
   release_export.py export   STAGE --offsets-out PRIV.tsv --pronoun-report PRIV.tsv
                              [--redactions SPEC.tsv] [--names-file NAMES.txt] [--epoch ...] [--dry-run]
                              [--commit-with-findings]
@@ -38,7 +39,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT / "src" / "python") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "src" / "python"))
 
-from release import dates, media, pronouns, redact, sweep  # noqa: E402
+from release import dates, faces, media, pronouns, redact, sweep  # noqa: E402
 from release.export import ExportOptions, run_export  # noqa: E402
 from release.stage import (  # noqa: E402
     Stage, StageError, check_private_input, check_private_output,
@@ -152,6 +153,22 @@ def cmd_media(args, cfg):
     return 1 if findings else 0
 
 
+def cmd_faces(args, cfg):
+    root = Stage(args.root, cfg, writable=False).root
+    subjects = {s.removeprefix("sub-") for s in args.subject} if args.subject else None
+    res = faces.audit(root, cfg.bids_root, cfg.source_dir, subjects,
+                      log=lambda m: print(m, file=sys.stderr))
+    if args.report:
+        Path(args.report).write_text(
+            faces.TSV_HEADER + "\n" + "".join(sc.row() + "\n" for sc in res.scores))
+    print("path\tkind\twhy")
+    for f in res.findings:
+        print(f"{f.path}\t{f.kind}\t{f.match}")
+    status = "CLEAN" if not res.findings else f"{len(res.findings)} finding(s)"
+    print(f"face audit of {root}: {len(res.scores)} volumes scored; {status}", file=sys.stderr)
+    return 1 if res.findings else 0
+
+
 def cmd_export(args, cfg):
     opts = ExportOptions(
         epoch=parse_epoch(args.epoch) if args.epoch else cfg.epoch,
@@ -219,6 +236,13 @@ def build_parser():
     s.add_argument("--allow-dir", action="append",
                    help="top-level directory to skip, repeatable (default: stimuli)")
     s.set_defaults(func=cmd_media)
+
+    s = sub.add_parser("faces", help="no anatomical face in the tree (exit 1 if any); "
+                                     "the collaborator-copy face check")
+    s.add_argument("root")
+    s.add_argument("--subject", action="append", help="bare label, repeatable (default: all)")
+    s.add_argument("--report", help="TSV with one row per scored volume")
+    s.set_defaults(func=cmd_faces)
 
     s = sub.add_parser("export", help="shift -> pronouns -> redact -> sweep")
     s.add_argument("stage")

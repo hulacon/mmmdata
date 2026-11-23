@@ -59,8 +59,10 @@ Usage:
   deface_anat.py verify  --subject 03             # re-check invariants from provenance
   deface_anat.py restore --subject 03             # put the originals back from their mirrors
   deface_anat.py reports --subject 03 [--dry-run] # move anat-rendering reports to sourcedata
-  deface_anat.py audit                            # every anat volume in the tree has provenance
+  deface_anat.py audit [--root TREE]              # no face anywhere in the tree (release.faces)
   deface_anat.py run     --subject 08 --raw-only  # converter guard: raw anat only, no fMRIPrep yet
+  deface_anat.py quarantine --subject 03 --scores sub-03_scores.tsv [--dry-run]
+                                                  # move audit `face` volumes to sourcedata
 """
 
 
@@ -1020,29 +1022,76 @@ def cmd_reports(args) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# quarantine                                                                  #
+# --------------------------------------------------------------------------- #
+def quarantine_rows(scores: Path, subject: str) -> list[dict]:
+    """The `face` rows of an audit score table for one subject."""
+    lines = scores.read_text().splitlines()
+    head = lines[0].split("\t")
+    rows = [dict(zip(head, ln.split("\t"))) for ln in lines[1:] if ln]
+    return [r for r in rows if r["verdict"] == "face" and r["subject"] == subject]
+
+
+def cmd_quarantine(args) -> int:
+    """Move every volume an audit scored as `face` out of the tree, to its
+    sourcedata mirror (copy, sha256 check, then delete), and record the move
+    in the subject's provenance under `quarantined`. For volumes that are not
+    worth defacing in place: superseded runs, by-products nothing reads."""
+    roots = load_roots()
+    root = Path(args.root) if args.root else roots.bids
+    if root.resolve() != roots.bids.resolve():
+        print(f"ERROR: quarantine works on the configured BIDS root only ({roots.bids}); "
+              f"a share tree or stage is rebuilt from it, not edited")
+        return 2
+    rows = quarantine_rows(Path(args.scores), args.subject)
+    prov_path = roots.provenance_path(args.subject)
+    prov = load_provenance(prov_path)
+    prov.setdefault("quarantined", {})
+    moved = 0
+    for r in rows:
+        f = roots.bids / r["path"]
+        if str(f) in prov["quarantined"] and not f.exists():
+            print(f"- already quarantined: {f}")
+            continue
+        if not f.exists():
+            print(f"ERROR: {f} is in the audit but not on disk, and was never quarantined")
+            return 2
+        mirror = roots.mirror(f)
+        sha = sha256(f)
+        print(f"- {f}  (face signal {r['face_signal']}, {r['mask']} {r['method']})\n  -> {mirror}")
+        backup(f, mirror, sha, args.dry_run)
+        if args.dry_run:
+            continue
+        f.unlink()
+        prov["quarantined"][str(f)] = {"mirror": str(mirror), "sha256": sha, "moved_at": now(),
+                                       "face_signal": float(r["face_signal"]), "mask": r["mask"],
+                                       "method": r["method"], "audit": str(Path(args.scores))}
+        save_provenance(prov_path, prov)          # after each file: a denied delete leaves the record exact
+        moved += 1
+    print(f"{len(rows)} face volume(s) for sub-{args.subject}, {moved} moved" + (" (DRY RUN)" if args.dry_run else ""))
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # audit                                                                       #
 # --------------------------------------------------------------------------- #
 def cmd_audit(args) -> int:
+    """No face in a tree: raw anatomy against its provenance, and every
+    volume (derivatives included) scored against the subject's recorded face
+    mask. The logic is `release.faces`; this verb keeps its old name and
+    defaults to the configured BIDS root."""
+    from release import faces
     roots = load_roots()
-    subjects = sorted(p.name[4:] for p in roots.bids.glob("sub-*") if p.is_dir())
-    bad = 0
-    for s in subjects:
-        prov_path = roots.provenance_path(s)
-        prov = json.loads(prov_path.read_text()) if prov_path.exists() else None
-        raw = sorted((roots.bids / f"sub-{s}").glob("ses-*/anat/*.nii.gz"))
-        raw = [r for r in raw if r.name.endswith(("_T1w.nii.gz", "_T2w.nii.gz"))]
-        for r in raw:
-            rec = prov["files"].get(str(r)) if prov else None
-            if rec is None:
-                print(f"UNDEFACED  {r}  (no provenance entry in {prov_path})")
-                bad += 1
-            elif sha256(r) != rec["sha_after"]:
-                print(f"CHANGED    {r}  (sha256 differs from the recorded defaced file)")
-                bad += 1
-            elif args.verbose:
-                print(f"ok         {r}")
-    print(f"{len(subjects)} subjects, {bad} problems")
-    return 1 if bad else 0
+    root = Path(args.root) if args.root else roots.bids
+    res = faces.audit(root, roots.bids, roots.source, log=print)
+    for f in res.findings:
+        print(f"{f.kind.upper():14s} {f.path}  ({f.match})")
+    if args.verbose:
+        for sc in res.scores:
+            if sc.verdict == "ok":
+                print(f"ok             {sc.path}  ({sc.method} {sc.mask} {sc.signal})")
+    print(f"{root}: {len(res.scores)} volumes scored, {len(res.findings)} problems")
+    return 1 if res.findings else 0
 
 
 # --------------------------------------------------------------------------- #
@@ -1066,7 +1115,14 @@ def main(argv=None) -> int:
     p.add_argument("--subject", required=True)
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_reports)
-    a = sub.add_parser("audit", help="every raw anat NIfTI in the tree has a defacing provenance entry")
+    q = sub.add_parser("quarantine", help="move a subject's audit `face` volumes to their sourcedata mirrors")
+    q.add_argument("--subject", required=True)
+    q.add_argument("--scores", required=True, help="the audit's per-volume score TSV (release_export.py faces --report)")
+    q.add_argument("--root", help="must be the configured BIDS root (default)")
+    q.add_argument("--dry-run", action="store_true")
+    q.set_defaults(func=cmd_quarantine)
+    a = sub.add_parser("audit", help="no face anywhere in a tree: raw anat provenance + every volume's face region")
+    a.add_argument("--root", help="tree to audit: a share tree or release stage (default: the configured BIDS root)")
     a.add_argument("--verbose", action="store_true")
     a.set_defaults(func=cmd_audit)
     args = ap.parse_args(argv)
