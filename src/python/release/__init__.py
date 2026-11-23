@@ -7,10 +7,12 @@ or at a directory that contains either of them.
 
 Two uses
 --------
-* **A copy for collaborators** needs checks, not transforms: anatomical
-  images defaced (``scripts/deface_anat.py audit``) and no recordings of
-  participants' voices (``release_export.py media <copy>``, exit 0 when the
-  copy holds no audio or video outside ``stimuli/``). Neither check writes.
+* **A copy for collaborators** needs checks, not transforms: no face in any
+  anatomical volume, raw or derived (``release_export.py faces <copy>``,
+  also ``scripts/deface_anat.py audit --root <copy>``; exit 0 when every
+  volume's face region is empty), and no recordings of participants' voices
+  (``release_export.py media <copy>``, exit 0 when the copy holds no audio
+  or video outside ``stimuli/``). Neither check writes.
 * **A public release** runs the full export below.
 
 Expected usage (public release)
@@ -56,5 +58,7 @@ Steps
               tree for audio/video files.
 ``media``     the audio/video part of the sweep on its own (no dates or
               names), for checking a collaborator copy.
+``faces``     score every anatomical volume for a face against the
+              subject's recorded face mask (``release.faces``).
 ``export``    run the four in order.
 """
