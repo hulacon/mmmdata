@@ -18,6 +18,7 @@ SUBJECT=${SUBJECTS[$((SLURM_ARRAY_TASK_ID - 1))]}
 echo "== ${SUBJECT} on ${SLURMD_NODENAME} $(date)"
 export REPO_ROOT="${REPO_ROOT:-/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata}"
 source "${REPO_ROOT}/scripts/load_config.sh"
-source "${REPO_ROOT}/.venv/bin/activate"
+# The venv lives in the canonical checkout (a worktree has none).
+source "${VENV_ROOT:-/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata}/.venv/bin/activate"
 python ${REPO_ROOT}/scripts/retrieval_modeling/benchmark_6cell.py --subject ${SUBJECT} "$@"
 RC=$?; echo "== exit ${RC} $(date)  (seff ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID})"; exit ${RC}
