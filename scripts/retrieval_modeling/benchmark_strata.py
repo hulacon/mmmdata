@@ -35,6 +35,7 @@ A stratum's n_items is reported as is; consumers decide what is too thin.
 
 Usage:
     python benchmark_strata.py --subject sub-## [--types B D] [--norms runmean]
+    python benchmark_strata.py --subject sub-## --types D --roi-set networks   # -> <sub>_set-networks_*
 """
 
 from __future__ import annotations
@@ -167,7 +168,10 @@ def main():
     ap.add_argument("--arm", default="siloed", choices=list(b6.ARM_FILES))
     ap.add_argument("--types", nargs="+", default=["B", "D"], choices=["B", "C", "D"])
     ap.add_argument("--norms", nargs="+", default=["runmean"], choices=["raw", "runmean"])
-    ap.add_argument("--rois", nargs="+", default=ps.PATTERN_ROI_NAMES)
+    ap.add_argument("--roi-set", default="pattern6",
+                    help="ROI cache set (pattern6 | ladder | networks); see benchmark_6cell")
+    ap.add_argument("--rois", nargs="+", default=None,
+                    help="subset of the set's ROIs (default: all in the cache)")
     ap.add_argument("--n-perm", type=int, default=1000)
     ap.add_argument("--meanvol-frac", type=float, default=0.25)
     ap.add_argument("--beta-cap", type=float, default=100.0)
@@ -186,16 +190,18 @@ def main():
     rows, item_rows, anchor_rows = [], [], []
     for t in args.types:
         t0 = time.time()
-        trials, patterns, mvs = b6.load_arm(cache_root, args.subject, args.arm, t)
-        trials["resp"] = load_resp(cache_root, args.subject, args.arm, t)
-        trials["word"] = load_field(cache_root, args.subject, args.arm, t, "word")
-        trials["pairId"] = load_field(cache_root, args.subject, args.arm, t, "pairId").astype(float)
+        trials, _, _ = b6.load_arm(cache_root, args.subject, args.arm, t, args.roi_set, rois=[])
+        rs = args.roi_set
+        trials["resp"] = load_resp(cache_root, args.subject, args.arm, t, rs)
+        trials["word"] = load_field(cache_root, args.subject, args.arm, t, "word", rs)
+        trials["pairId"] = load_field(cache_root, args.subject, args.arm, t, "pairId", rs).astype(float)
         afc = load_afc(bids_root, args.subject, trials)
         ta = annotate(trials, afc)
         pools = b6.run_pools(trials)
         print(f"[{args.arm} TYPE{t}] {len(trials)} trials; 2AFC outcomes "
               f"{afc.value_counts().to_dict()}", flush=True)
-        for roi in args.rois:
+        for roi in (args.rois or b6.cache_roi_names(cache_root, args.subject, args.arm, t, args.roi_set)):
+            _, patterns, mvs = b6.load_arm(cache_root, args.subject, args.arm, t, args.roi_set, rois=[roi])
             ok = b6.clean_voxels(patterns[roi], mvs.get(roi), args.meanvol_frac, args.beta_cap)
             for norm in args.norms:
                 R = b6.corr_matrix(b6.normalize(patterns[roi][ok], trials, norm))
@@ -223,29 +229,23 @@ def main():
                                           "within", "across"]])
             print(f"  {roi:12s} voxels {ok.sum()}/{len(ok)}  {time.time() - t0:.0f}s", flush=True)
 
-    stem = out_dir / args.subject
+    stem = out_dir / (args.subject + ("" if args.roi_set == "pattern6" else f"_set-{args.roi_set}"))
     pd.DataFrame(rows).to_csv(f"{stem}_strata.tsv", sep="\t", index=False, float_format="%.5g")
     pd.DataFrame(item_rows).to_csv(f"{stem}_strata_items.tsv.gz", sep="\t", index=False,
                                    float_format="%.5g")
     pd.concat(anchor_rows).to_csv(f"{stem}_anchor_pairs.tsv.gz", sep="\t", index=False,
                                   float_format="%.5g")
-    print(f"\nwrote {out_dir}/{args.subject}_{{strata.tsv,strata_items.tsv.gz,anchor_pairs.tsv.gz}}")
+    print(f"\nwrote {stem}_{{strata.tsv,strata_items.tsv.gz,anchor_pairs.tsv.gz}}")
 
 
-def _npz(cache_root, sub, arm, t, phase_dir):
-    p = (b6.cache_dir(cache_root, sub, phase_dir)
-         / f"{sub}_arm-{phase_dir}_desc-type{t.lower()}_roipatterns.npz")
-    return np.load(p, allow_pickle=True)
-
-
-def load_field(cache_root, sub, arm, t, field) -> np.ndarray:
+def load_field(cache_root, sub, arm, t, field, roi_set="pattern6") -> np.ndarray:
     """A per-trial cache field, concatenated in load_arm's phase order."""
-    return np.concatenate([_npz(cache_root, sub, arm, t, b6.ARM_FILES[arm][p])[field]
-                           for p in b6.PHASES])
+    return np.concatenate([np.load(b6.cache_file(cache_root, sub, b6.ARM_FILES[arm][p], t, roi_set),
+                                   allow_pickle=True)[field] for p in b6.PHASES])
 
 
-def load_resp(cache_root, sub, arm, t) -> np.ndarray:
-    return pd.to_numeric(pd.Series(load_field(cache_root, sub, arm, t, "resp").astype(str)),
+def load_resp(cache_root, sub, arm, t, roi_set="pattern6") -> np.ndarray:
+    return pd.to_numeric(pd.Series(load_field(cache_root, sub, arm, t, "resp", roi_set).astype(str)),
                          errors="coerce").to_numpy()
 
 

@@ -43,7 +43,7 @@ echo "Subject: ${SUBJECT}   Arm: ${ARM}"
 echo "Start Time: $(date)"
 echo "=========================================="
 
-export REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
+export REPO_ROOT="${REPO_ROOT:-/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata}"
 source "${REPO_ROOT}/scripts/load_config.sh"
 source "${REPO_ROOT}/.venv/bin/activate"
 

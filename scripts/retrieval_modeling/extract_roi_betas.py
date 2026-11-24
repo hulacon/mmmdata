@@ -40,11 +40,20 @@ VTCAG (VTC, AG), Posterior (the rung-(i) index of the dseg), PrfUnion*
 (pos, negstrict, negother). Design record: mmmdata-agents
 docs/results/ (encoding-retrieval map pilot).
 
+``--roi-set networks`` reads whole-network ROIs instead: the 17 networks of the
+Schaefer 2018 17-network parcellation (scale 400, bilateral; ``Net<name>``,
+parcels grouped by the network field of their label), plus the Harvard-Oxford
+hippocampus whole and split on the long axis at the uncal apex
+(``HippocampusAnterior`` / ``HippocampusPosterior``, MNI y > / <= UNCAL_APEX_Y_MNI).
+Masks are resampled to the fit grid by nearest neighbour, like pattern6. The file
+is ``<sub>_arm-<arm>_set-networks_desc-type{b,c,d}_roipatterns.npz``.
+
 Usage:
     python extract_roi_betas.py --subject sub-## --arm pooled --dry-run
     python extract_roi_betas.py --subject sub-## --arm ret-image
     python extract_roi_betas.py --subject sub-## --arm enc --types D
     python extract_roi_betas.py --subject sub-## --arm enc --types D --roi-set ladder
+    python extract_roi_betas.py --subject sub-## --arm enc --types D --roi-set networks
 """
 
 from __future__ import annotations
@@ -141,6 +150,10 @@ def roi_masks_on_grid(ref_img):
 
 
 ROI_TREE = "functional_rois"
+SCHAEFER = ("tpl-MNI152NLin2009cAsym", "atlas-Schaefer2018_seg-17n_scale-400_res-2_dseg")
+# Hippocampal long-axis boundary: the uncal apex, conventionally MNI y = -21
+# (Poppenk et al. 2013, TICS). A declaration, not a measurement on these data.
+UNCAL_APEX_Y_MNI = -21.0
 PRF_MASKS = ("pos", "negstrict", "union")
 
 
@@ -199,6 +212,40 @@ def ladder_masks_on_grid(ref_img, roi_root: Path, subject: str):
             blocks[name], blocknames[name] = b, ["pos", "negstrict", "negother"]
     vox_idx = {roi: np.flatnonzero(m.ravel(order="C")) for roi, m in masks.items()}
     return masks, vox_idx, rungs, blocks, blocknames
+
+
+def networks_masks_on_grid(ref_img, atlases_dir: Path):
+    """Schaefer-17 whole-network masks (bilateral) + HO hippocampus whole /
+    anterior / posterior, resampled to the fit grid."""
+    tpl, stem = SCHAEFER
+    nii = atlases_dir / tpl / "anat" / f"{tpl}_{stem}.nii.gz"
+    tsv = atlases_dir / tpl / "anat" / f"{tpl}_{stem}.tsv"
+    for f in (nii, tsv):
+        if not f.exists():
+            sys.exit(f"ERROR: Schaefer atlas file missing: {f}")
+    img = nib.load(str(nii))
+    data = np.asarray(img.dataobj).astype(int)
+    labels = pd.read_csv(tsv, sep="\t")
+    net = labels["name"].str.split("_").str[2]
+    if net.isna().any() or not labels["name"].str.split("_").str[1].isin(["LH", "RH"]).all():
+        sys.exit(f"ERROR: unexpected Schaefer label format in {tsv}")
+    masks_atlas = {}
+    for n in sorted(net.unique()):
+        masks_atlas[f"Net{n}"] = np.isin(data, labels.loc[net == n, "index"].to_numpy())
+    masks = ps.resample_masks_to_bold(masks_atlas, img.affine, ref_img)
+
+    ho, ho_affine = ps.load_bilateral_roi_masks()
+    hpc = ho["Hippocampus"]
+    j = np.arange(hpc.shape[1])
+    ijk = np.stack(np.meshgrid(np.arange(hpc.shape[0]), j, np.arange(hpc.shape[2]),
+                               indexing="ij"), -1)
+    y = nib.affines.apply_affine(ho_affine, ijk)[..., 1]
+    hmasks = {"Hippocampus": hpc,
+              "HippocampusAnterior": hpc & (y > UNCAL_APEX_Y_MNI),
+              "HippocampusPosterior": hpc & (y <= UNCAL_APEX_Y_MNI)}
+    masks.update(ps.resample_masks_to_bold(hmasks, ho_affine, ref_img))
+    vox_idx = {roi: np.flatnonzero(m.ravel(order="C")) for roi, m in masks.items()}
+    return masks, vox_idx
 
 
 def load_beta_dict(fit_dir: Path, beta_type: str) -> dict:
@@ -286,9 +333,10 @@ def main():
                     help=f"Override derivatives/{tb.OUTPUT_TREE}")
     ap.add_argument("--cache-root", default=None,
                     help=f"Override derivatives/{CACHE_TREE}")
-    ap.add_argument("--roi-set", default="pattern6", choices=["pattern6", "ladder"],
+    ap.add_argument("--roi-set", default="pattern6", choices=["pattern6", "ladder", "networks"],
                     help="pattern6 = the six benchmark ROIs (default); ladder = every "
-                         "row of functional_rois/ladder.tsv + the subject's pRF masks")
+                         "row of functional_rois/ladder.tsv + the subject's pRF masks; "
+                         "networks = Schaefer-17 whole networks + hippocampus long axis")
     ap.add_argument("--roi-root", default=None, help=f"Override derivatives/{ROI_TREE}")
     ap.add_argument("--dry-run", action="store_true",
                     help="Resolve inputs, build ROI masks, report; load no betas")
@@ -313,6 +361,8 @@ def main():
     if args.roi_set == "ladder":
         roi_root = Path(args.roi_root) if args.roi_root else bids_root / "derivatives" / ROI_TREE
         masks, vox_idx, rungs, blocks, blocknames = ladder_masks_on_grid(ref_img, roi_root, args.subject)
+    elif args.roi_set == "networks":
+        masks, vox_idx = networks_masks_on_grid(ref_img, bids_root / "derivatives" / "atlases")
     else:
         masks, vox_idx = roi_masks_on_grid(ref_img)
     print(f"grid {ref_img.shape[:3]}; {len(vox_idx)} ROIs ({args.roi_set}); voxels "

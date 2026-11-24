@@ -33,6 +33,7 @@ Outputs (per subject): <out_root>/results/retrieval_modeling/<sub>/
   <sub>_cue_shared_items.tsv.gz   item level
 Usage:
     python cue_shared_subspace.py --subject sub-## [--types D] [--ks 1 2 5 10 20 50]
+    python cue_shared_subspace.py --subject sub-## --roi-set networks   # -> <sub>_set-networks_*
 """
 
 from __future__ import annotations
@@ -114,7 +115,10 @@ def main():
     ap.add_argument("--subject", required=True)
     ap.add_argument("--arm", default="siloed", choices=list(b6.ARM_FILES))
     ap.add_argument("--types", nargs="+", default=["D"], choices=["B", "C", "D"])
-    ap.add_argument("--rois", nargs="+", default=ps.PATTERN_ROI_NAMES)
+    ap.add_argument("--roi-set", default="pattern6",
+                    help="ROI cache set (pattern6 | ladder | networks); see benchmark_6cell")
+    ap.add_argument("--rois", nargs="+", default=None,
+                    help="subset of the set's ROIs (default: all in the cache)")
     ap.add_argument("--ks", nargs="+", type=int, default=[1, 2, 5, 10, 20, 50])
     ap.add_argument("--pca-rank", type=int, default=200)
     ap.add_argument("--n-perm", type=int, default=1000)
@@ -134,7 +138,7 @@ def main():
 
     rows, item_rows = [], []
     for t in args.types:
-        trials, patterns, mvs = b6.load_arm(cache_root, args.subject, args.arm, t)
+        trials, _, _ = b6.load_arm(cache_root, args.subject, args.arm, t, args.roi_set, rois=[])
         pools = b6.run_pools(trials)
         ret = trials[trials.subgroup.isin(["image", "word"]) & ~trials.anchor & ~trials.fin]
         wide = ret.reset_index().pivot_table(index="mmmId", columns="subgroup", values="index",
@@ -146,7 +150,8 @@ def main():
         all_pairs = {f"{X}<->{Y}": b6.build_pairs(trials, X, Y) for X, Y in CELLS}
         all_pairs = {c: p[~p.anchor & ~p.same_run & ~p.fin] for c, p in all_pairs.items()}
         print(f"[{args.arm} TYPE{t}] {len(wide)} items in {len(folds)} session folds", flush=True)
-        for roi in args.rois:
+        for roi in (args.rois or b6.cache_roi_names(cache_root, args.subject, args.arm, t, args.roi_set)):
+            _, patterns, mvs = b6.load_arm(cache_root, args.subject, args.arm, t, args.roi_set, rois=[roi])
             t0 = time.time()
             ok = b6.clean_voxels(patterns[roi], mvs.get(roi), args.meanvol_frac, args.beta_cap)
             P = b6.normalize(patterns[roi][ok], trials, "runmean")
@@ -195,7 +200,7 @@ def main():
                     item_rows.append(meta | dict(mmmId=int(mmm), within=it.within, across=it.across))
             print(f"  {roi:12s} V={V}  {time.time() - t0:.0f}s", flush=True)
 
-    stem = out_dir / args.subject
+    stem = out_dir / (args.subject + ("" if args.roi_set == "pattern6" else f"_set-{args.roi_set}"))
     pd.DataFrame(rows).to_csv(f"{stem}_cue_shared.tsv", sep="\t", index=False, float_format="%.5g")
     pd.DataFrame(item_rows).to_csv(f"{stem}_cue_shared_items.tsv.gz", sep="\t", index=False,
                                    float_format="%.5g")
