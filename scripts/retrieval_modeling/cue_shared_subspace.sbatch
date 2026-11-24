@@ -2,7 +2,7 @@
 #SBATCH --job-name=tb_cue_shared
 #SBATCH --account=hulacon
 #SBATCH --partition=compute
-#SBATCH --time=06:00:00
+#SBATCH --time=12:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4

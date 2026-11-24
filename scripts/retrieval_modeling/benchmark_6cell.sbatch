@@ -16,7 +16,7 @@
 SUBJECTS=(sub-03 sub-04 sub-05)
 SUBJECT=${SUBJECTS[$((SLURM_ARRAY_TASK_ID - 1))]}
 echo "== ${SUBJECT} on ${SLURMD_NODENAME} $(date)"
-export REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
+export REPO_ROOT="${REPO_ROOT:-/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata}"
 source "${REPO_ROOT}/scripts/load_config.sh"
 source "${REPO_ROOT}/.venv/bin/activate"
 python ${REPO_ROOT}/scripts/retrieval_modeling/benchmark_6cell.py --subject ${SUBJECT} "$@"
