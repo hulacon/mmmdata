@@ -13,12 +13,13 @@ Strata (non-anchor, cross-run, TB trials only — fin=False):
              task's key list. enc<->image and enc<->word: crossed with reCon,
              because ratings depend strongly on the retrieval delay.
              image<->word: by each side's rating separately (viv_image,
-             viv_word).
+             viv_word), crossed with the item's reCon (both retrievals share it).
   afc        the item's later two-alternative recognition outcome
              (beh/ task-TB2AFC, one test per non-anchor item): hc_correct /
-             lc_correct / incorrect. Crossed with reCon for enc<->ret cells.
+             lc_correct / incorrect. Crossed with reCon (image<->word: the
+             item's reCon).
   enCon      the item's encoding condition (1 single, 2 repeated x3,
-             3 triplet x3). Crossed with reCon for enc<->ret cells; enc<->enc
+             3 triplet x3). Crossed with reCon for enc<->ret and image<->word; enc<->enc
              (tuning-exposed — read TYPEB beside TYPED) by enCon alone.
 Anchors (the six super-repeat items, sharedId=1; anchor=True, cross-run):
   role       triplet context (pairId 1-3) vs single context (pairId 75-77),
@@ -110,6 +111,10 @@ def augment(pairs: pd.DataFrame, t: pd.DataFrame) -> pd.DataFrame:
     p = pairs.copy()
     p["viv_a"], p["viv_b"] = t.viv.to_numpy()[a], t.viv.to_numpy()[b]
     p["enCon"] = t.item_enCon.to_numpy()[a]
+    # an item's two retrievals share its reCon, so retrieval<->retrieval
+    # cells can be crossed with the retrieval delay too
+    p["item_reCon"] = np.where(np.isnan(t.reCon.to_numpy()[b]), t.reCon.to_numpy()[a],
+                               t.reCon.to_numpy()[b])
     p["afc"] = t.afc.to_numpy()[a]
     p["role"] = t.role.to_numpy()[a]
     p["ses_a"], p["ses_b"] = t.ses_num.to_numpy()[a], t.ses_num.to_numpy()[b]
@@ -146,8 +151,8 @@ def plan(X: str, Y: str):
         return [("vividness", ["reCon", "viv_b"]), ("afc", ["reCon", "afc"]),
                 ("enCon", ["reCon", "enCon"])]
     if (X, Y) == ("image", "word"):
-        return [("viv_image", ["viv_a"]), ("viv_word", ["viv_b"]), ("afc", ["afc"]),
-                ("enCon", ["enCon"])]
+        return [("viv_image", ["item_reCon", "viv_a"]), ("viv_word", ["item_reCon", "viv_b"]),
+                ("afc", ["item_reCon", "afc"]), ("enCon", ["item_reCon", "enCon"])]
     if (X, Y) == ("enc", "enc"):
         return [("enCon", ["enCon"])]
     return []
