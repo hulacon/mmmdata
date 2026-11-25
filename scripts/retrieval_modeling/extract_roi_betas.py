@@ -54,6 +54,12 @@ Usage:
     python extract_roi_betas.py --subject sub-## --arm enc --types D
     python extract_roi_betas.py --subject sub-## --arm enc --types D --roi-set ladder
     python extract_roi_betas.py --subject sub-## --arm enc --types D --roi-set networks
+
+``--roi-set hcp`` reads bilateral HCP-MMP1 areas and unions (``HCP_ROIS``) from
+the MNI152NLin2009cAsym res-2 volume, resampled to the fit grid by nearest
+neighbour. These match the surface HCP areas, so one ROI definition can be
+compared across volume and surface fits. The file is
+``<sub>_arm-<arm>_set-hcp_desc-type{b,c,d}_roipatterns.npz``.
 """
 
 from __future__ import annotations
@@ -151,6 +157,17 @@ def roi_masks_on_grid(ref_img):
 
 ROI_TREE = "functional_rois"
 SCHAEFER = ("tpl-MNI152NLin2009cAsym", "atlas-Schaefer2018_seg-17n_scale-400_res-2_dseg")
+HCPMMP = ("tpl-MNI152NLin2009cAsym", "atlas-HCPMMP1_res-2_dseg")
+#: ``--roi-set hcp``: bilateral HCP-MMP1 areas and unions (name -> area labels).
+HCP_ROIS = {
+    "V1": ["V1"], "V2": ["V2"], "V3": ["V3"], "V4": ["V4"],
+    "EVC_hcp": ["V1", "V2", "V3"],
+    "LO": ["LO1", "LO2", "LO3"],
+    "FFC": ["FFC"], "PH": ["PH"], "VVC": ["VVC"], "PIT": ["PIT"],
+    "VTC_hcp": ["FFC", "PH", "VVC", "PIT", "VMV1", "VMV2", "VMV3"],
+    "PGi": ["PGi"], "PFm": ["PFm"],
+    "A1": ["A1"],
+}
 # Hippocampal long-axis boundary: the uncal apex, conventionally MNI y = -21
 # (Poppenk et al. 2013, TICS). A declaration, not a measurement on these data.
 UNCAL_APEX_Y_MNI = -21.0
@@ -248,6 +265,32 @@ def networks_masks_on_grid(ref_img, atlases_dir: Path):
     return masks, vox_idx
 
 
+def hcp_masks_on_grid(ref_img, atlases_dir: Path):
+    """Bilateral HCP-MMP1 areas (``HCP_ROIS``) from the MNI volume, resampled
+    to the fit grid."""
+    tpl, stem = HCPMMP
+    nii = atlases_dir / tpl / "anat" / f"{tpl}_{stem}.nii.gz"
+    tsv = atlases_dir / tpl / "anat" / f"{tpl}_{stem}.tsv"
+    for f in (nii, tsv):
+        if not f.exists():
+            sys.exit(f"ERROR: HCP-MMP1 atlas file missing: {f}")
+    img = nib.load(str(nii))
+    data = np.asarray(img.dataobj).astype(int)
+    labels = pd.read_csv(tsv, sep="\t")
+    area = labels["name"].str.extract(r"^[LR]_(.+)_ROI$")[0]
+    if area.isna().any():
+        sys.exit(f"ERROR: unexpected HCP-MMP1 label format in {tsv}")
+    masks_atlas = {}
+    for roi, areas in HCP_ROIS.items():
+        missing = sorted(set(areas) - set(area))
+        if missing:
+            sys.exit(f"ERROR: HCP-MMP1 areas {missing} not in {tsv}")
+        masks_atlas[roi] = np.isin(data, labels.loc[area.isin(areas), "index"].to_numpy())
+    masks = ps.resample_masks_to_bold(masks_atlas, img.affine, ref_img)
+    vox_idx = {roi: np.flatnonzero(m.ravel(order="C")) for roi, m in masks.items()}
+    return masks, vox_idx
+
+
 def load_beta_dict(fit_dir: Path, beta_type: str) -> dict:
     f = fit_dir / "glmsingle_outputs" / BETA_FILES[beta_type]
     if not f.exists():
@@ -333,10 +376,11 @@ def main():
                     help=f"Override derivatives/{tb.OUTPUT_TREE}")
     ap.add_argument("--cache-root", default=None,
                     help=f"Override derivatives/{CACHE_TREE}")
-    ap.add_argument("--roi-set", default="pattern6", choices=["pattern6", "ladder", "networks"],
+    ap.add_argument("--roi-set", default="pattern6", choices=["pattern6", "ladder", "networks", "hcp"],
                     help="pattern6 = the six benchmark ROIs (default); ladder = every "
                          "row of functional_rois/ladder.tsv + the subject's pRF masks; "
-                         "networks = Schaefer-17 whole networks + hippocampus long axis")
+                         "networks = Schaefer-17 whole networks + hippocampus long axis; "
+                         "hcp = bilateral HCP-MMP1 areas (HCP_ROIS)")
     ap.add_argument("--roi-root", default=None, help=f"Override derivatives/{ROI_TREE}")
     ap.add_argument("--dry-run", action="store_true",
                     help="Resolve inputs, build ROI masks, report; load no betas")
@@ -363,6 +407,8 @@ def main():
         masks, vox_idx, rungs, blocks, blocknames = ladder_masks_on_grid(ref_img, roi_root, args.subject)
     elif args.roi_set == "networks":
         masks, vox_idx = networks_masks_on_grid(ref_img, bids_root / "derivatives" / "atlases")
+    elif args.roi_set == "hcp":
+        masks, vox_idx = hcp_masks_on_grid(ref_img, bids_root / "derivatives" / "atlases")
     else:
         masks, vox_idx = roi_masks_on_grid(ref_img)
     print(f"grid {ref_img.shape[:3]}; {len(vox_idx)} ROIs ({args.roi_set}); voxels "
