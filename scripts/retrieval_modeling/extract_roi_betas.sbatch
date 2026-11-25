@@ -43,9 +43,10 @@ echo "Subject: ${SUBJECT}   Arm: ${ARM}"
 echo "Start Time: $(date)"
 echo "=========================================="
 
-export REPO_ROOT="/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata"
+export REPO_ROOT="${REPO_ROOT:-/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata}"
 source "${REPO_ROOT}/scripts/load_config.sh"
-source "${REPO_ROOT}/.venv/bin/activate"
+# The venv lives in the canonical checkout (a worktree has none).
+source "${VENV_ROOT:-/gpfs/projects/hulacon/shared/mmmdata/code/mmmdata}/.venv/bin/activate"
 
 python ${REPO_ROOT}/scripts/retrieval_modeling/extract_roi_betas.py \
     --subject ${SUBJECT} --arm ${ARM} "$@"

@@ -56,8 +56,12 @@ fits, DECIDED 2026-09-11); `siloed-tbonly` reads the retained TB-only
 retrieval caches (`ret-*-tbonly`) with the same enc cache; `pooled` reads the
 retained pooled caches (its fit tree was deleted 2026-09-11).
 
+Other ROI sets (--roi-set ladder | networks, from extract_roi_betas.py) read
+``<sub>_arm-<arm>_set-<set>_...`` caches and write ``<sub>_set-<set>_6cell*``.
+
 Usage:
     python benchmark_6cell.py --subject sub-## [--arms siloed siloed-tbonly pooled] [--types B C D]
+    python benchmark_6cell.py --subject sub-## --arms siloed --types D --roi-set networks
 """
 
 from __future__ import annotations
@@ -103,16 +107,50 @@ def cache_dir(cache_root: Path, sub: str, arm_dir: str) -> Path:
     return cache_root / "cache" / "glmsingle_tb" / sub / arm_dir
 
 
-def load_arm(cache_root: Path, sub: str, arm: str, t: str):
-    """-> trials DataFrame (one row per column), {roi: (V, N)}, {roi: meanvol}."""
+def cache_file(cache_root: Path, sub: str, arm_dir: str, t: str, roi_set: str = "pattern6") -> Path:
+    set_tag = "" if roi_set == "pattern6" else f"_set-{roi_set}"
+    return (cache_dir(cache_root, sub, arm_dir)
+            / f"{sub}_arm-{arm_dir}{set_tag}_desc-type{t.lower()}_roipatterns.npz")
+
+
+def cache_roi_names(cache_root: Path, sub: str, arm: str, t: str, roi_set: str = "pattern6") -> list:
+    """The ROI names of an arm's cache (read without loading any patterns)."""
+    arm_dir = ARM_FILES[arm][PHASES[0]] if arm in ARM_FILES else "pooled"
+    p = cache_file(cache_root, sub, arm_dir, t, roi_set)
+    if not p.exists():
+        sys.exit(f"ERROR: cache missing: {p}")
+    return [str(r) for r in np.load(p, allow_pickle=True)["roi_names"]]
+
+
+def load_arm(cache_root: Path, sub: str, arm: str, t: str, roi_set: str = "pattern6",
+             rois: list | None = None):
+    """-> trials DataFrame (one row per column), {roi: (V, N)}, {roi: meanvol}.
+
+    ROI names come from the cache's ``roi_names`` (pattern6: the six benchmark
+    ROIs; other sets: whatever extract_roi_betas.py --roi-set wrote) and must
+    agree across the arm's phase files. ``rois`` restricts which patterns are
+    decompressed (npz members load lazily), so a large set can be read one ROI
+    at a time; ``rois=[]`` returns the trial table only."""
     files = ([(ARM_FILES[arm][p], p) for p in PHASES] if arm in ARM_FILES
              else [("pooled", None)])
-    frames, pats, mvs = [], {r: [] for r in ps.PATTERN_ROI_NAMES}, {}
+    frames, pats, mvs, roi_names = [], None, {}, None
     for arm_dir, phase in files:
-        p = cache_dir(cache_root, sub, arm_dir) / f"{sub}_arm-{arm_dir}_desc-type{t.lower()}_roipatterns.npz"
+        p = cache_file(cache_root, sub, arm_dir, t, roi_set)
         if not p.exists():
-            sys.exit(f"ERROR: cache missing: {p}\n  run extract_roi_betas.py --subject {sub} --arm {arm_dir}")
+            set_arg = "" if roi_set == "pattern6" else f" --roi-set {roi_set}"
+            sys.exit(f"ERROR: cache missing: {p}\n  run extract_roi_betas.py --subject {sub} "
+                     f"--arm {arm_dir} --types {t}{set_arg}")
         d = np.load(p, allow_pickle=True)
+        names = [str(r) for r in d["roi_names"]]
+        if roi_names is None:
+            roi_names = names
+            want = names if rois is None else list(rois)
+            missing = [r for r in want if r not in names]
+            if missing:
+                sys.exit(f"ERROR: ROIs {missing} not in {p.name} (has {names})")
+            pats = {r: [] for r in want}
+        elif names != roi_names:
+            sys.exit(f"ERROR: ROI names in {p.name} differ from the arm's first phase file")
         df = pd.DataFrame({
             "session": d["session"].astype(str), "run": d["run"].astype(int),
             "task": d["task"].astype(str), "subgroup": d["subgroup"].astype(str),
@@ -123,7 +161,7 @@ def load_arm(cache_root: Path, sub: str, arm: str, t: str):
         if phase is not None:
             assert (df["subgroup"] == phase).all(), (p, df["subgroup"].unique())
         frames.append(df)
-        for roi in ps.PATTERN_ROI_NAMES:
+        for roi in pats:
             pats[roi].append(d[f"patterns_{roi}"])
             if roi not in mvs and f"meanvol_{roi}" in d.files:
                 mvs[roi] = d[f"meanvol_{roi}"]
@@ -132,7 +170,7 @@ def load_arm(cache_root: Path, sub: str, arm: str, t: str):
                          + trials["run"].astype(str))
     trials["anchor"] = trials["mmmId"].isin(ANCHORS)
     trials["fin"] = trials["task"] == "FINretrieval"
-    patterns = {roi: np.concatenate(pats[roi], axis=1) for roi in ps.PATTERN_ROI_NAMES}
+    patterns = {roi: np.concatenate(pats[roi], axis=1) for roi in pats}
     return trials, patterns, mvs
 
 
@@ -304,7 +342,11 @@ def main():
                     choices=["siloed", "siloed-tbonly", "pooled"])
     ap.add_argument("--types", nargs="+", default=["B", "C", "D"], choices=["B", "C", "D"])
     ap.add_argument("--norms", nargs="+", default=["raw", "runmean"], choices=["raw", "runmean"])
-    ap.add_argument("--rois", nargs="+", default=ps.PATTERN_ROI_NAMES)
+    ap.add_argument("--roi-set", default="pattern6",
+                    help="ROI cache set written by extract_roi_betas.py --roi-set "
+                         "(pattern6 | ladder | networks)")
+    ap.add_argument("--rois", nargs="+", default=None,
+                    help="subset of the set's ROIs (default: all in the cache)")
     ap.add_argument("--n-perm", type=int, default=1000)
     ap.add_argument("--meanvol-frac", type=float, default=0.25)
     ap.add_argument("--beta-cap", type=float, default=100.0)
@@ -323,11 +365,13 @@ def main():
     for arm in args.arms:
         for t in args.types:
             t0 = time.time()
-            trials, patterns, mvs = load_arm(cache_root, args.subject, arm, t)
+            trials, _, _ = load_arm(cache_root, args.subject, arm, t, args.roi_set, rois=[])
+            rois = args.rois or cache_roi_names(cache_root, args.subject, arm, t, args.roi_set)
             pools = run_pools(trials)
             print(f"[{arm} TYPE{t}] {len(trials)} trials, "
                   f"{trials.subgroup.value_counts().to_dict()}, {len(pools)} runs", flush=True)
-            for roi in args.rois:
+            for roi in rois:
+                _, patterns, mvs = load_arm(cache_root, args.subject, arm, t, args.roi_set, rois=[roi])
                 ok = clean_voxels(patterns[roi], mvs.get(roi), args.meanvol_frac, args.beta_cap)
                 for norm in args.norms:
                     P = normalize(patterns[roi][ok], trials, norm)
@@ -342,11 +386,12 @@ def main():
                         mod_rows += modality_rows(R, trials, args.n_perm, rng, meta)
                 print(f"  {roi:12s} voxels {ok.sum()}/{len(ok)}  done {time.time() - t0:.0f}s", flush=True)
 
+    stem = args.subject + ("" if args.roi_set == "pattern6" else f"_set-{args.roi_set}")
     cells = pd.DataFrame(rows)
-    cells.to_csv(out_dir / f"{args.subject}_6cell.tsv", sep="\t", index=False, float_format="%.5g")
-    pd.DataFrame(item_rows).to_csv(out_dir / f"{args.subject}_6cell_items.tsv.gz", sep="\t",
+    cells.to_csv(out_dir / f"{stem}_6cell.tsv", sep="\t", index=False, float_format="%.5g")
+    pd.DataFrame(item_rows).to_csv(out_dir / f"{stem}_6cell_items.tsv.gz", sep="\t",
                                    index=False, float_format="%.5g")
-    pd.DataFrame(mod_rows).to_csv(out_dir / f"{args.subject}_modality.tsv", sep="\t",
+    pd.DataFrame(mod_rows).to_csv(out_dir / f"{stem}_modality.tsv", sep="\t",
                                   index=False, float_format="%.5g")
     print(f"\nwrote {out_dir}")
     show = cells[(cells.norm == "runmean") & (~cells.anchor) & (~cells.same_run)]
