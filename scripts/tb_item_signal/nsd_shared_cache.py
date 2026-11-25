@@ -8,6 +8,9 @@ Inputs (one NSD subject, one space):
                  session, mmm_id, rep) and ``rois.npz`` (boolean unit masks)
   --responses    NSD's ``ppdata/subj##/behav/responses.tsv`` — the source of
                  each trial's RUN. Run boundaries are read, never assumed.
+  --roi-file     optional npz of boolean unit masks to use instead of the
+                 shared dir's ``rois.npz`` (e.g. atlas areas mapped onto the
+                 same surface, so two datasets are read with one ROI set)
 
 Output: npz with ``patterns_<ROI>`` (units x trials), ``voxidx_<ROI>``, and the
 trial metadata ``item_reliability.py`` reads (session, run, task = "nsd",
@@ -35,12 +38,15 @@ def main(argv=None):
     ap.add_argument("--shared-dir", required=True, type=Path)
     ap.add_argument("--responses", required=True, type=Path)
     ap.add_argument("--rois", nargs="+", required=True)
+    ap.add_argument("--roi-file", type=Path, default=None,
+                    help="npz of unit masks to use instead of <shared-dir>/rois.npz")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args(argv)
 
-    for f in ("shared_betas_z.npy", "trials.tsv", "rois.npz"):
-        if not (args.shared_dir / f).is_file():
-            sys.exit(f"missing {args.shared_dir / f}")
+    roi_file = args.roi_file or args.shared_dir / "rois.npz"
+    for f in (args.shared_dir / "shared_betas_z.npy", args.shared_dir / "trials.tsv", roi_file):
+        if not f.is_file():
+            sys.exit(f"missing {f}")
     if not args.responses.is_file():
         sys.exit(f"missing {args.responses}")
 
@@ -57,13 +63,16 @@ def main(argv=None):
     if bad:
         sys.exit(f"{bad} trials: responses.tsv 73KID != trials.tsv nsd_id after the join")
 
-    rois = np.load(args.shared_dir / "rois.npz")
+    rois = np.load(roi_file)
     unknown = [r for r in args.rois if r not in rois.files]
     if unknown:
-        sys.exit(f"ROIs not in rois.npz: {unknown}; have {rois.files}")
+        sys.exit(f"ROIs not in {roi_file.name}: {unknown}; have {rois.files}")
     B = np.load(args.shared_dir / "shared_betas_z.npy", mmap_mode="r")
     if B.shape[0] != len(t):
         sys.exit(f"shared_betas_z rows {B.shape[0]} != trials {len(t)}")
+    bad = [r for r in args.rois if rois[r].shape != (B.shape[1],)]
+    if bad:
+        sys.exit(f"ROI masks {bad} do not have one entry per unit ({B.shape[1]})")
 
     out = {"subject": args.shared_dir.parent.name, "arm": "nsd",
            "beta_type": "NSD-b3", "space": args.shared_dir.name,
