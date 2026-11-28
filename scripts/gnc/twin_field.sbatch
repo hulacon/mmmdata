@@ -53,8 +53,12 @@ FS_SIF=$(grep -o '[^ ]*freesurfer-[^ ]*\.sif' "$(command -v bbregister)" | head 
 export SYNTHSTRIP_CMD="apptainer exec ${FS_SIF} /usr/local/freesurfer/8.2.0-1/bin/mri_synthstrip"
 export FS_LICENSE="/gpfs/projects/hulacon/shared/mmmdata/code/fs_license.txt"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
-git -C "${REPO}" log -1 --format='mmmdata %h %d'
-git -C "${REPO}" status --short scripts/gnc | sed 's/^/  dirty: /'
+if git -C "${REPO}" rev-parse --git-dir >/dev/null 2>&1; then
+    git -C "${REPO}" log -1 --format='mmmdata %h %d'
+    git -C "${REPO}" status --short scripts/gnc | sed 's/^/  dirty: /'
+else
+    echo "mmmdata frozen copy at ${REPO} (CODE_VERSION=${CODE_VERSION:-unset})"
+fi
 
 mkdir -p "${OUT}"
 python "${REPO}/scripts/gnc/twin_field.py" pairs --sub "${SUB}" --ses "${SES}" --out "${OUT}"
